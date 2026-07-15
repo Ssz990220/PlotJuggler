@@ -10,7 +10,9 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Do not interrupt trusted runs while they are publishing newly built Conan
+  # packages. Superseded pull-request runs remain safe to cancel.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   pre-commit:
@@ -65,10 +67,9 @@ jobs:
 
       - uses: conan-io/setup-conan@v1
         with:
-          # Backed by ghcr.io via oras (see steps below) instead of
-          # actions/cache (10 GB soft cap, 7-day eviction, branch-scoped).
-          # ghcr.io public repos: unlimited storage, tags survive forever,
-          # cross-branch.
+          # Trusted runs resolve packages from JFrog first. The existing GHCR
+          # and Actions caches remain as migration/fork fallback layers while
+          # the Linux package matrix is populated in Artifactory.
           cache_packages: false
 
       - name: Setup oras (OCI Registry As Storage)
@@ -182,6 +183,61 @@ jobs:
           restore-keys: |
             conan-linux-gcc-relwithdebinfo-v2-
 
+      - name: Configure public Conan repository for pull requests
+        if: github.event_name == 'pull_request' || github.repository != 'PlotJuggler/PJ4'
+        shell: bash
+        run: |
+          # The current JFrog token can deploy packages, so never expose it to
+          # pull-request or fork-controlled workflow code.
+          echo "PJ_USE_JFROG=false" >> "$GITHUB_ENV"
+
+      - name: Configure JFrog Conan repository
+        if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/PJ4'
+        id: conan_remote
+        shell: bash
+        env:
+          JFROG_USER: ${{ vars.JFROG_USER || secrets.JFROG_USER }}
+          JFROG_TOKEN: ${{ secrets.JFROG_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$JFROG_USER" || -z "$JFROG_TOKEN" ]]; then
+            echo "::error::Configure JFROG_USER as an Actions variable or secret, and JFROG_TOKEN as an Actions secret."
+            exit 1
+          fi
+
+          conan remote add plotjuggler-conan \
+            "https://plotjuggler.jfrog.io/artifactory/api/conan/plotjuggler-conan" \
+            --force --index=0
+          conan remote login plotjuggler-conan "$JFROG_USER" -p "$JFROG_TOKEN"
+          echo "PJ_USE_JFROG=true" >> "$GITHUB_ENV"
+          echo "authenticated=true" >> "$GITHUB_OUTPUT"
+          conan remote list
+
+      - name: Seed Conan source download cache
+        # minizip/1.2.13 has a single zlib.net source URL that rejects GitHub
+        # runners with HTTP 415. Use the same checksum-verified, repo-hosted
+        # Conan download-cache seed as the proven Windows workflows. This is
+        # deliberately configured after restoring ~/.conan2 so a restored
+        # global.conf cannot clobber it.
+        shell: bash
+        run: |
+          set -euo pipefail
+          cache_dir="${RUNNER_TEMP}/conan-source-cache"
+          mkdir -p "${cache_dir}/s"
+          find .github/conan/source-backup -maxdepth 1 -type f ! -name README.md \
+            -exec cp -f {} "${cache_dir}/s/" \;
+
+          conan_home="$(conan config home)"
+          conf="${conan_home}/global.conf"
+          mkdir -p "${conan_home}"
+          if [[ -f "$conf" ]]; then
+            grep -v '^core\.sources:download_cache=' "$conf" > "${conf}.tmp" || true
+            mv "${conf}.tmp" "$conf"
+          fi
+          echo "core.sources:download_cache=${cache_dir}" >> "$conf"
+          cat "$conf"
+
       - name: Cache Qt
         id: qt-cache
         uses: actions/cache@v5
@@ -233,6 +289,22 @@ jobs:
 
       - name: Build
         run: ./build.sh
+
+      - name: Publish Conan packages to JFrog
+        if: steps.conan_remote.outputs.authenticated == 'true'
+        shell: bash
+        run: |
+          # Upload both downloaded recipes and any Linux binaries built by
+          # --build=missing. Existing revisions are skipped by Conan.
+          conan upload "*" -r=plotjuggler-conan --confirm \
+            -cc core.upload:parallel=4
+
+      - name: Remove JFrog credentials from Conan home
+        # ~/.conan2 is archived below. Logout even when the build/upload fails
+        # so a deploy-capable token can never enter GHCR or Actions caches.
+        if: always() && steps.conan_remote.outputs.authenticated == 'true'
+        shell: bash
+        run: conan remote logout plotjuggler-conan
 
       - name: Save Conan cache to ghcr.io
         # Only push from the canonical repo on real pushes (forks lack write
@@ -349,6 +421,53 @@ jobs:
           restore-keys: |
             conan-linux-gcc-relwithdebinfo-v2-
 
+      - name: Configure public Conan repository for pull requests
+        if: github.event_name == 'pull_request' || github.repository != 'PlotJuggler/PJ4'
+        shell: bash
+        run: echo "PJ_USE_JFROG=false" >> "$GITHUB_ENV"
+
+      - name: Configure JFrog Conan repository
+        if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/PJ4'
+        id: conan_remote
+        shell: bash
+        env:
+          JFROG_USER: ${{ vars.JFROG_USER || secrets.JFROG_USER }}
+          JFROG_TOKEN: ${{ secrets.JFROG_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$JFROG_USER" || -z "$JFROG_TOKEN" ]]; then
+            echo "::error::Configure JFROG_USER as an Actions variable or secret, and JFROG_TOKEN as an Actions secret."
+            exit 1
+          fi
+
+          conan remote add plotjuggler-conan \
+            "https://plotjuggler.jfrog.io/artifactory/api/conan/plotjuggler-conan" \
+            --force --index=0
+          conan remote login plotjuggler-conan "$JFROG_USER" -p "$JFROG_TOKEN"
+          echo "PJ_USE_JFROG=true" >> "$GITHUB_ENV"
+          echo "authenticated=true" >> "$GITHUB_OUTPUT"
+          conan remote list
+
+      - name: Seed Conan source download cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          cache_dir="${RUNNER_TEMP}/conan-source-cache"
+          mkdir -p "${cache_dir}/s"
+          find .github/conan/source-backup -maxdepth 1 -type f ! -name README.md \
+            -exec cp -f {} "${cache_dir}/s/" \;
+
+          conan_home="$(conan config home)"
+          conf="${conan_home}/global.conf"
+          mkdir -p "${conan_home}"
+          if [[ -f "$conf" ]]; then
+            grep -v '^core\.sources:download_cache=' "$conf" > "${conf}.tmp" || true
+            mv "${conf}.tmp" "$conf"
+          fi
+          echo "core.sources:download_cache=${cache_dir}" >> "$conf"
+          cat "$conf"
+
       - name: Cache Qt
         id: qt-cache
         uses: actions/cache@v5
@@ -397,6 +516,13 @@ jobs:
 
       - name: Build + run foundation tests under ThreadSanitizer
         run: ./build.sh --tsan
+
+      - name: Remove JFrog credentials from Conan home
+        # The combined actions/cache step saves ~/.conan2 during post-job
+        # cleanup, so remove authentication first on both success and failure.
+        if: always() && steps.conan_remote.outputs.authenticated == 'true'
+        shell: bash
+        run: conan remote logout plotjuggler-conan
 
       - name: ccache stats
         if: success()

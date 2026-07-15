@@ -30,6 +30,16 @@ if command -v ccache &>/dev/null; then
   CMAKE_CCACHE_ARGS+=("-DCMAKE_C_COMPILER_LAUNCHER=ccache" "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache")
 fi
 
+# CI can opt into PlotJuggler's authenticated Artifactory remote while local
+# builds and untrusted pull requests remain reproducible against ConanCenter.
+# Keep the remotes explicit so unrelated developer remotes can never shadow the
+# stock recipes. Artifactory is a binary/recipe cache; ConanCenter remains the
+# fallback for anything that has not been mirrored yet.
+CONAN_REMOTE_ARGS=(-r conancenter)
+if [[ "${PJ_USE_JFROG:-false}" == "true" ]]; then
+  CONAN_REMOTE_ARGS=(-r plotjuggler-conan -r conancenter)
+fi
+
 # Foundation concurrency tests exercised under ThreadSanitizer. Keep in sync with
 # the `tsan` job in .github/workflows/linux-ci.yml.
 TSAN_TESTS=(engine_thread_safety_test engine_concurrency_test)
@@ -38,7 +48,7 @@ if [[ "$TSAN" == "1" ]]; then
   BUILD_DIR="${SCRIPT_DIR}/build-tsan"
 
   conan install "$SCRIPT_DIR" --output-folder="$BUILD_DIR" --build=missing \
-    -s build_type=RelWithDebInfo -s compiler.cppstd=20 -r conancenter
+    -s build_type=RelWithDebInfo -s compiler.cppstd=20 "${CONAN_REMOTE_ARGS[@]}"
 
   # PJ4_BUILD_APP=OFF + building only the foundation test targets keeps Qt out of
   # the picture entirely (no Qt code is compiled), even though configure still
@@ -64,12 +74,11 @@ fi
 
 BUILD_DIR="${SCRIPT_DIR}/build"
 
-# Pin resolution to conancenter. A developer machine may have private org remotes
-# (e.g. an Artifactory) listed ahead of conancenter that host forked recipes under
-# a user channel — those would shadow the stock recipes and drag a whole `@<org>`
-# dependency subtree into the graph. conancenter carries every PJ4 dependency.
+# Pin resolution to the explicit remote list selected above. A developer machine
+# may have unrelated private remotes that host forked recipes under a user
+# channel; those must never shadow PJ4's intended dependency graph.
 conan install "$SCRIPT_DIR" --output-folder="$BUILD_DIR" --build=missing \
-  -s build_type=RelWithDebInfo -s compiler.cppstd=20 -r conancenter
+  -s build_type=RelWithDebInfo -s compiler.cppstd=20 "${CONAN_REMOTE_ARGS[@]}"
 
 cmake -S "$SCRIPT_DIR" -B "$BUILD_DIR" \
   -DCMAKE_TOOLCHAIN_FILE="$BUILD_DIR/conan_toolchain.cmake" \
