@@ -81,6 +81,21 @@ jobs:
         with:
           arch: x64
 
+      - name: Restore public Conan cache for pull requests
+        # Pull requests cannot receive the deploy-capable JFrog token. Keep the
+        # existing main-branch Conan cache as a read-only migration/fork layer
+        # so an untrusted run reuses the last published closure instead of
+        # rebuilding every dependency. There is deliberately no matching save
+        # step: PR-scoped copies would consume the repository's shared cache
+        # budget, while restore-keys can read the newest default-branch entry.
+        if: github.event_name == 'pull_request' || github.repository != 'PlotJuggler/PJ4'
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/.conan2
+          key: conan-windows-msvc-relwithdebinfo-v6-${{ hashFiles('conanfile.txt') }}
+          restore-keys: |
+            conan-windows-msvc-relwithdebinfo-v6-
+
       - name: Configure public Conan repository for pull requests
         if: github.event_name == 'pull_request' || github.repository != 'PlotJuggler/PJ4'
         shell: bash
