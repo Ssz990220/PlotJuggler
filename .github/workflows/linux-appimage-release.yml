@@ -46,6 +46,25 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
+      - name: Fetch pj-official-plugins into plotjuggler_sdk/pj_ported_plugins
+        # build_release_appimage.sh expects plotjuggler_sdk/pj_ported_plugins to
+        # be a full pj-official-plugins checkout (with its build.sh and the
+        # data_stream_ros2/docker/run-local.sh ROS 2 orchestrator). It is not a
+        # git submodule of plotjuggler_sdk on this repo, so `submodules: recursive`
+        # above does not bring it in. Clone it explicitly at the tip of main so
+        # the released AppImage embeds the latest curated plugin set.
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="plotjuggler_sdk/pj_ported_plugins"
+          if [[ -d "$target/.git" || -f "$target/build.sh" ]]; then
+            echo "$target already populated — skipping clone."
+            exit 0
+          fi
+          rm -rf "$target"
+          git clone --depth 1 --recurse-submodules --shallow-submodules \
+            https://github.com/PlotJuggler/pj-official-plugins.git "$target"
+
       - name: Read versions.env
         # PJ_APP_VERSION / PJ_QT_VERSION / PJ_APPIMAGE_ARCH are the single source
         # of truth for the version and architecture stamp in the artifact name.
