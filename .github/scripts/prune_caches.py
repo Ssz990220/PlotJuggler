@@ -10,7 +10,10 @@ infrequently-accessed Windows sccache -> cold 50-95 min compiles.
 
 Since every consumer restores via ``restore-keys`` prefix (always the most
 recent match), only the newest entry per (ref, key-family) is useful; the rest
-are dead weight. This script deletes them.
+are dead weight. This script deletes them. It also removes every cache scoped
+to a closed PR. The pull-request ``closed`` cleanup can run before that PR's
+in-flight jobs have finished their post-job cache saves; without this second
+pass, those late entries survive forever because there is no second event.
 
 It groups caches by (git ref, key-family), where the family is the key with its
 trailing rolling suffix (``-<7..64 hex>``) stripped, then keeps the newest
@@ -31,6 +34,7 @@ import sys
 
 # Rolling per-SHA / per-conanfile-hash suffix appended to a stable key stem.
 _ROLLING_SUFFIX = re.compile(r"-[0-9a-f]{7,64}$")
+_PR_CACHE_REF = re.compile(r"^refs/pull/[0-9]+/merge$")
 
 
 def _family(key: str) -> str:
@@ -42,7 +46,7 @@ def _gh_api(repo: str, path: str, method: str | None = None) -> str:
     args = ["gh", "api"]
     if method:
         args += ["--method", method]
-    args.append(f"/repos/{repo}/actions/{path}")
+    args.append(f"/repos/{repo}/{path}")
     return subprocess.run(args, check=True, capture_output=True, text=True).stdout
 
 
@@ -51,28 +55,58 @@ def _list_caches(repo: str) -> list[dict]:
     caches: list[dict] = []
     page = 1
     while True:
-        batch = json.loads(_gh_api(repo, f"caches?per_page=100&page={page}"))["actions_caches"]
+        batch = json.loads(_gh_api(repo, f"actions/caches?per_page=100&page={page}"))["actions_caches"]
         caches += batch
         if len(batch) < 100:
             return caches
         page += 1
 
 
+def _list_open_pr_refs(repo: str) -> set[str]:
+    """Return the cache refs belonging to currently-open pull requests."""
+    refs: set[str] = set()
+    page = 1
+    while True:
+        batch = json.loads(_gh_api(repo, f"pulls?state=open&per_page=100&page={page}"))
+        refs.update(f"refs/pull/{pull['number']}/merge" for pull in batch)
+        if len(batch) < 100:
+            return refs
+        page += 1
+
+
 def prune(repo: str, keep: int, apply: bool) -> int:
     """Delete all but the newest ``keep`` caches per (ref, family). Returns bytes freed."""
     caches = _list_caches(repo)
-    groups: dict[tuple[str, str], list[dict]] = {}
+    open_pr_refs = _list_open_pr_refs(repo)
+    retained: list[dict] = []
+    freed = 0
+
+    # A PR-close workflow can finish before that PR's still-running jobs save
+    # their caches. Scheduled/manual pruning is the backstop for those late
+    # writes: closed PR refs are unreachable by future jobs and all their cache
+    # entries are dead weight.
     for cache in caches:
+        ref = cache["ref"]
+        if _PR_CACHE_REF.fullmatch(ref) and ref not in open_pr_refs:
+            verb = "deleting" if apply else "would delete"
+            print(f"{verb} {cache['size_in_bytes'] / 1e9:6.2f} GB  {ref}  {cache['key']}")
+            if apply:
+                _gh_api(repo, f"actions/caches/{cache['id']}", method="DELETE")
+            freed += cache["size_in_bytes"]
+        else:
+            retained.append(cache)
+
+    groups: dict[tuple[str, str], list[dict]] = {}
+    for cache in retained:
         groups.setdefault((cache["ref"], _family(cache["key"])), []).append(cache)
 
-    freed = 0
     for (ref, family), items in sorted(groups.items()):
         items.sort(key=lambda c: c["created_at"], reverse=True)  # newest first
         for stale in items[keep:]:
             verb = "deleting" if apply else "would delete"
             print(f"{verb} {stale['size_in_bytes'] / 1e9:6.2f} GB  {ref}  {stale['key']}")
             if apply:
-                _gh_api(repo, f"caches/{stale['id']}", method="DELETE")
+                _gh_api(repo, f"actions/caches/{stale['id']}", method="DELETE")
             freed += stale["size_in_bytes"]
 
     total = sum(c["size_in_bytes"] for c in caches)
