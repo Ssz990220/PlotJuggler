@@ -15,7 +15,7 @@
 namespace PJ {
 
 ExtensionDetailDialog::ExtensionDetailDialog(
-    const Extension& ext, const QString& installed_version, bool needs_restart, QWidget* parent)
+    const Extension& ext, const QString& installed_version, bool needs_restart, bool installing, QWidget* parent)
     : Dialog(parent), ui_(new Ui::ExtensionDetailDialog) {
   // The Dialog content area already owns a zero-margin layout, so build the .ui
   // onto a child body and add it, rather than setupUi(contentWidget()).
@@ -93,7 +93,16 @@ ExtensionDetailDialog::ExtensionDetailDialog(
     }
   });
 
-  if (needs_restart) {
+  if (installing) {
+    // This id is the active install or is waiting in the install queue / Update All
+    // batch. Mirror the card's disabled "Installing" badge and offer no action, so
+    // the dialog cannot enqueue the same operation a second time behind the running
+    // one (which would later surface a spurious "already staged" failure).
+    ui_->action_btn->setText("Installing");
+    ui_->action_btn->setObjectName("extBadgeInstalling");
+    ui_->action_btn->setEnabled(false);
+    ui_->action_btn->setVisible(true);
+  } else if (needs_restart) {
     // A staged install/update or uninstall is awaiting a restart. Mirror the card's
     // disabled "Needs Restart" badge and offer no action, so the dialog cannot
     // re-stage (or contradict) an operation that is already pending. Both action_btn

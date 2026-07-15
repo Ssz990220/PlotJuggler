@@ -21,8 +21,13 @@ class ExtensionDetailDialog : public Dialog {
   // staged uninstall awaiting a restart): when set, the dialog shows a disabled
   // "Needs Restart" indicator and offers no Install/Update/Uninstall action, so it
   // cannot re-stage an operation that is already pending.
+  // `installing` mirrors the card's in-flight/queued state (this id is the active
+  // install or is waiting in the install queue / Update All batch): when set, the
+  // dialog shows a disabled "Installing" indicator and offers no action, so it
+  // cannot enqueue the same operation a second time behind the running one.
   explicit ExtensionDetailDialog(
-      const Extension& ext, const QString& installed_version, bool needs_restart = false, QWidget* parent = nullptr);
+      const Extension& ext, const QString& installed_version, bool needs_restart = false, bool installing = false,
+      QWidget* parent = nullptr);
   ~ExtensionDetailDialog() override;
 
  signals:

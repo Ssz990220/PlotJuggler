@@ -468,7 +468,14 @@ void MarketplaceWindow::openDetail(const QString& ext_id) {
     // Mirror the card's pending state so the dialog can't offer an action on an
     // install/update or uninstall that is already staged for the next restart.
     const bool needs_restart = ext_mgr_->hasPendingInstall(ext_id) || ext_mgr_->hasPendingUninstall(ext_id);
-    ExtensionDetailDialog dlg(ext, installed_version, needs_restart, this);
+    // Also mirror the card's in-flight/queued state: the active install, an
+    // explicit click awaiting its turn, or an Update All entry. Without this the
+    // detail dialog offers a clickable Update for a queued extension, which
+    // re-enqueues it and later surfaces a spurious "already staged" failure.
+    const bool in_update_queue =
+        std::any_of(update_queue_.begin(), update_queue_.end(), [&](const Extension& e) { return e.id == ext_id; });
+    const bool installing = ext_id == active_install_id_ || pending_clicks_.contains(ext_id) || in_update_queue;
+    ExtensionDetailDialog dlg(ext, installed_version, needs_restart, installing, this);
     connect(&dlg, &ExtensionDetailDialog::installRequested, this, [this, ext_id]() { onActionButtonClicked(ext_id); });
     connect(
         &dlg, &ExtensionDetailDialog::uninstallRequested, this, [this, ext_id]() { onUninstallButtonClicked(ext_id); });
@@ -675,8 +682,10 @@ void MarketplaceWindow::onActionButtonClicked(const QString& ext_id) {
   // "Install of X is already in progress" — its single-install-at-a-time
   // model is intentional, we just hide it behind a queue at the UI layer.
   if (!active_install_id_.isEmpty()) {
-    if (ext_id == active_install_id_ || pending_clicks_.contains(ext_id)) {
-      return;  // deduplicate — either it IS the running one or already queued
+    const bool in_update_queue =
+        std::any_of(update_queue_.begin(), update_queue_.end(), [&](const Extension& e) { return e.id == ext_id; });
+    if (ext_id == active_install_id_ || pending_clicks_.contains(ext_id) || in_update_queue) {
+      return;  // deduplicate — running, queued by a click, or already in the Update All batch
     }
     pending_clicks_.append(ext_id);
     showInstallProgress();  // keep the active install visible; reflect the new queue depth
