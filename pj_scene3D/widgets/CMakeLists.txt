@@ -252,6 +252,25 @@ if(PJ_BUILD_TESTS)
   target_compile_options(voxel_grid_layer_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
   add_test(NAME voxel_grid_layer_test COMMAND voxel_grid_layer_test)
 
+  # Settings-panel row pitch: every layer's createConfigWidget() must use the
+  # same vertical spacing (Space::Snug) as the built-in Grid / Transforms grids
+  # in Scene3DConfigPanel, so the panel doesn't visibly loosen when a different
+  # topic type is selected. Builds real config widgets, so it needs a QApplication;
+  # links resources.qrc (AUTORCC) so PJ::theme::space() resolves real QSS values
+  # instead of the -1/style-default fallback that would mask the Snug/Comfortable gap.
+  add_executable(layer_config_widget_row_spacing_test
+    tests/layer_config_widget_row_spacing_test.cpp
+    ${CMAKE_SOURCE_DIR}/resources/resources.qrc
+  )
+  set_target_properties(layer_config_widget_row_spacing_test PROPERTIES AUTORCC ON)
+  target_link_libraries(layer_config_widget_row_spacing_test PRIVATE
+    pj_scene3d_widgets
+    pj_widgets
+    GTest::gtest
+  )
+  target_compile_options(layer_config_widget_row_spacing_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME layer_config_widget_row_spacing_test COMMAND layer_config_widget_row_spacing_test)
+
   # Real-GL evidence for the instanced-cube path: a drawn voxel rasterizes
   # fragments on an offscreen FBO; a predicate-culled voxel rasterizes nothing.
   # Skips below GL 4.5 (like hud_overlay_gl_test); CI runs it under xvfb + llvmpipe.
