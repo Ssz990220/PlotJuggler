@@ -88,6 +88,29 @@ if [[ "${target_platform:-}" == win-* ]]; then
     ls "$library_prefix_u"/bin/${name}-*.dll
     test -f "$library_prefix_u/lib/pkgconfig/lib${name}.pc"
   done
+
+  # Upstream's MSVC pkg-config emission writes static-style metadata: the
+  # translated linker flags (-LIBPATH:…) and every dependency (zlib.lib,
+  # dav1d.lib, ole32.lib, …) land on the PUBLIC Libs:/Requires: lines, so a
+  # consumer of the shared DLLs is told to link import libs it never needs —
+  # and which its environment may not even provide (LNK1181 on zlib.lib).
+  # Normalize each .pc to the canonical shared form: the public surface is
+  # exactly `-L${libdir} -l<name>`; dependency metadata moves to
+  # Requires.private (still traversed for --cflags), and the stale
+  # Libs.private/empty lines are dropped. conda-forge patches this same
+  # emission for its Windows ffmpeg builds.
+  for name in avcodec avformat avutil swscale; do
+    pc="$library_prefix_u/lib/pkgconfig/lib${name}.pc"
+    sed -i -E \
+      -e "s|^Libs:.*|Libs: -L\${libdir} -l${name}|" \
+      -e '/^Libs\.private:[[:space:]]*$/d' \
+      -e '/^Requires\.private:[[:space:]]*$/d' \
+      -e 's|^Requires:[[:space:]]*(.+)$|Requires.private: \1|' \
+      -e '/^Requires:[[:space:]]*$/d' \
+      "$pc"
+    echo "--- lib${name}.pc after normalization ---"
+    cat "$pc"
+  done
 else
   # Linux: conda cross-compiler (glibc-2.28 sysroot via recipes/variants.yaml).
   # dav1d/libdrm are probed via pkg-config; point it at the host prefix.
