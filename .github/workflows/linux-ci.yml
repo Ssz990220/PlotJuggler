@@ -552,6 +552,16 @@ jobs:
       - name: Build + run foundation tests under ThreadSanitizer
         run: ./build.sh --tsan
 
+      - name: Publish Conan packages to JFrog
+        # TSan resolves the same RelWithDebInfo dependency graph as the regular
+        # build, but a refreshed recipe can still require a binary that this
+        # runner is first to build. Persist it instead of rebuilding next run.
+        if: success() && steps.conan_remote.outputs.authenticated == 'true'
+        shell: bash
+        run: |
+          conan upload "*" -r=plotjuggler-conan --confirm \
+            -cc core.upload:parallel=4
+
       - name: Remove JFrog credentials from Conan home
         # The combined actions/cache step saves ~/.conan2 during post-job
         # cleanup, so remove authentication first on both success and failure.

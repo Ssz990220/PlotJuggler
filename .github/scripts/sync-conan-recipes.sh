@@ -13,10 +13,14 @@ if [[ "${PJ_USE_JFROG:-false}" != "true" ]]; then
   exit 0
 fi
 
-graph_file="${RUNNER_TEMP:-/tmp}/pj4-conan-recipe-graph.json"
+sync_home="$(mktemp -d)"
+graph_file="${sync_home}/graph.json"
+local_recipe_list="${sync_home}/local-recipes.json"
+remote_recipe_list="${sync_home}/remote-recipes.json"
 
 echo "Refreshing current dependency recipe revisions from ConanCenter"
-conan graph info . \
+CONAN_HOME="$sync_home" conan profile detect --force >/dev/null
+CONAN_HOME="$sync_home" conan graph info . \
   -r=conancenter \
   --update \
   "$@" \
@@ -24,12 +28,34 @@ conan graph info . \
   --out-file="$graph_file" \
   -vwarning
 
+# The clean home contains exactly the latest recipes selected for this graph.
+# Export that set as Conan's native PackageList so the real job cache can fetch
+# recipe metadata without requiring a matching binary to exist on ConanCenter.
+CONAN_HOME="$sync_home" conan list "*#latest" \
+  --format=json \
+  --out-file="$local_recipe_list" \
+  -vwarning
+
+# `conan list` names its source "Local Cache", while `conan download -r`
+# expects the matching remote name at the PackageList root. Keep the original
+# list for upload and rewrite only that first root key for download. Both Linux
+# and Windows jobs execute this with Git's GNU sed.
+sed '0,/"Local Cache"/s//"conancenter"/' \
+  "$local_recipe_list" > "$remote_recipe_list"
+
+conan download \
+  --list="$remote_recipe_list" \
+  -r=conancenter \
+  --only-recipe \
+  -vwarning
+
 # graph info retrieves recipes but never package binaries. Upload only each
-# locally-latest recipe revision here; the normal post-install upload remains
-# responsible for the platform-specific binaries. Existing revisions are
+# graph-selected recipe revision here; the normal post-install upload remains
+# responsible for platform-specific binaries. Existing revisions are
 # checksum-addressed and skipped by Conan.
 echo "Publishing current recipe revisions to JFrog"
-conan upload "*#latest" \
+conan upload \
+  --list="$local_recipe_list" \
   -r=plotjuggler-conan \
   --only-recipe \
   --confirm \
