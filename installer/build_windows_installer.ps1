@@ -23,8 +23,8 @@
     7. render config.xml / package.xml from templates into the stage tree
     8. binarycreator --offline-only -> <YYYY.MM.DD>.PlotJuggler-<Version>-Windows-x64.<main-commit>.exe
 
-  This does NOT build the app (only, optionally, the plugins). Run it AFTER a
-  Windows build of the app, e.g.
+  This does NOT build the app or any plugins. Run it AFTER a Windows build of
+  the app, e.g.
     conan install . --output-folder=build --build=missing \
         -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
         -o "cpython/*:shared=True" -s "cpython/*:build_type=Release"
