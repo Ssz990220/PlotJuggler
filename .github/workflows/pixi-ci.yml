@@ -1,6 +1,9 @@
 # Exploratory pixi/conda-forge build of PJ4 (parallel to the canonical Conan CI).
-# Builds the 4 gap packages (luau, mcap, cloudini, nanoarrow) into a local conda
-# channel, then builds + tests PJ4 against a pixi environment on Linux and Windows.
+# Builds the local-channel packages (the 4 conda-forge gaps: luau, mcap, cloudini,
+# nanoarrow — plus the LGPL-lean ffmpeg, which win-64 NEEDS: conda-forge has no
+# LGPL win-64 ffmpeg at all), then builds + tests PJ4 against a pixi environment
+# on Linux and Windows. This win-64 leg is also the only place the MSVC ffmpeg
+# package can be built/validated — a Linux dev box cannot produce it.
 name: Pixi CI
 
 on:
@@ -22,11 +25,10 @@ jobs:
     # it needs to run before the PR is marked ready.
     name: pixi-build (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
-    # Windows is a non-blocking portability tracker, matching the canonical
-    # Conan windows-ci.yml: PJ4 v1 is Linux-only (CLAUDE.md non-goal) and the
-    # codebase still has Windows portability gaps that fail regardless of the
-    # build system. The pixi win-64 leg proves the *build system* works on
-    # Windows; its test failures should not gate the PR.
+    # Windows is now a REQUIRED shipped target. continue-on-error stays true
+    # only until this leg proves green with the local LGPL ffmpeg package —
+    # then it must flip to false (and become a required branch-protection
+    # check) so the shipped platform gates PRs like Linux does.
     continue-on-error: ${{ matrix.name == 'win-64' }}
     strategy:
       fail-fast: false
@@ -201,3 +203,16 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: pixi run test
+
+      # Remote-only iteration on the ffmpeg MSVC recipe needs the configure
+      # forensics when a build dies: config.log records every failed probe.
+      - name: Upload channel build logs (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: channel-build-logs-${{ matrix.name }}
+          path: |
+            local-channel/bld/**/ffbuild/config.log
+            local-channel/bld/**/ffbuild/config.mak
+            local-channel/rattler-build-log.txt
+          if-no-files-found: ignore

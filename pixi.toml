@@ -3,20 +3,25 @@
 # EXPLORATORY pixi environment for building PJ4 with conda-forge dependencies
 # instead of Conan (+ the manual install_qt6.sh Qt install).
 #
-# Status: exploration — see docs/plans/pixi_build_exploration.md for findings.
-# The Conan path (`./build.sh`) remains the canonical build.
+# Status: exploration — see docs/research/pixi_build_exploration.md for
+# findings. The Conan path (`./build.sh`) remains the canonical build.
 #
-# Known gaps vs conanfile.txt (not on conda-forge; resolved via the local
-# channel built by `pixi run -e pack build-local-channel`, see recipes/):
-#   - luau      (pj_scripting's filter engine)
+# Local-channel packages (built from recipes/ — see the bootstrap note at the
+# bottom of this file):
+#   - luau      (pj_scripting's filter engine; not on conda-forge)
 #   - mcap      (C++ header-only reader/writer; the conda-forge `mcap` package
 #                is the *Python* wrapper, not the C++ lib)
 #   - cloudini  (compressed point clouds; our own library)
+#   - ffmpeg    (NOT a conda-forge gap — a decode-only LGPL-only rebuild
+#                mirroring conanfile.txt's trimmed option set; replaces the
+#                feature-complete lgpl_* build on linux-64 and the GPL-only
+#                ffmpeg on win-64, where conda-forge has no LGPL build at all)
 
 [workspace]
 name = "pj4"
-# local-channel/ holds the 4 packages missing from conda-forge, built from
-# recipes/ via: rattler-build build --recipe-dir recipes/ -m recipes/variants.yaml -c conda-forge --output-dir local-channel
+# local-channel/ holds the packages built from recipes/ (4 conda-forge gaps +
+# the LGPL-lean ffmpeg) via:
+# rattler-build build --recipe-dir recipes/ -m recipes/variants.yaml -c conda-forge --output-dir local-channel
 channels = ["conda-forge", "./local-channel"]
 platforms = ["linux-64"]
 
@@ -65,17 +70,23 @@ elfutils = "*"
 libgl-devel = "*"
 libopengl-devel = "*"
 libegl-devel = "*"
-# LGPL build variant only — PJ4 ships MPL-2.0 and must not link GPL codec libs
-# (mirrors conanfile.txt's "Keep this LGPL-oriented" block; conda-forge publishes
-# gpl_* and lgpl_* ffmpeg builds, default resolution picks gpl).
-ffmpeg = { version = "8.*", build = "lgpl_*" }
+# Local decode-only LGPL-only build (recipes/ffmpeg) — PJ4 ships MPL-2.0 and
+# must not link GPL codec libs, and conda-forge's lgpl_* variant is license-
+# clean but feature-complete (all LGPL encoders/filters/network protocols).
+# This rebuild mirrors conanfile.txt's trimmed ffmpeg/* option block exactly.
+# Both pins matter: `channel` overrides strict channel priority (which would
+# always resolve `ffmpeg` from conda-forge), and the pj_lgpl_lean* build
+# string matches no upstream variant, so a misconfigured solve fails loudly
+# instead of silently shipping a conda-forge build.
+ffmpeg = { version = "8.*", build = "pj_lgpl_lean*", channel = "./local-channel" }
 
-# conda-forge's win-64 ffmpeg has NO lgpl build (GPL only). Windows is a
-# non-shipped CI portability tracker (CLAUDE.md non-goals), so taking the GPL
-# build to prove the code compiles is acceptable here — it must NOT be used for
-# a shipped Windows artifact. Linux keeps the LGPL-clean pin above.
+# Windows is a required shipped target and conda-forge's win-64 ffmpeg has NO
+# lgpl build (GPL only) — so win-64 uses the same local LGPL-lean package as
+# linux-64. A Linux dev box cannot build the MSVC package; the pixi-ci win-64
+# leg builds it into local-channel/ before solving (same bootstrap as the gap
+# packages).
 [target.win-64.dependencies]
-ffmpeg = "8.*"
+ffmpeg = { version = "8.*", build = "pj_lgpl_lean*", channel = "./local-channel" }
 sccache = "0.16.*"               # MSVC cache + native GHA backend (see activation.env below)
 
 [tasks]
@@ -108,7 +119,7 @@ CMAKE_CXX_COMPILER_LAUNCHER = "ccache"
 CMAKE_C_COMPILER_LAUNCHER = "sccache"
 CMAKE_CXX_COMPILER_LAUNCHER = "sccache"
 
-# Bootstrap: the default env depends on the 4 gap packages, so local-channel/
+# Bootstrap: the default env depends on the local-channel packages, so it
 # must exist before ANY `pixi run`/`pixi install` (which always solves the
 # default env first). Build it with `pixi exec` — an ephemeral env that ignores
 # the project lockfile entirely — NOT `pixi run`:

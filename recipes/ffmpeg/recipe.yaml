@@ -1,0 +1,121 @@
+schema_version: 1
+
+# FFmpeg — decode-only, LGPL-only build mirroring conanfile.txt's trimmed
+# ffmpeg/* option block: no GPL/nonfree components, no encoders/muxers/
+# devices/filters, file protocol only, hardware decode (VAAPI+libdrm on
+# Linux, D3D11VA/DXVA2 on Windows), dav1d for AV1 software decode.
+# conda-forge's ffmpeg is unsuitable for shipped artifacts on BOTH platforms:
+# the linux lgpl_* variant is license-clean but feature-complete (all LGPL
+# encoders, network protocols), and win-64 has NO lgpl variant at all (gpl_*
+# only). This local package keeps the shipped surface identical to the Conan
+# build on every release platform.
+#
+# Build logic lives in build_ffmpeg.sh (one bash script for both platforms;
+# the win-64 build env gets bash from m2-bash). MSVC specifics — dynamic CRT
+# (-MD), the import-lib install-location fix, MSYS vs mixed path forms — are
+# documented inline there.
+#
+# Two embedded tests gate every rebuild:
+#   1. license_guard.py — ctypes-loads the built avcodec and asserts
+#      avcodec_license() reports LGPL with no --enable-gpl/--enable-nonfree,
+#      and that the .pc files relocated into the installed prefix.
+#   2. test_consumer/ — compiles, links, and RUNS a consumer via the same
+#      pkg_check_modules(IMPORTED_TARGET) path PJ4 uses
+#      (PjScene2DFfmpeg.cmake), and asserts the platform hwaccel backend
+#      (VAAPI / D3D11VA) is compiled in for h264/hevc/av1.
+
+context:
+  version: "8.1"
+
+package:
+  name: ffmpeg
+  version: ${{ version }}
+
+source:
+  url: https://ffmpeg.org/releases/ffmpeg-${{ version }}.tar.xz
+  sha256: b072aed6871998cce9b36e7774033105ca29e33632be5b6347f3206898e0756a
+
+build:
+  number: 0
+  # Distinctive build string: pixi pins build = "pj_lgpl_lean*", which no
+  # conda-forge variant (gpl_*/lgpl_*) can ever satisfy — the solver cannot
+  # silently substitute an upstream build regardless of channel priority.
+  string: pj_lgpl_lean_0
+  script:
+    file: build_ffmpeg.sh
+    interpreter: bash
+
+requirements:
+  build:
+    - ${{ compiler('c') }}
+    # Pins the target glibc sysroot (see recipes/variants.yaml); Windows/MSVC
+    # has no glibc, so the stdlib pin must not apply there.
+    - if: linux
+      then:
+        - ${{ stdlib('c') }}
+        - make
+    # MSYS2 tooling to run ffmpeg's autotools-style configure/make under
+    # MSVC (the same arrangement conda-forge's own ffmpeg feedstock uses).
+    - if: win
+      then:
+        - m2-base
+        - m2-bash
+        - m2-make
+        - m2-sed
+        - m2-grep
+        - m2-coreutils
+    - nasm
+    - pkg-config
+  host:
+    - zlib
+    # 1.2.1 is the last monolithic dav1d package (headers + dav1d.pc + lib);
+    # 1.4+/1.5+ are split into CLI (`dav1d`) + runtime (`libdav1d7`) with no
+    # devel output, so configure can't find them. Same pin conda-forge's own
+    # ffmpeg feedstock builds against. win-64 has this version too.
+    - dav1d 1.2.*
+    # VAAPI hardware decode deps (Linux only; Windows uses the header-only
+    # D3D11VA/DXVA2 SDK backends, which need no host packages).
+    - if: linux
+      then:
+        - libva
+        - libdrm
+
+tests:
+  - script:
+      - python license_guard.py
+    requirements:
+      run:
+        - python
+        - pkg-config
+    files:
+      recipe:
+        - license_guard.py
+  - script:
+      - if: unix
+        then:
+          - cmake -G Ninja -S test_consumer -B build_consumer -DCMAKE_BUILD_TYPE=Release
+          - cmake --build build_consumer
+          - LD_LIBRARY_PATH="$PREFIX/lib" ./build_consumer/consumer
+      - if: win
+        then:
+          - cmake -G Ninja -S test_consumer -B build_consumer -DCMAKE_BUILD_TYPE=Release
+          - cmake --build build_consumer
+          - build_consumer\consumer.exe
+    requirements:
+      run:
+        - ${{ compiler('c') }}
+        - cmake
+        - ninja
+        - pkg-config
+    files:
+      recipe:
+        - test_consumer/CMakeLists.txt
+        - test_consumer/main.c
+
+about:
+  homepage: https://ffmpeg.org
+  license: LGPL-2.1-or-later
+  license_file:
+    - COPYING.LGPLv2.1
+    - LICENSE.md
+  summary: FFmpeg — decode-only LGPL-only build for PJ4 (mirrors conanfile.txt's trimmed option set)

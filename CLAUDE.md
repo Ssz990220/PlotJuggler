@@ -138,7 +138,7 @@ The "wholesale lift" strategy for plot widgets (plan §5.3, §8) means porting f
 - **Qt 6.11.1** (required; pinned by [`versions.env`](./versions.env)). Install via [`./install_qt6.sh`](./install_qt6.sh). See [`docs/QT_NOTES.md`](./docs/QT_NOTES.md) for what changed since 6.8 (new APIs past most training cutoffs, deprecations, build floors).
 - **CMake + Conan**. CMake is the build driver; Conan provides external non-vendored dependencies.
 - **C++20**.
-- **Linux-only** for v1. The code **must stay portable** — no Linux-only APIs or POSIX-specific paths in module code; gate anything platform-specific behind the usual CMake / `#ifdef` guards so a future macOS/Windows build is a build-system problem, not a code problem.
+- **Linux and Windows are both required shipped targets** (Windows was promoted from portability-tracker to release target in July 2026; macOS remains future). Keep the code portable — no Linux-only APIs or POSIX-specific paths in module code; gate anything platform-specific behind the usual CMake / `#ifdef` guards. Licensing note for Windows: conda-forge ships no LGPL FFmpeg for win-64, so pixi-based Windows artifacts must use the local `recipes/ffmpeg` package (the Conan path builds its own LGPL-trimmed FFmpeg on all platforms). Windows runtime packaging (windeployqt + bundling the FFmpeg/Qt DLLs `pj_app` needs) is in-scope, active work — the Conan `windows-ci.yml` still resolves DLLs via `PATH` at test time and remains to be productionized.
 
 ### Vendored third-party
 
@@ -269,7 +269,6 @@ The 3D widget family ships as `pj_scene3D` (built and wired into `pj_app` via `S
 - Hot reload of running extension instances
 - Full backward compatibility with 3.x layout files
 - Recreating the removed prototype app as the final app
-- Windows runtime packaging / deployment (windeployqt + bundling the FFmpeg shared DLLs that `pj_app` transitively requires via `pj_scene2d_core`) — deferred until Windows is a supported release target. Today Windows CI is a non-blocking portability tracker and resolves these DLLs via `PATH` at test time only (see `.github/workflows/windows-ci.yml`).
 
 ## Workflow notes
 

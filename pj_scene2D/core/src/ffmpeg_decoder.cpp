@@ -11,6 +11,7 @@ extern "C" {
 #include <libswscale/swscale.h>
 }
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -161,31 +162,46 @@ bool FfmpegDecoder::open(const AVCodecParameters* params) {
     return false;
   }
 
-  // Try every hardware backend this FFmpeg build exposes, in iteration order,
-  // and keep the first that (a) has a HW decode path for this codec and (b)
-  // opens a device. Iterating av_hwdevice_iterate_types() rather than a fixed
-  // {VAAPI, CUDA} list means the same code transparently covers whatever a given
-  // build/platform offers — VAAPI here, CUDA if FFmpeg is built with it, or
-  // D3D11VA / VideoToolbox on Windows / macOS — with no edits. Checking the
-  // codec's HW config first skips opening devices for backends that can't decode
-  // this stream anyway, and lets a backend that opens but lacks the codec config
-  // yield to the next one instead of dropping straight to software. If none
-  // qualify, hw_device_ctx_ stays null and decoding runs in software.
+  // Pick a hardware backend: first the explicit preference list, then every
+  // remaining backend this FFmpeg build exposes, keeping the first that (a)
+  // has a HW decode path for this codec and (b) opens a device. The generic
+  // av_hwdevice_iterate_types() fallback transparently covers whatever a given
+  // build/platform offers (CUDA, VideoToolbox, …) with no edits — but its enum
+  // order puts DXVA2 before D3D11VA, so a build with both (our win-64 package)
+  // would silently pick the legacy backend; the preference pass fixes that.
+  // Checking the codec's HW config first skips opening devices for backends
+  // that can't decode this stream anyway, and lets a backend that opens but
+  // lacks the codec config yield to the next one instead of dropping straight
+  // to software. If none qualify, hw_device_ctx_ stays null and decoding runs
+  // in software.
   AVHWDeviceType hw_type = AV_HWDEVICE_TYPE_NONE;
   AVPixelFormat hw_pix_fmt = AV_PIX_FMT_NONE;
-  for (AVHWDeviceType type = av_hwdevice_iterate_types(AV_HWDEVICE_TYPE_NONE); type != AV_HWDEVICE_TYPE_NONE;
-       type = av_hwdevice_iterate_types(type)) {
+  const auto try_hw_type = [&](AVHWDeviceType type) {
     const AVPixelFormat pix_fmt = hwPixelFormatFor(codec, type);
     if (pix_fmt == AV_PIX_FMT_NONE) {
-      continue;
+      return false;
     }
     hw_device_ctx_ = tryHwDevice(type);
-    if (hw_device_ctx_ != nullptr) {
-      hw_type = type;
-      hw_pix_fmt = pix_fmt;
-      codec_ctx_->hw_device_ctx = av_buffer_ref(hw_device_ctx_);
+    if (hw_device_ctx_ == nullptr) {
+      return false;
+    }
+    hw_type = type;
+    hw_pix_fmt = pix_fmt;
+    codec_ctx_->hw_device_ctx = av_buffer_ref(hw_device_ctx_);
+    return true;
+  };
+  static constexpr AVHWDeviceType kPreferredHwTypes[] = {AV_HWDEVICE_TYPE_D3D11VA};
+  for (const AVHWDeviceType preferred : kPreferredHwTypes) {
+    if (try_hw_type(preferred)) {
       break;
     }
+  }
+  for (AVHWDeviceType type = av_hwdevice_iterate_types(AV_HWDEVICE_TYPE_NONE);
+       hw_device_ctx_ == nullptr && type != AV_HWDEVICE_TYPE_NONE; type = av_hwdevice_iterate_types(type)) {
+    if (std::find(std::begin(kPreferredHwTypes), std::end(kPreferredHwTypes), type) != std::end(kPreferredHwTypes)) {
+      continue;
+    }
+    try_hw_type(type);
   }
 
   // Pin the chosen HW surface format via get_format so the hardware path is
