@@ -81,9 +81,13 @@ shared `plotjuggler-conan` repository at
 these repository-level GitHub Actions settings before dispatching a build:
 
 - Variable `JFROG_USER`: the username shown by the JFrog profile menu (often the
-  account email address).
+  account email address). An Actions secret with the same name is also accepted
+  for organizations that provision both JFrog values as secrets.
 - Secret `JFROG_TOKEN`: a scoped JFrog identity/access token with read and
   deploy/write access to the repository.
+
+These may be repository- or organization-level settings. Organization-level
+settings must grant `PlotJuggler/PJ4` access.
 
 Trusted push and manual jobs authenticate, install with
 `-r=plotjuggler-conan -r=conancenter`, and publish only missing Conan revisions

@@ -98,13 +98,15 @@ jobs:
         id: conan_remote
         shell: bash
         env:
-          JFROG_USER: ${{ vars.JFROG_USER }}
+          # Prefer the non-sensitive Actions variable, but also support
+          # organizations that provision both JFrog values as secrets.
+          JFROG_USER: ${{ vars.JFROG_USER || secrets.JFROG_USER }}
           JFROG_TOKEN: ${{ secrets.JFROG_TOKEN }}
         run: |
           set -euo pipefail
 
           if [[ -z "$JFROG_USER" || -z "$JFROG_TOKEN" ]]; then
-            echo "::error::Configure the JFROG_USER Actions variable and JFROG_TOKEN Actions secret."
+            echo "::error::Configure JFROG_USER as an Actions variable or secret, and JFROG_TOKEN as an Actions secret."
             exit 1
           fi
 
