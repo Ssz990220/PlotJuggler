@@ -271,6 +271,18 @@ jobs:
           path: .qt/${{ steps.versions.outputs.qt_version }}/msvc2022_64
           key: qt-sdk-${{ steps.versions.outputs.qt_version }}-windows-msvc2022_64-v1
 
+      - name: Restore canonical main Qt cache
+        # Migration fallback for PR refs: the feature-branch qt-sdk cache is
+        # intentionally not visible to refs/pull/*, while the proven cache
+        # published by current main is. Restoring its original path/key avoids
+        # a 380 MB aqt download now. The next push-to-main will save the same
+        # verified SDK under qt-sdk-* for sharing with windows-release.yml.
+        if: steps.qt-sdk-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v5
+        with:
+          path: .qt
+          key: qt-${{ steps.versions.outputs.qt_version }}-windows-msvc2022_64
+
       - name: Verify Qt cache content
         # actions/cache can report cache-hit=true while the restored tree is
         # incomplete (interrupted Save, partial eviction). Without this guard
