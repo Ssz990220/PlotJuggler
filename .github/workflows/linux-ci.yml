@@ -171,12 +171,16 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ~/.conan2
-          key: conan-linux-gcc-relwithdebinfo-${{ steps.conan_cache.outputs.hash }}
+          # v2 prefix (July 2026): bumped to invalidate caches carrying the
+          # pre-#30610 assimp/5.4.3 recipe revision (which still pins draco/1.5.6
+          # and clashes with our new draco/1.5.7 pin). Fold this suffix out once
+          # everyone has moved past the transition.
+          key: conan-linux-gcc-relwithdebinfo-v2-${{ steps.conan_cache.outputs.hash }}
           # Partial reuse when conanfile.txt changes: an older closure for the
           # same OS/compiler still seeds most packages, so only the changed dep
           # (and its dependents) rebuild rather than the whole graph.
           restore-keys: |
-            conan-linux-gcc-relwithdebinfo-
+            conan-linux-gcc-relwithdebinfo-v2-
 
       - name: Cache Qt
         id: qt-cache
@@ -275,7 +279,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ~/.conan2
-          key: conan-linux-gcc-relwithdebinfo-${{ steps.conan_cache.outputs.hash }}
+          key: conan-linux-gcc-relwithdebinfo-v2-${{ steps.conan_cache.outputs.hash }}
 
       - name: ccache stats
         if: success()
@@ -341,9 +345,9 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.conan2
-          key: conan-linux-gcc-relwithdebinfo-${{ steps.conan_cache.outputs.hash }}
+          key: conan-linux-gcc-relwithdebinfo-v2-${{ steps.conan_cache.outputs.hash }}
           restore-keys: |
-            conan-linux-gcc-relwithdebinfo-
+            conan-linux-gcc-relwithdebinfo-v2-
 
       - name: Cache Qt
         id: qt-cache
