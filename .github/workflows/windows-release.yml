@@ -329,7 +329,10 @@ jobs:
             -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded \
             "${launcher_args[@]}"
 
-          cmake --build build --config RelWithDebInfo --parallel
+          # This release only packages the application. Building the default ALL
+          # target also compiles the repository's test executables, which are not
+          # consumed by the installer and needlessly delays the registry smoke test.
+          cmake --build build --config RelWithDebInfo --target pj_app --parallel
 
           if [[ "$SCCACHE_AVAILABLE" == "true" ]]; then
             sccache --show-stats
