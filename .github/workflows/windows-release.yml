@@ -10,7 +10,7 @@ name: Release Windows Installer
 #
 # Cache/repository layers shared with windows-ci.yml:
 #   - Qt kit via actions/cache
-#   - sccache via actions/cache (585 TU compiler cache)
+#   - compiler objects via sccache's native GitHub Actions backend
 #   - Conan packages via PlotJuggler's JFrog repository, then ConanCenter
 #
 # Triggers:
@@ -39,14 +39,11 @@ jobs:
     timeout-minutes: 180
 
     env:
-      # Pin sccache's object cache to a known path so actions/cache can persist
-      # it across runs (see the "Restore/Save sccache cache" steps). Without a
-      # persisted cache, sccache's local disk starts empty every run — a 0% hit
-      # rate that forces all ~585 translation units to recompile cold (~30 min).
-      # SCCACHE_CACHE_SIZE bounds the dir so the cached artifact stays well under
-      # the Actions-cache budget shared with the Qt cache.
-      SCCACHE_DIR: ${{ github.workspace }}/.sccache
-      SCCACHE_CACHE_SIZE: "2G"
+      # Use sccache's object-level GitHub backend instead of archiving a new
+      # multi-hundred-MB local cache for every commit. The shared namespace lets
+      # Windows CI, release, and Pixi reuse identical MSVC compilation results.
+      SCCACHE_GHA_ENABLED: "on"
+      SCCACHE_GHA_VERSION: "pj4-windows-msvc-relwithdebinfo-v1"
 
     steps:
       - name: Use HTTPS for github.com submodules
@@ -140,37 +137,60 @@ jobs:
           }
           $lines + "core.sources:download_cache=$cacheDir" | Set-Content $conf
 
-      # ─────────────────────────── Qt cache: restore/install/save ───────────────────────────
+      # ─────────────────────────── Qt caches: restore/install/save ───────────────────────────
 
-      - name: Restore Qt cache
-        id: qt-cache
+      - name: Restore Qt SDK cache
+        id: qt-sdk-cache
         uses: actions/cache/restore@v5
         with:
-          path: .qt
-          key: qt-${{ env.PJ_QT_VERSION }}-windows-msvc2022_64-ifw
+          # Keep this path and key identical to windows-ci.yml so both workflows
+          # share one Qt SDK blob. IFW is release-only and cached separately.
+          path: .qt/${{ env.PJ_QT_VERSION }}/msvc2022_64
+          key: qt-sdk-${{ env.PJ_QT_VERSION }}-windows-msvc2022_64-v1
 
-      - name: Verify Qt cache content
-        # actions/cache can report cache-hit=true while the restored tree is
-        # incomplete. Probe qmake.exe AND binarycreator.exe (this workflow needs
-        # both) and force a reinstall on miss.
-        id: qt-verify
+      - name: Restore Qt Installer Framework cache
+        id: qt-ifw-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: .qt/Tools/QtInstallerFramework/4.7
+          key: qt-ifw-4.7-windows-v1
+
+      - name: Verify Qt SDK cache content
+        # Cache metadata can report a hit for an incomplete tree. Probe the
+        # executable consumed by CMake and reinstall if it is missing.
+        id: qt-sdk-verify
         shell: bash
         run: |
-          if [[ -x ".qt/${PJ_QT_VERSION}/msvc2022_64/bin/qmake.exe" ]] && \
-             [[ -x ".qt/Tools/QtInstallerFramework/4.7/bin/binarycreator.exe" ]]; then
+          if [[ -x ".qt/${PJ_QT_VERSION}/msvc2022_64/bin/qmake.exe" ]]; then
             echo "valid=true" >> "$GITHUB_OUTPUT"
           else
             echo "valid=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Install Qt (msvc) + Installer Framework via aqt
-        if: steps.qt-cache.outputs.cache-hit != 'true' || steps.qt-verify.outputs.valid != 'true'
+      - name: Verify Qt Installer Framework cache content
+        id: qt-ifw-verify
+        shell: bash
+        run: |
+          if [[ -x ".qt/Tools/QtInstallerFramework/4.7/bin/binarycreator.exe" ]]; then
+            echo "valid=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "valid=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install aqt
+        if: steps.qt-sdk-verify.outputs.valid != 'true' || steps.qt-ifw-verify.outputs.valid != 'true'
         shell: bash
         run: |
           # Released aqt can't fetch the current Windows Qt layout yet
           # (miurahr/aqtinstall#959/#1007); pin to the merged fix commit — same as
-          # windows-ci.yml. Retry for transient mirror failures.
+          # windows-ci.yml.
           pip install "git+https://github.com/miurahr/aqtinstall.git@8c3695d4a4e1ceabf6a74dc6c79681656dc6b74b"
+
+      - name: Install Qt SDK via aqt
+        if: steps.qt-sdk-verify.outputs.valid != 'true'
+        shell: bash
+        run: |
+          rm -rf ".qt/${PJ_QT_VERSION}/msvc2022_64"
           attempt=0
           until aqt install-qt windows desktop "${PJ_QT_VERSION}" win64_msvc2022_64 --outputdir ./.qt; do
             attempt=$((attempt + 1))
@@ -178,39 +198,39 @@ jobs:
             echo "aqt attempt ${attempt} failed; retrying in $((attempt * 15))s..."
             sleep $((attempt * 15))
           done
-          # binarycreator for the installer step.
+
+      - name: Install Qt Installer Framework via aqt
+        if: steps.qt-ifw-verify.outputs.valid != 'true'
+        shell: bash
+        run: |
+          rm -rf .qt/Tools/QtInstallerFramework/4.7
           aqt install-tool --outputdir ./.qt windows desktop tools_ifw
 
-      - name: Save Qt cache
-        # Immutable, version-keyed blob: saved once per Qt version. Save on any
-        # completed install (dispatch or tag build).
-        if: steps.qt-cache.outputs.cache-hit != 'true' || steps.qt-verify.outputs.valid != 'true'
+      - name: Save Qt SDK cache
+        if: steps.qt-sdk-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
         with:
-          path: .qt
-          key: qt-${{ env.PJ_QT_VERSION }}-windows-msvc2022_64-ifw
+          path: .qt/${{ env.PJ_QT_VERSION }}/msvc2022_64
+          key: qt-sdk-${{ env.PJ_QT_VERSION }}-windows-msvc2022_64-v1
 
-      # ─────────────────────────── sccache: restore ───────────────────────────
+      - name: Save Qt Installer Framework cache
+        if: steps.qt-ifw-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: .qt/Tools/QtInstallerFramework/4.7
+          key: qt-ifw-4.7-windows-v1
+
+      # ─────────────────────────── Compiler cache ───────────────────────────
 
       - name: Install sccache
         # sccache is a compile-cache speedup, NOT load-bearing: the build is
-        # correct without it, just slower. So this step must never fail the run.
+        # correct without it, just slower. v0.16 supports GitHub's current cache
+        # service; the action exports its short-lived runtime credentials.
         id: setup_sccache
         continue-on-error: true
-        uses: mozilla-actions/sccache-action@v0.0.9
+        uses: mozilla-actions/sccache-action@v0.0.10
         with:
-          version: "v0.8.2"
-
-      - name: Restore sccache cache
-        # Rolling per-SHA key + prefix restore-keys: each run restores the most
-        # recent cache and the Save step persists a fresh superset.
-        id: sccache-cache
-        uses: actions/cache/restore@v5
-        with:
-          path: ${{ github.workspace }}/.sccache
-          key: sccache-windows-msvc-relwithdebinfo-${{ github.sha }}
-          restore-keys: |
-            sccache-windows-msvc-relwithdebinfo-
+          version: "v0.16.0"
 
       # ─────────────────────────── Build ───────────────────────────
 
@@ -276,7 +296,6 @@ jobs:
 
           if [[ "$SCCACHE_AVAILABLE" == "true" ]]; then
             sccache --show-stats
-            sccache --stop-server || true
           fi
 
       - name: Build the installer
@@ -306,15 +325,3 @@ jobs:
           files: dist/*.PlotJuggler-*-Windows-x64.*.exe
           generate_release_notes: true
           fail_on_unmatched_files: true
-
-      # ─────────────────────────── Compiler cache: save ───────────────────────────
-
-      - name: Save sccache cache
-        # Persist the now-warm compiler cache for the next run. always() so a
-        # partial cache from a failed compile is still saved; cache-hit guard
-        # skips the no-op save when this exact SHA's cache already exists.
-        if: always() && steps.sccache-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
-        with:
-          path: ${{ github.workspace }}/.sccache
-          key: sccache-windows-msvc-relwithdebinfo-${{ github.sha }}

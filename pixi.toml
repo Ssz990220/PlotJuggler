@@ -76,7 +76,7 @@ ffmpeg = { version = "8.*", build = "lgpl_*" }
 # a shipped Windows artifact. Linux keeps the LGPL-clean pin above.
 [target.win-64.dependencies]
 ffmpeg = "8.*"
-sccache = "*"                    # MSVC compiler-cache launcher (see activation.env below)
+sccache = "0.16.*"               # MSVC cache + native GHA backend (see activation.env below)
 
 [tasks]
 # CMAKE_PREFIX_PATH lists both the env root and its Library subtree: on Windows
@@ -102,9 +102,8 @@ CMAKE_C_COMPILER_LAUNCHER = "ccache"
 CMAKE_CXX_COMPILER_LAUNCHER = "ccache"
 
 # sccache is the MSVC-compatible compiler cache — ccache's cl.exe support is
-# unreliable, especially with Ninja + PDB debug info. Both launchers' disk
-# caches persist across CI runs via actions/cache in pixi-ci.yml (CCACHE_DIR /
-# SCCACHE_DIR set there); a local dev run just gets an unbounded local cache.
+# unreliable, especially with Ninja + PDB debug info. GitHub Actions enables
+# sccache's shared native backend; a local dev run uses its normal local cache.
 [target.win-64.activation.env]
 CMAKE_C_COMPILER_LAUNCHER = "sccache"
 CMAKE_CXX_COMPILER_LAUNCHER = "sccache"

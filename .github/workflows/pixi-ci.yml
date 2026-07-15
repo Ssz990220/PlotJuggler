@@ -40,14 +40,11 @@ jobs:
     # 6-hour GitHub default so a hang is caught by the job, not the runner.
     timeout-minutes: 120
 
-    # Explicit, workspace-relative cache locations (rather than relying on
-    # per-OS rattler/ccache/sccache defaults) so the actions/cache steps below
-    # can target them precisely on both linux-64 and win-64. Each var is a
-    # no-op on the OS that doesn't use it (e.g. SCCACHE_DIR is inert on Linux).
+    # Explicit cache locations for package downloads and Linux ccache. Windows
+    # sccache uses the same native GitHub backend as the Conan workflows below.
     env:
       PIXI_CACHE_DIR: ${{ github.workspace }}/.pixi_cache
       CCACHE_DIR: ${{ github.workspace }}/.ccache
-      SCCACHE_DIR: ${{ github.workspace }}/.sccache
 
     steps:
       - name: Use HTTPS for github.com submodules
@@ -78,7 +75,7 @@ jobs:
       # rattler-build invocation below (same PIXI_CACHE_DIR, same toolchain
       # packages: compiler, cmake, ninja, git).
       - name: Cache pixi package downloads
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ env.PIXI_CACHE_DIR }}
           key: pixi-pkgs-${{ matrix.name }}-${{ hashFiles('pixi.toml', 'recipes/**') }}
@@ -123,22 +120,35 @@ jobs:
         shell: bash
         run: sed -i 's/platforms = \["linux-64"\]/platforms = ["win-64"]/' pixi.toml
 
-      # Persists the ccache (linux-64) / sccache (win-64) object cache across
-      # runs — without this, CMAKE_*_COMPILER_LAUNCHER only helps within a
-      # single ephemeral runner and every run compiles PJ4 from scratch. Keyed
-      # on the commit so every run seeds a fresh save point; restore-keys falls
-      # back to the most recent available cache on a miss (the standard
-      # ccache/sccache-on-CI pattern — compiler caches are content-addressed
-      # internally, so an imperfect key match still yields a high hit rate).
-      - name: Cache compiler cache (ccache / sccache)
-        uses: actions/cache@v4
+      - name: Install sccache (Windows)
+        if: runner.os == 'Windows'
+        id: setup_sccache
+        continue-on-error: true
+        uses: mozilla-actions/sccache-action@v0.0.10
         with:
-          path: |
-            ${{ env.CCACHE_DIR }}
-            ${{ env.SCCACHE_DIR }}
-          key: compiler-cache-${{ matrix.name }}-${{ github.sha }}
+          version: "v0.16.0"
+
+      - name: Enable native GitHub sccache backend (Windows)
+        # setup-sccache exports the short-lived Actions cache credentials. If
+        # installation flakes, leave these unset: Pixi's own sccache then uses
+        # an ephemeral local cache and the build remains correct.
+        if: runner.os == 'Windows' && steps.setup_sccache.outcome == 'success'
+        shell: bash
+        run: |
+          echo "SCCACHE_GHA_ENABLED=on" >> "$GITHUB_ENV"
+          echo "SCCACHE_GHA_VERSION=pj4-windows-msvc-relwithdebinfo-v1" >> "$GITHUB_ENV"
+
+      # Linux keeps its compact ccache archive. Windows no longer creates a
+      # second per-commit sccache archive; its object cache is shared with
+      # windows-ci.yml and windows-release.yml through sccache itself.
+      - name: Cache compiler objects (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ matrix.name }}-${{ github.sha }}
           restore-keys: |
-            compiler-cache-${{ matrix.name }}-
+            ccache-${{ matrix.name }}-
 
       - name: Build PJ4
         shell: bash

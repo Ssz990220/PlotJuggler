@@ -39,14 +39,11 @@ jobs:
       contents: read
 
     env:
-      # Pin sccache's object cache to a known path so actions/cache can persist
-      # it across runs (see the "Restore/Save sccache cache" steps). Without a
-      # persisted cache, sccache's local disk starts empty every run — a 0% hit
-      # rate that forces all ~585 translation units to recompile cold (~30 min).
-      # SCCACHE_CACHE_SIZE bounds the dir so the cached artifact stays well under
-      # the Actions-cache budget shared with the Qt cache.
-      SCCACHE_DIR: ${{ github.workspace }}/.sccache
-      SCCACHE_CACHE_SIZE: "2G"
+      # Share object-level MSVC results with the release and Pixi workflows.
+      # Unlike a per-commit actions/cache archive, the native backend stores and
+      # retrieves individual compilation results without rolling 800+ MB blobs.
+      SCCACHE_GHA_ENABLED: "on"
+      SCCACHE_GHA_VERSION: "pj4-windows-msvc-relwithdebinfo-v1"
 
     steps:
       - name: Use HTTPS for github.com submodules
@@ -151,17 +148,19 @@ jobs:
           # visible at a glance.
           Get-Content $conf
 
-      - name: Restore Qt cache
+      - name: Restore Qt SDK cache
         # Split restore/save (not actions/cache) so the entry is written by an
         # explicit step right after the install instead of a post-job save:
         # push-to-main only, to keep this multi-hundred-MB blob from being
         # duplicated across PR refs (shared 10 GB budget), and never capturing
         # a tree mutated by later steps.
-        id: qt-cache
+        id: qt-sdk-cache
         uses: actions/cache/restore@v5
         with:
-          path: .qt
-          key: qt-${{ steps.versions.outputs.qt_version }}-windows-msvc2022_64
+          # Must match windows-release.yml exactly: cache versions include the
+          # path as well as the key.
+          path: .qt/${{ steps.versions.outputs.qt_version }}/msvc2022_64
+          key: qt-sdk-${{ steps.versions.outputs.qt_version }}-windows-msvc2022_64-v1
 
       - name: Verify Qt cache content
         # actions/cache can report cache-hit=true while the restored tree is
@@ -169,7 +168,7 @@ jobs:
         # the next step skips aqtinstall and the Configure step then fails with
         # "Qt not found at $QT_DIR". Probe qmake.exe (the artifact the
         # rest of the pipeline actually needs) and force a reinstall on miss.
-        id: qt-verify
+        id: qt-sdk-verify
         shell: bash
         run: |
           if [[ -x ".qt/${PJ_QT_VERSION}/msvc2022_64/bin/qmake.exe" ]]; then
@@ -181,7 +180,7 @@ jobs:
       - name: Install Qt via aqt
         # Inline (not install_qt6.sh): that script is Linux-only (gcc_64); this
         # job needs the win64_msvc2022_64 build. The version comes from versions.env.
-        if: steps.qt-cache.outputs.cache-hit != 'true' || steps.qt-verify.outputs.valid != 'true'
+        if: steps.qt-sdk-verify.outputs.valid != 'true'
         shell: bash
         run: |
           # Released aqt (<=3.3.0) can't install the pinned Qt on Windows: Qt moved
@@ -192,6 +191,7 @@ jobs:
           # TODO: revert to `pip install 'aqtinstall>=3.3.1'` once it ships.
           pip install "git+https://github.com/miurahr/aqtinstall.git@8c3695d4a4e1ceabf6a74dc6c79681656dc6b74b"
           # Retry with backoff for transient mirror failures.
+          rm -rf ".qt/${PJ_QT_VERSION}/msvc2022_64"
           attempt=0
           until aqt install-qt windows desktop "${PJ_QT_VERSION}" win64_msvc2022_64 --outputdir ./.qt; do
             attempt=$((attempt + 1))
@@ -200,43 +200,26 @@ jobs:
             sleep $((attempt * 15))
           done
 
-      - name: Save Qt cache
+      - name: Save Qt SDK cache
         # Immutable, version-keyed blob: saved once per Qt version, from a
         # push-to-main run (see the restore step's comment for why not per-PR).
-        if: github.event_name == 'push' && steps.qt-cache.outputs.cache-hit != 'true'
+        if: github.event_name == 'push' && steps.qt-sdk-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
         with:
-          path: .qt
-          key: qt-6.11.1-windows-msvc2022_64
+          path: .qt/${{ steps.versions.outputs.qt_version }}/msvc2022_64
+          key: qt-sdk-${{ steps.versions.outputs.qt_version }}-windows-msvc2022_64-v1
 
       - name: Install sccache
         # sccache is a compile-cache speedup, NOT load-bearing: the build is
         # correct without it, just slower. So this step must never fail the run.
-        # `version` is pinned because the default `latest` does a GitHub API
-        # release lookup that intermittently returns undefined ("Unable to
-        # locate executable file: undefined") and was red-X'ing this job — and
-        # main's — for builds that have nothing to do with sccache.
-        # continue-on-error + the outcome gate in Build make this optional.
+        # v0.16 supports GitHub's current cache service; the action exports its
+        # short-lived runtime credentials. The outcome gate in Build keeps this
+        # optional if installation itself flakes.
         id: setup_sccache
         continue-on-error: true
-        uses: mozilla-actions/sccache-action@v0.0.9
+        uses: mozilla-actions/sccache-action@v0.0.10
         with:
-          version: "v0.8.2"
-
-      - name: Restore sccache cache
-        # The decisive Windows-CI speedup. With a warm cache, almost all ~585
-        # translation units become cache fetches instead of cold MSVC compiles,
-        # cutting the Build step from ~30 min to a few minutes. Rolling key
-        # (per-SHA) + prefix restore-keys: each run restores the most recent
-        # cache and the Save step persists a fresh superset, so the warm set
-        # accumulates run over run and across PR synchronize events.
-        id: sccache-cache
-        uses: actions/cache/restore@v5
-        with:
-          path: ${{ github.workspace }}/.sccache
-          key: sccache-windows-msvc-relwithdebinfo-${{ github.sha }}
-          restore-keys: |
-            sccache-windows-msvc-relwithdebinfo-
+          version: "v0.16.0"
 
       - name: Conan install
         # Search PlotJuggler's shared JFrog package store first, then use public
@@ -286,17 +269,6 @@ jobs:
       - name: Build
         shell: bash
         env:
-          # sccache uses its LOCAL-DISK cache (relocated to SCCACHE_DIR at job
-          # level) which the "Restore/Save sccache cache" steps persist across
-          # runs via actions/cache. We intentionally do NOT set
-          # SCCACHE_GHA_ENABLED: sccache 0.8.2's native GHA backend needs
-          # ACTIONS_CACHE_URL, a legacy runner env var GitHub retired in favor
-          # of the v2 cache service, so enabling it makes the sccache server
-          # fail to start ("ACTIONS_CACHE_URL not found") and every compile dies
-          # with exit 2. Persisting the local-disk dir ourselves sidesteps that
-          # while still giving cross-run compiler caching (Conan third-party
-          # binaries are served independently by Artifactory).
-          #
           # "true" only if the install step actually succeeded; gates the
           # compiler-launcher wiring below so a flaked sccache install degrades
           # to an uncached (but correct) build instead of failing.
@@ -351,23 +323,7 @@ jobs:
           # appear in the Build step's log next to the compile output.
           if [[ "$SCCACHE_AVAILABLE" == "true" ]]; then
             sccache --show-stats
-            # Flush the on-disk cache and release file handles so the
-            # "Save sccache cache" step archives a complete, consistent dir.
-            sccache --stop-server || true
           fi
-
-      - name: Save sccache cache
-        # Persist the now-warm compiler cache for the next run. always() so a
-        # partial cache from a failed compile is still saved (a continue-on-error
-        # job means the build may not succeed); the cache-hit guard skips the
-        # no-op save when this exact SHA's cache already exists (keys are
-        # immutable). On a prefix-only restore (the normal synchronize case)
-        # cache-hit is false, so a fresh superset is saved.
-        if: always() && steps.sccache-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
-        with:
-          path: ${{ github.workspace }}/.sccache
-          key: sccache-windows-msvc-relwithdebinfo-${{ github.sha }}
 
       - name: Test
         # Prepend Qt's and FFmpeg's bin/ dirs to PATH so the OS loader can resolve
