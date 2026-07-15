@@ -81,8 +81,12 @@ class MarketplaceWindow : public Dialog {
   // Connects registry, extension-manager, and widget signals.
   void setupSignals();
 
-  // Rebuilds extension cards from the current filtered list.
-  void populateCards();
+  // Rebuilds every extension card from filtered_. preserve_scroll keeps the
+  // vertical scroll offset across the teardown/rebuild (true for install/update/
+  // uninstall repaints, so the list doesn't jump to the top mid-session); pass
+  // false when the card set changes meaning — filter/search/registry reload —
+  // where returning to the top is the expected behaviour.
+  void populateCards(bool preserve_scroll = true);
 
   // Applies search and category filters to the registry list.
   void applyFilters();

@@ -16,8 +16,10 @@
 #include <QMouseEvent>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScrollBar>
 #include <QSettings>
 #include <QStyle>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QWindow>
 #include <algorithm>
@@ -313,7 +315,13 @@ void MarketplaceWindow::setupSignals() {
 
 // ─── Cards Population ─────────────────────────────────────────────────────────
 
-void MarketplaceWindow::populateCards() {
+void MarketplaceWindow::populateCards(bool preserve_scroll) {
+  // The rebuild below destroys every card, so the scroll offset is captured now
+  // and reapplied after the new cards are laid out. Restoring synchronously would
+  // clamp against a stale (empty) range, so it is deferred to the next event-loop
+  // turn once the scroll area has recomputed its range from the rebuilt content.
+  const int saved_scroll = ui_->scroll_area_->verticalScrollBar()->value();
+
   while (ui_->cards_layout_->count() > 1) {
     delete ui_->cards_layout_->takeAt(0)->widget();
   }
@@ -437,6 +445,11 @@ void MarketplaceWindow::populateCards() {
   }
 
   ui_->update_all_btn_->setEnabled(has_updatable && update_queue_.isEmpty());
+
+  if (preserve_scroll) {
+    QTimer::singleShot(
+        0, this, [this, saved_scroll]() { ui_->scroll_area_->verticalScrollBar()->setValue(saved_scroll); });
+  }
 }
 
 // ─── Event Filter (double-click on card) ─────────────────────────────────────
@@ -512,7 +525,7 @@ void MarketplaceWindow::applyFilters() {
     filtered_.append(ext);
   }
 
-  populateCards();
+  populateCards(/*preserve_scroll=*/false);
   setStatus(QString::number(filtered_.size()) + " of " + QString::number(extensions_.size()) + " extensions shown");
 }
 
