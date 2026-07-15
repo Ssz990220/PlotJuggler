@@ -4,11 +4,9 @@ name: Release Windows Installer
 # and, on a version tag, attaches it to the GitHub Release. The Windows sibling of
 # release.yml (which does the Linux AppImage).
 #
-# A clean runner (single MSVC toolset, empty Conan cache) is also what makes the
-# plugin builds succeed here: the toolset/cache link failures seen on developer
-# machines (date-tz / ixwebsocket "unresolved external __std_*", stale /EHsc caches)
-# do not happen on a fresh image. The installer recipe treats a plugin that still
-# fails to build as non-fatal, so the rest still ship.
+# Official plugins are built and published independently. This workflow resolves
+# the curated Windows set from pj-plugin-registry, verifies every artifact, and
+# proves every DLL loads in the staged app before creating the installer.
 #
 # Cache: ports the three cache layers from windows-ci.yml so the build is not
 # cold every dispatch.
@@ -36,12 +34,11 @@ concurrency:
 
 jobs:
   windows-installer:
-    # Pinned to windows-2022 (see windows-ci.yml): the VS18/MSVC 14.5x image breaks
-    # the libsodium/1.0.20 Conan recipe that some plugins pull in.
+    # Match windows-ci.yml and the toolchain used for the published plugin artifacts.
     runs-on: windows-2022
-    # Backstop against hangs — same rationale as windows-ci.yml, with margin for
-    # the extra installer-side ported-plugin builds after the app compile.
-    timeout-minutes: 360
+    # Backstop against hangs — app build plus registry download/validation/packaging.
+    # Plugins are not compiled here.
+    timeout-minutes: 180
 
     env:
       # Pin sccache's object cache to a known path so actions/cache can persist
@@ -339,41 +336,16 @@ jobs:
             sccache --stop-server || true
           fi
 
-      - name: Check out pj-official-plugins (ported plugins source)
-        # The script's default -PortedPluginsDir is <repo>\plotjuggler_sdk\pj_ported_plugins
-        # (an internal workspace convention). In the client CI the plugins live in a
-        # separate repo, so we clone it as a sibling and hand the path in below.
-        uses: actions/checkout@v4
-        with:
-          repository: PlotJuggler/pj-official-plugins
-          path: pj-official-plugins
-          submodules: recursive
-
-      - name: Publish plotjuggler_sdk to the local Conan cache from the submodule
-        # Each ported plugin's conanfile requires plotjuggler_sdk/${SDK_VERSION}
-        # (0.17.0 as of the current pin). Rather than depend on a Conan remote
-        # (Conan Center only has 0.16.0 and cloudsmith needs credentials), we
-        # build the SDK from source right here: the plotjuggler_sdk submodule is
-        # already checked out at the tagged commit that CMake stamps as the
-        # required version. `conan create` publishes it to the local cache with
-        # that exact version, so the per-plugin `conan install` below resolves
-        # it locally without touching any remote.
-        shell: bash
-        run: |
-          conan create plotjuggler_sdk \
-            --profile:host default --profile:build default \
-            -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
-            --build=missing
-
       - name: Build the installer
-        # The recipe builds the ported plugins (from source), stages the exe + Qt +
-        # FFmpeg + CPython + plugins, and runs binarycreator. It auto-detects Qt/IFW
-        # under .qt, activates MSVC, and locates ninja.
+        # The recipe stages the app, downloads the curated published plugins from
+        # the registry, verifies checksums + manifests, loads every whitelisted DLL
+        # through the real host runtime, then runs binarycreator. Any plugin failure
+        # fails the release; there are no best-effort skips.
         shell: pwsh
         run: |
           .\installer\build_windows_installer.ps1 `
             -QtDir ".qt\$env:PJ_QT_VERSION\msvc2022_64" `
-            -PortedPluginsDir "$env:GITHUB_WORKSPACE\pj-official-plugins" `
+            -PluginRegistryUrl "https://raw.githubusercontent.com/PlotJuggler/pj-plugin-registry/refs/heads/development/registry.json" `
             -Version $env:PJ_VERSION `
             -OutDir dist
 
@@ -381,14 +353,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: PlotJuggler-${{ env.PJ_VERSION }}-Windows-x64
-          path: dist/PlotJuggler-*-Windows-x64.exe
+          path: dist/*.PlotJuggler-*-Windows-x64.*.exe
           if-no-files-found: error
 
       - name: Attach installer to the GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v3
         with:
-          files: dist/PlotJuggler-*-Windows-x64.exe
+          files: dist/*.PlotJuggler-*-Windows-x64.*.exe
           generate_release_notes: true
           fail_on_unmatched_files: true
 

@@ -11,15 +11,17 @@
 
     1. locate the built pj_app.exe under -BuildDir
     2. stage it under <stage>/packages/io.plotjuggler.application/data/bin/PlotJuggler4.exe
-    3. build the ported plugins from source (unless -SkipPlugins) with conan+cmake
-       natively — no Git Bash — then bundle their *_plugin.dll into
-       data/lib/plotjuggler/plugins (the AppImage flow)
+    3. resolve the curated plugin ids from pj-plugin-registry (unless
+       -SkipPlugins), verify each published ZIP's SHA-256, and unpack it into
+       data/lib/plotjuggler/plugins
     4. windeployqt the exe AND every bundled plugin DLL — matches PJ3 (a plugin can
        pull Qt modules the main exe does not)
     5. copy the FFmpeg + CPython + other Conan-shared runtime DLLs from the
        Conan cache that produced the build (constrained to package bin dirs)
-    6. render config.xml / package.xml from templates into the stage tree
-    7. binarycreator --offline-only -> <YYYY.MM.DD>.PlotJuggler-<Version>-Windows-x64.<main-commit>.exe
+    6. load every whitelisted plugin through the staged app and require an exact
+       id/version match with no loader errors
+    7. render config.xml / package.xml from templates into the stage tree
+    8. binarycreator --offline-only -> <YYYY.MM.DD>.PlotJuggler-<Version>-Windows-x64.<main-commit>.exe
 
   This does NOT build the app (only, optionally, the plugins). Run it AFTER a
   Windows build of the app, e.g.
@@ -41,17 +43,19 @@
   auto-detected under C:\Qt\Tools\QtInstallerFramework\*\bin.
 
 .PARAMETER SkipPlugins
-  Skip building/bundling plugins for a fast core-only installer. By default the
-  script BUILDS the ported plugins from source (the AppImage flow) and bundles the
-  resulting *_plugin.dll — reproducible on any machine, no pre-built dir needed.
+  Skip downloading/bundling plugins for a fast core-only installer.
 
-.PARAMETER PortedPluginsDir
-  Location of the ported-plugins tree (each plugin is a subdir with a conanfile.py).
-  Defaults to <repo>\plotjuggler_sdk\pj_ported_plugins.
+.PARAMETER PluginRegistryUrl
+  Registry JSON URL (or local JSON path) used to resolve published plugin
+  artifacts. Defaults to the development registry used by the marketplace.
 
-.PARAMETER PluginList
-  Plugins to build (default: the curated set). Each name must be a plugin subdir of
-  -PortedPluginsDir. A plugin that fails to build is skipped (not fatal); the rest ship.
+.PARAMETER PluginIds
+  Registry extension ids to bundle. Every requested id must have a valid artifact
+  for -PluginPlatform; a missing entry, failed download, bad checksum, or malformed
+  archive fails the installer build.
+
+.PARAMETER PluginPlatform
+  Registry platform key. The x64 Windows installer uses windows-x86_64.
 
 .PARAMETER ConanHome
   Conan 2 cache root (default: %USERPROFILE%\.conan2). Source of the FFmpeg /
@@ -74,25 +78,23 @@
     - Qt 6.11.1 msvc2022_64 (windeployqt.exe) -- auto-found in .qt when present
     - Qt Installer Framework tools (binarycreator.exe) -- install via the Qt
       Maintenance Tool, or:  aqt install-tool --outputdir .qt windows desktop tools_ifw
-    - Conan + CMake on PATH -- builds the ported plugins natively (unless
-      -SkipPlugins); no Git Bash needed. The MSVC x64 toolchain (cl.exe) is
-      auto-activated via vswhere/vcvarsall if not already in a VS dev prompt, and
-      Ninja is auto-located (PATH / Conan cache / Python Scripts; pip install ninja
-      if absent). Needs Visual Studio with the C++ x64 workload.
     - A populated Conan cache from the PJ4 build (FFmpeg + CPython DLLs)
+    - Network access to the plugin registry and its published artifacts (unless
+      -SkipPlugins or -PluginRegistryUrl points to a local registry mirror)
 #>
 param(
   [string]$BuildDir   = "build",
   [string]$QtDir      = "",
   [string]$IfwDir     = "",
   [switch]$SkipPlugins,
-  [string]$PortedPluginsDir = "",
-  [string[]]$PluginList = @(
-    "data_load_mcap", "data_load_csv", "data_load_parquet", "data_load_ulog",
-    "data_stream_dummy", "data_stream_foxglove_bridge", "data_stream_pj_bridge",
-    "parser_ros", "parser_protobuf", "parser_json",
-    "toolbox_mosaico", "toolbox_quaternion", "toolbox_transform_editor"
+  [string]$PluginRegistryUrl = "https://raw.githubusercontent.com/PlotJuggler/pj-plugin-registry/refs/heads/development/registry.json",
+  [string[]]$PluginIds = @(
+    "mcap-loader", "csv-loader", "parquet-loader", "ulog-loader",
+    "dummy-streamer", "foxglove-bridge", "plotjuggler-bridge",
+    "ros-parser", "protobuf-parser", "json-parser",
+    "toolbox-quaternion", "toolbox-transform-editor"
   ),
+  [string]$PluginPlatform = "windows-x86_64",
   [string]$ConanHome  = "$env:USERPROFILE\.conan2",
   [string]$Version    = "",
   [string]$OutDir     = ".",
@@ -202,132 +204,148 @@ $stagedExe = Join-Path $stageBin "PlotJuggler4.exe"
 Copy-Item $appExe.FullName $stagedExe
 Info "staged bin\PlotJuggler4.exe"
 
-# Ensure the MSVC x64 toolchain (cl.exe) is on PATH. The Conan profile builds with
-# compiler=msvc and the Ninja generator invokes cl directly, so cl must resolve. If
-# we are not already in a VS dev prompt, locate VS via vswhere and import
-# `vcvarsall.bat x64` into this process — the same thing CI's msvc-dev-cmd does — so
-# the recipe works from a plain PowerShell too, not only an x64 Native Tools prompt.
-function Enter-MsvcEnv {
-  if (Get-Command cl -ErrorAction SilentlyContinue) { Info "cl.exe already on PATH"; return }
-  $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
-  if (-not (Test-Path $vswhere)) {
-    Die "cl.exe not on PATH and vswhere.exe not found. Run from an 'x64 Native Tools Command Prompt for VS', or install the Visual Studio C++ tools."
+# --- download published plugins from pj-plugin-registry ---------------------------
+# Plugin release ZIPs are the same marketplace artifacts the Linux AppImage bundles.
+# They carry the plugin DLL + embedded-manifest sidecar and statically link their
+# non-Qt dependencies, so the installer only needs to verify and unpack them.
+function Read-PluginRegistry([string]$source) {
+  try {
+    if ($source -match '^[a-zA-Z][a-zA-Z0-9+.-]*://') {
+      $remoteRegistry = Invoke-RestMethod -Uri $source
+      return $remoteRegistry
+    }
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+      Die "plugin registry not found: $source"
+    }
+    $localRegistry = Get-Content -LiteralPath $source -Raw | ConvertFrom-Json
+    return $localRegistry
+  } catch {
+    Die "failed to read plugin registry '$source': $_"
   }
-  $vsPath = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-                        -property installationPath 2>$null | Select-Object -First 1)
-  if (-not $vsPath) { Die "No Visual Studio with the C++ x64 toolset found via vswhere. Install the 'Desktop development with C++' workload, or run from an x64 Native Tools prompt." }
-  $vcvars = Join-Path $vsPath "VC\Auxiliary\Build\vcvarsall.bat"
-  if (-not (Test-Path $vcvars)) { Die "vcvarsall.bat not found under $vsPath." }
-  Info "activating MSVC x64 via $vcvars"
-  # Run vcvarsall then dump `set`; import each var into this process. Silence the
-  # banner and gate `set` on vcvars succeeding.
-  $prevEAP = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-  cmd /c "`"$vcvars`" x64 >nul 2>&1 && set" | ForEach-Object {
-    if ($_ -match '^([^=]+)=(.*)$') { [Environment]::SetEnvironmentVariable($matches[1], $matches[2], 'Process') }
-  }
-  $ErrorActionPreference = $prevEAP
-  $cl = Get-Command cl -ErrorAction SilentlyContinue
-  if (-not $cl) { Die "Activated MSVC but cl.exe still not found -- verify the VS C++ x64 toolset is installed." }
-  Info "cl.exe : $($cl.Source)"
 }
 
-# Build one ported plugin natively — the same three steps pj_ported_plugins/build.sh
-# runs per plugin: conan install the plugin recipe, cmake-configure the tree selecting
-# just this plugin (-DPJ_BUILD_PLUGIN), then build. cpython is forced shared so
-# python3XX.dll exists to bundle; -s:b compiler.cppstd=20 satisfies the build-context
-# protobuf/protoc (needs C++17). Returns $true on success; external output streams to
-# the host (Out-Host) so it is NOT captured into the return value.
-function Build-PortedPlugin([string]$portedDir, [string]$plugin, [string]$ninjaExe) {
-  $src = Join-Path $portedDir $plugin
-  if (-not (Test-Path (Join-Path $src "conanfile.py"))) {
-    Warn "plugin ${plugin}: no conanfile.py under $src -- skipping"; return $false
+function Convert-Semver([string]$value, [string]$label) {
+  $numeric = ($value -split '[-+]', 2)[0]
+  try {
+    return [System.Version]::Parse($numeric)
+  } catch {
+    Die "$label is not a numeric semantic version: '$value'"
   }
-  $bdir  = Join-Path $portedDir "build\$plugin"
-  $cbdir = Join-Path $bdir "Release"
-  # Native build tools write progress to stderr and a failed plugin exits non-zero;
-  # under the script's $ErrorActionPreference='Stop' a stderr line merged with 2>&1
-  # raises a terminating NativeCommandError (aborting even a successful build). Relax
-  # to 'Continue' (function-local) and DON'T merge stderr — let it flow to the console
-  # natively — then gate purely on $LASTEXITCODE. stdout still goes to Out-Host so it
-  # is not captured into the boolean return value.
-  $ErrorActionPreference = 'Continue'
-  & conan install $src "--output-folder=$bdir" --build=missing `
-      -s build_type=Release -s compiler.cppstd=20 -s:b compiler.cppstd=20 `
-      -c tools.cmake.cmaketoolchain:generator=Ninja `
-      -o "cpython/*:shared=True" | Out-Host
-  if ($LASTEXITCODE -ne 0) { return $false }
-  # -DCMAKE_MAKE_PROGRAM: the Conan profile forces the Ninja generator, but CMake
-  # still has to FIND ninja. Pass its resolved path explicitly so the build does not
-  # depend on ninja being on PATH (it often isn't in a bare MSVC/PowerShell prompt).
-  & cmake -S $portedDir -B $cbdir -G Ninja `
-      "-DCMAKE_MAKE_PROGRAM=$ninjaExe" `
-      "-DCMAKE_TOOLCHAIN_FILE=$bdir\conan_toolchain.cmake" `
-      "-DCMAKE_PREFIX_PATH=$bdir" -DCMAKE_BUILD_TYPE=Release "-DPJ_BUILD_PLUGIN=$plugin" | Out-Host
-  if ($LASTEXITCODE -ne 0) { return $false }
-  & cmake --build $cbdir --config Release --parallel | Out-Host
-  return ($LASTEXITCODE -eq 0)
 }
 
-# --- build the ported plugins from source, then bundle their *_plugin.dll ---------
-# AppImage flow: compile, then package. Building from source (rather than depending
-# on a pre-existing plugins dir) is what makes the recipe reproducible on any
-# machine. Each plugin is built NATIVELY here (no Git Bash) with the same three
-# steps pj_ported_plugins/build.sh runs per plugin — conan/cmake/ninja are the
-# same cross-platform CLIs the app build already needs. Skip with -SkipPlugins.
+function Download-RegistryPlugins {
+  Info "fetching plugin registry: $PluginRegistryUrl"
+  $registry = Read-PluginRegistry $PluginRegistryUrl
+  if (-not $registry -or -not $registry.extensions) {
+    Die "plugin registry has no 'extensions' array: $PluginRegistryUrl"
+  }
+
+  $downloadRoot = Join-Path $StageDir "plugin-downloads"
+  New-Item -ItemType Directory -Force -Path $downloadRoot | Out-Null
+  $seen = @{}
+
+  foreach ($id in $PluginIds) {
+    if ($id -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
+      Die "invalid plugin registry id '$id'"
+    }
+    if ($seen.ContainsKey($id)) { Die "duplicate plugin registry id '$id'" }
+    $seen[$id] = $true
+
+    $registryMatches = @($registry.extensions | Where-Object { $_.id -eq $id })
+    if ($registryMatches.Count -ne 1) {
+      Die "plugin registry must contain exactly one '$id' entry (found $($registryMatches.Count))"
+    }
+    $extension = $registryMatches[0]
+    $extensionVersion = [string]$extension.version
+    if (-not $extensionVersion) { Die "plugin '$id' has an empty registry version" }
+    $platformProperty = $extension.platforms.PSObject.Properties[$PluginPlatform]
+    if (-not $platformProperty) {
+      Die "plugin '$id' has no '$PluginPlatform' artifact in the registry"
+    }
+    $artifact = $platformProperty.Value
+    $url = [string]$artifact.url
+    $checksum = [string]$artifact.checksum
+    if (-not $url) { Die "plugin '$id' has an empty '$PluginPlatform' URL" }
+    $checksumMatch = [regex]::Match($checksum, '^sha256:([0-9a-fA-F]{64})$')
+    if (-not $checksumMatch.Success) {
+      Die "plugin '$id' has an invalid SHA-256 checksum: '$checksum'"
+    }
+    $expectedHash = $checksumMatch.Groups[1].Value.ToLowerInvariant()
+
+    $zipPath = Join-Path $downloadRoot "$id.zip"
+    Info "downloading plugin: $id $($extension.version)"
+    try {
+      Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing
+    } catch {
+      Die "failed to download plugin '$id' from '$url': $_"
+    }
+    $actualHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualHash -ne $expectedHash) {
+      Die "checksum mismatch for plugin '$id' (want $expectedHash, got $actualHash)"
+    }
+
+    $unpackDir = Join-Path $downloadRoot "unpacked-$id"
+    New-Item -ItemType Directory -Force -Path $unpackDir | Out-Null
+    try {
+      Expand-Archive -LiteralPath $zipPath -DestinationPath $unpackDir -Force
+    } catch {
+      Die "failed to unpack plugin '$id': $_"
+    }
+
+    # Official archives have one top-level <id>/ directory. Normalize that away
+    # so the installed layout is always plugins/<id>/{manifest.json,*_plugin.dll}.
+    $entries = @(Get-ChildItem -LiteralPath $unpackDir -Force)
+    $payloadRoot = $unpackDir
+    if ($entries.Count -eq 1 -and $entries[0].PSIsContainer) {
+      $payloadRoot = $entries[0].FullName
+    }
+    $destination = Join-Path $stagePlugins $id
+    New-Item -ItemType Directory -Force -Path $destination | Out-Null
+    Get-ChildItem -LiteralPath $payloadRoot -Force |
+      Copy-Item -Destination $destination -Recurse -Force
+
+    $downloadedDlls = @(Get-ChildItem -LiteralPath $destination -Recurse -Filter "*_plugin.dll")
+    if ($downloadedDlls.Count -eq 0) {
+      Die "plugin '$id' archive contains no *_plugin.dll"
+    }
+    $manifests = @(Get-ChildItem -LiteralPath $destination -Recurse -Filter "manifest.json")
+    if ($manifests.Count -ne 1) {
+      Die "plugin '$id' archive must contain exactly one manifest.json (found $($manifests.Count))"
+    }
+    try {
+      $packageManifest = Get-Content -LiteralPath $manifests[0].FullName -Raw | ConvertFrom-Json
+    } catch {
+      Die "plugin '$id' contains an invalid manifest.json: $_"
+    }
+    if ([string]$packageManifest.id -ne $id) {
+      Die "plugin '$id' archive manifest declares id '$($packageManifest.id)'"
+    }
+    if ([string]$packageManifest.version -ne $extensionVersion) {
+      Die "plugin '$id' archive version '$($packageManifest.version)' does not match registry version '$extensionVersion'"
+    }
+    $minimumHostVersion = [string]$packageManifest.min_plotjuggler_version
+    if ($minimumHostVersion) {
+      $minimumParsed = Convert-Semver $minimumHostVersion "plugin '$id' minimum PlotJuggler version"
+      $hostParsed = Convert-Semver $Version "installer version"
+      if ($minimumParsed -gt $hostParsed) {
+        Die "plugin '$id' requires PlotJuggler $minimumHostVersion, but this installer is $Version"
+      }
+    }
+    $resolvedPluginVersions[$id] = $extensionVersion
+    Info "staged plugin: $id ($($downloadedDlls.Count) DLL(s))"
+  }
+
+  return @(Get-ChildItem -LiteralPath $stagePlugins -Recurse -Filter "*_plugin.dll" |
+            Sort-Object FullName)
+}
+
+$resolvedPluginVersions = @{}
 $pluginDlls = @()
 if ($SkipPlugins) {
   Info "skipping plugins (-SkipPlugins) -> core-only installer"
 } else {
-  if (-not $PortedPluginsDir) { $PortedPluginsDir = Join-Path $repoRoot "plotjuggler_sdk\pj_ported_plugins" }
-  if (-not (Test-Path (Join-Path $PortedPluginsDir "CMakeLists.txt"))) {
-    Die "Ported-plugins tree not found at $PortedPluginsDir. Pass -PortedPluginsDir or -SkipPlugins."
-  }
-  Enter-MsvcEnv   # cl.exe on PATH (activates vcvars x64 if not already in a dev prompt)
-  foreach ($tool in @("conan", "cmake")) {
-    if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
-      Die "$tool not found on PATH. Run from an MSVC x64 dev prompt with Conan/CMake available, or pass -SkipPlugins."
-    }
-  }
-  # The Conan profile forces the Ninja generator, so CMake needs ninja.exe. It is
-  # frequently NOT on a bare MSVC/PowerShell PATH (pip installs it into Python's
-  # Scripts dir). Resolve it once, here, and hand the path to each build; Die with a
-  # clear instruction rather than letting CMake emit "unable to find Ninja" x13.
-  $ninjaExe = $null
-  $ninjaCmd = Get-Command ninja -ErrorAction SilentlyContinue
-  if ($ninjaCmd) { $ninjaExe = $ninjaCmd.Source }
-  if (-not $ninjaExe) {
-    $cacheNinja = Get-ChildItem $ConanHome -Recurse -Filter "ninja.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($cacheNinja) { $ninjaExe = $cacheNinja.FullName }
-  }
-  if (-not $ninjaExe) {
-    $pyCmd = Get-Command python -ErrorAction SilentlyContinue
-    if ($pyCmd) {
-      $scriptsDir = (& $pyCmd.Source -c "import sysconfig; print(sysconfig.get_path('scripts'))" 2>$null | Select-Object -First 1)
-      if ($scriptsDir -and (Test-Path (Join-Path $scriptsDir "ninja.exe"))) { $ninjaExe = Join-Path $scriptsDir "ninja.exe" }
-    }
-  }
-  if (-not $ninjaExe) { Die "ninja not found on PATH, in the Conan cache, or in Python's Scripts dir. Install it (pip install ninja) or add it to PATH -- the Conan profile forces the Ninja generator." }
-  Info "ninja       : $ninjaExe"
-
-  Info "building $($PluginList.Count) ported plugin(s) in $PortedPluginsDir ..."
-  $okPlugins = @(); $failPlugins = @()
-  foreach ($p in $PluginList) {
-    Info "──── building plugin: $p ────"
-    if (Build-PortedPlugin $PortedPluginsDir $p $ninjaExe) { $okPlugins += $p } else { $failPlugins += $p; Warn "plugin build FAILED: $p" }
-  }
-  Info ("plugin builds OK ({0}): {1}" -f $okPlugins.Count, ($okPlugins -join ' '))
-  if ($failPlugins.Count) { Warn ("plugin builds FAILED ({0}): {1}" -f $failPlugins.Count, ($failPlugins -join ' ')) }
-
-  # Collect the built plugins (per-plugin output: build/<plugin>/<cfg>/...). Match
-  # ONLY *_plugin.dll (the PJ naming convention) so the recursive scan never drags in
-  # dependency DLLs (cpython, etc.). De-dupe by name so a plugin built under several
-  # configs (Debug / RelWithDebInfo) is staged once.
-  $pluginsBuildTree = Join-Path $PortedPluginsDir "build"
-  $pluginDlls = Get-ChildItem $pluginsBuildTree -Recurse -Filter "*_plugin.dll" -ErrorAction SilentlyContinue |
-                Sort-Object Name -Unique
-  foreach ($d in $pluginDlls) { Copy-Item $d.FullName $stagePlugins -Force }
-  Info "staged $($pluginDlls.Count) plugin DLL(s) -> lib\plotjuggler\plugins"
-  if ($pluginDlls.Count -eq 0) { Warn "no *_plugin.dll found under $pluginsBuildTree — the installer will have no plugins." }
+  $pluginDlls = @(Download-RegistryPlugins)
+  Info "staged $($pluginDlls.Count) plugin DLL(s) from $($PluginIds.Count) registry extension(s)"
 }
 
 # --- Qt deployment (Qt DLLs + Qt plugins + MSVC runtime) -------------------
@@ -342,11 +360,10 @@ if ($LASTEXITCODE -ne 0) { Die "windeployqt failed on the exe (exit $LASTEXITCOD
 # non-Qt files windeployqt itself dropped (D3Dcompiler_47.dll, opengl32sw.dll, …);
 # running windeployqt over those makes it exit 1. Empty when -SkipPlugins.
 foreach ($d in $pluginDlls) {
-  $stagedPlugin = Join-Path $stagePlugins $d.Name
   # --dir $stageBin: the plugin lives under lib\..., but its extra Qt module DLLs
   # must land in bin\ next to the exe (the dir Windows searches at load time), not
   # next to the plugin — otherwise a plugin-only Qt module never resolves.
-  & $windeployqt --dir $stageBin --release --no-translations $stagedPlugin
+  & $windeployqt --dir $stageBin --release --no-translations $d.FullName
   # Warn, don't Die: a recursively-collected DLL that is not a Qt-linked plugin
   # makes windeployqt exit 1, which must not abort the whole bundle.
   if ($LASTEXITCODE -ne 0) { Warn "windeployqt on $($d.Name) returned $LASTEXITCODE -- harmless if it is not a Qt-linked plugin." }
@@ -422,6 +439,24 @@ function Copy-CPythonStdlib {
   }
 }
 Copy-CPythonStdlib
+
+# --- prove every whitelisted plugin loads in the staged application ----------------
+# Download/checksum success is not sufficient: this exercises the real host loader,
+# embedded C-ABI manifest, instance creation/capability probe, dialog-vtable contract,
+# and the final staged DLL search path. Missing, extra, wrong-version, or unloadable
+# plugins make the release fail before binarycreator runs.
+if ($pluginDlls.Count -gt 0) {
+  $validationArgs = @("--validate-plugins", $stagePlugins)
+  foreach ($id in $PluginIds) {
+    $validationArgs += "--expect-plugin"
+    $validationArgs += "$id=$($resolvedPluginVersions[$id])"
+  }
+  Info "validating $($PluginIds.Count) whitelisted plugin(s) with the staged app ..."
+  & $stagedExe @validationArgs
+  if ($LASTEXITCODE -ne 0) {
+    Die "staged plugin validation failed (exit $LASTEXITCODE)"
+  }
+}
 
 # --- render config.xml + package.xml from source into the stage tree -------
 # Templates carry a __PJ_VERSION__ token; the source XMLs stay clean so a

@@ -39,8 +39,10 @@ the same convention the Linux AppImage uses (`bin` beside `lib`):
 ├── bin/
 │   ├── PlotJuggler4.exe             # + Qt DLLs, Qt plugins, MSVC runtime, FFmpeg, CPython (+ Lib/, DLLs/, ._pth)
 │   └── platforms/ …
-└── lib/plotjuggler/plugins/         # built + bundled plugins; app resolves bin/../lib/plotjuggler/plugins
-    └── *_plugin.dll
+└── lib/plotjuggler/plugins/         # verified published plugins; app resolves bin/../lib/plotjuggler/plugins
+    └── <registry-id>/
+        ├── manifest.json
+        └── *_plugin.dll
 ```
 
 The app scans `bin/../lib/plotjuggler/plugins` (via `applicationDirPath`), so
@@ -66,27 +68,15 @@ modules there too.
 - **Qt Installer Framework tools** — for `binarycreator.exe`. Install via the Qt
   Maintenance Tool, or `aqt install-tool --outputdir .qt windows desktop tools_ifw`.
   Auto-detected next to `-QtDir` (aqt `.qt\Tools`) and under `C:\Qt\Tools`.
-- **Conan + CMake** on PATH — the script builds the ported plugins natively (no
-  Git Bash). It handles the MSVC toolchain and Ninja itself:
-  - **MSVC** — if `cl.exe` isn't already on PATH (i.e. you're not in an x64 Native
-    Tools prompt), the script locates Visual Studio via `vswhere` and imports
-    `vcvarsall.bat x64` into the process. Needs VS with the **C++ x64 workload**.
-  - **Ninja** — required by the Conan profile's generator; the script auto-locates
-    `ninja.exe` (PATH, Conan cache, or Python's Scripts dir) and passes it via
-    `-DCMAKE_MAKE_PROGRAM`, so it need not be on PATH. `pip install ninja` if it is
-    missing entirely.
-
-  Skip the whole plugin build with `-SkipPlugins`.
-- **Consistent MSVC toolset + a clean Conan cache.** The plugin build reuses
-  cached deps by `compiler.version=194` (all VS2022 minors share one package id),
-  so a cache holding a binary built with a *different* MSVC minor (e.g. 14.5x vs
-  14.4x) yields STL link errors (`unresolved external __std_*`). On a clean machine
-  this never happens; on a mixed one, `conan remove "<dep>/*" -c` and rebuild.
+- **Network access to the plugin registry and the selected release artifacts.**
+  Plugins are downloaded from `pj-plugin-registry` and their registry SHA-256 is
+  mandatory. Use `-SkipPlugins` for an app-only installer, or point
+  `-PluginRegistryUrl` at a local registry mirror.
 
 ## Usage
 
-From the repo root, after a Windows build of the app — a plain run builds the
-plugins and produces the full installer:
+From the repo root, after a Windows build of the app — a plain run downloads the
+curated published plugins and produces the full installer:
 
 ```powershell
 .\installer\build_windows_installer.ps1
@@ -100,13 +90,11 @@ The script:
 
 1. Locates the built `plotjuggler4.exe` / `pj_app.exe` under `-BuildDir`; stages
    it as `bin\PlotJuggler4.exe` in a scratch tree under `%TEMP%`.
-2. **Builds the ported plugins** from source (unless `-SkipPlugins`): for each
-   plugin in `-PluginList` it runs `conan install` + `cmake` + `cmake --build`
-   natively (the same three steps as `pj_ported_plugins/build.sh`, no Git Bash),
-   prints an OK/FAIL summary, and bundles the resulting `*_plugin.dll` into
-   `lib\plotjuggler\plugins`. A plugin that fails to build is skipped (not fatal) —
-   the rest still ship. Only `*_plugin.dll` is collected, so dependency DLLs in the
-   build tree are never dragged in.
+2. Resolves every id in `-PluginIds` against `-PluginRegistryUrl` for
+   `windows-x86_64`, downloads the published marketplace ZIP, verifies its
+   mandatory SHA-256, checks the package manifest id/version, and unpacks it under
+   `lib\plotjuggler\plugins\<registry-id>`. A missing or malformed whitelisted
+   plugin fails the release; nothing is silently skipped.
 3. Runs `windeployqt` over the exe **and every bundled plugin DLL** (`--dir bin`,
    so plugin-only Qt modules land in `bin`).
 4. Copies the FFmpeg + CPython runtime DLLs from the Conan cache (both the
@@ -117,12 +105,23 @@ The script:
    `python3XX._pth` or synthesizes one, so the embedded interpreter resolves its
    stdlib relative to the DLL instead of the build-machine `PYTHONHOME` baked into
    the binary.
-6. Renders `config.xml` / `package.xml` into the stage tree (version +
+6. Runs the staged app's `--validate-plugins` mode. This loads every downloaded
+   DLL through the real runtime catalog and checks the embedded C-ABI manifest,
+   instance/capability probe, dialog-vtable contract, exact registry id/version,
+   and absence of non-whitelisted plugins. Any failure stops before packaging.
+7. Renders `config.xml` / `package.xml` into the stage tree (version +
    release-date tokens substituted).
-7. Runs `binarycreator --offline-only` against the stage.
+8. Runs `binarycreator --offline-only` against the stage.
 
-Options: `-SkipPlugins` (fast core-only installer), `-PluginList a,b,c` (override
-the plugin set), `-PortedPluginsDir <path>` (plugins repo location).
+Options: `-SkipPlugins` (fast core-only installer), `-PluginIds a,b,c` (override
+the curated registry ids), `-PluginRegistryUrl <url-or-json-path>` (registry
+source), and `-PluginPlatform <key>` (defaults to `windows-x86_64`).
+
+The default whitelist preserves the 12 plugins that previously built successfully:
+`mcap-loader`, `csv-loader`, `parquet-loader`, `ulog-loader`, `dummy-streamer`,
+`foxglove-bridge`, `plotjuggler-bridge`, `ros-parser`, `protobuf-parser`,
+`json-parser`, `toolbox-quaternion`, and `toolbox-transform-editor`.
+`toolbox-mosaico` is not whitelisted because it has no published registry entry.
 
 ## Install-time behaviour
 
@@ -139,8 +138,5 @@ the plugin set), `-PortedPluginsDir <path>` (plugins repo location).
 
 - **No code signing.** The `.exe` is unsigned, so SmartScreen warns on first
   run ("More info" → "Run anyway").
-- **CI.** Producing this in `windows-ci.yml` is a follow-up; today it is a
-  local, on-demand build. The stage dir is under `%TEMP%` so a CI run is
-  clean-slate every time.
 - **ROS 2 subscriber.** The ros2-stream build system is Linux-only, so ROS
   streaming is absent from the Windows installer for this release.
