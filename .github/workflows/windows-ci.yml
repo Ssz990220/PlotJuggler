@@ -81,6 +81,15 @@ jobs:
           # cross-branch.
           cache_packages: false
 
+      - name: Setup MSVC environment
+        # The detected Conan profile is part of the cache identity, so MSVC must
+        # be active before the cache tag is computed. This prevents binaries
+        # built with one runner toolset (for example msvc/193) from being
+        # restored as a false hit for another (msvc/194).
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: Setup oras (OCI Registry As Storage)
         # Primary install path. continue-on-error so a 5xx on the github.com
         # release CDN doesn't kill CI — we have a fallback below, and worst
@@ -129,19 +138,29 @@ jobs:
         id: conan_cache
         shell: pwsh
         run: |
-          # Cache identity = CACHE_VERSION salt + conanfile.txt hash. Bump the salt
-          # to evict a poisoned cache: the ghcr.io tag for a given conanfile can be
-          # saved incomplete (e.g. a recipe export folder missing), after which every
-          # restoring build dies during graph resolution — "fmt/<ver>: Cannot load
-          # recipe ... conanfile.py not found", or "Recipe 'fmt/<ver>' seems broken ...
-          # not Conan 2.0 ready" from the same truncated blob. A re-run restores the
-          # same bad blob, so the only fix is a new cache identity that forces a clean
-          # cold rebuild (and a fresh save on the next push-to-main).
-          # v6: evicts the v5 blob saved from a conan install that died mid-graph
-          # (zlib.net 415 on minizip) — 23/47 packages, restored as a HIT forever.
-          $cacheVersion = "v6"
+          # Include the effective Conan/MSVC profile as well as conanfile.txt.
+          # v6 only hashed conanfile.txt, so an msvc/193 blob restored as a HIT
+          # on msvc/194 and forced every compiled package to rebuild.
+          $cacheVersion = "v7"
+          conan profile detect --force
+          $profilePath = (& conan profile path default | Out-String).Trim()
+          if (-not (Test-Path -LiteralPath $profilePath -PathType Leaf)) {
+            throw "Conan default profile not found at '$profilePath'"
+          }
+          $profileFingerprintPath = Join-Path $env:RUNNER_TEMP "pj4-conan-cache-profile.txt"
+          $profileText = Get-Content -LiteralPath $profilePath -Raw
+          @(
+            $profileText.TrimEnd(),
+            "[workflow-overrides]",
+            "build_type=RelWithDebInfo",
+            "compiler.cppstd=20",
+            "cpython/*:shared=True",
+            "cpython/*:build_type=Release",
+            "tools.cmake.cmaketoolchain:generator=Ninja Multi-Config"
+          ) -join "`n" | Set-Content -LiteralPath $profileFingerprintPath -NoNewline
+          $profileHash = (Get-FileHash $profileFingerprintPath -Algorithm SHA256).Hash.Substring(0, 16).ToLower()
           $fileHash = (Get-FileHash conanfile.txt -Algorithm SHA256).Hash.Substring(0, 16).ToLower()
-          $hash = "$cacheVersion-$fileHash"
+          $hash = "$cacheVersion-$profileHash-$fileHash"
           $owner = "${{ github.repository_owner }}".ToLower()
           $tag = "ghcr.io/$owner/pj4-conan-cache:windows-msvc-relwithdebinfo-$hash"
           "hash=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
@@ -149,7 +168,9 @@ jobs:
           # Emitted as an output so the GHA restore step's restore-keys can't
           # drift from the salt above (a bump that misses one of two literals
           # silently breaks the prefix fallback).
-          "restore_prefix=conan-windows-msvc-relwithdebinfo-$cacheVersion-" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "restore_prefix=conan-windows-msvc-relwithdebinfo-$cacheVersion-$profileHash-" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Effective Conan profile:`n$profileText"
+          Write-Host "Profile fingerprint: $profileHash"
           Write-Host "Cache tag: $tag"
 
       - name: Login to ghcr.io
@@ -329,14 +350,6 @@ jobs:
           restore-keys: |
             sccache-windows-msvc-relwithdebinfo-
 
-      - name: Setup MSVC environment
-        # Loads cl.exe / link.exe / rc.exe etc. into PATH so the Ninja
-        # generator can find them. The VS generator did this implicitly;
-        # Ninja does not.
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-
       - name: Conan install
         # Its own step (not folded into Build) so the cache-save steps below can
         # gate on ITS outcome: a conan install that dies mid-graph (e.g. an
@@ -360,10 +373,16 @@ jobs:
           # CRT-compatible with the rest of the RelWithDebInfo graph (both use the
           # release /MD runtime). Both overrides are scoped to cpython only and
           # Windows-CI-only; Linux links CPython statically.
+          conan_log="${RUNNER_TEMP}/pj4-conan-install.log"
           conan install . --output-folder=build --build=missing \
             -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
             -o "cpython/*:shared=True" -s "cpython/*:build_type=Release" \
-            -c tools.cmake.cmaketoolchain:generator="Ninja Multi-Config"
+            -c tools.cmake.cmaketoolchain:generator="Ninja Multi-Config" \
+            2>&1 | tee "$conan_log"
+          if grep -q "Building from source" "$conan_log"; then
+            echo "CONAN_CACHE_DIRTY=1" >> "$GITHUB_ENV"
+            echo "::notice::Conan built missing binaries; the OCI cache will be refreshed."
+          fi
 
       - name: Build
         shell: bash
@@ -453,8 +472,8 @@ jobs:
 
       - name: Save Conan cache to ghcr.io
         # Only push from the canonical repo on real pushes (forks lack write
-        # access to ghcr.io packages). Skip on cache HIT — the tag content is
-        # already up to date, no point re-uploading the same bytes.
+        # access to ghcr.io packages). A nominal HIT is refreshed when Conan
+        # still had to build missing binaries, so incomplete caches self-heal.
         # Gated on the "Conan install" step's outcome, NOT on !cancelled(): a
         # failing project compile may still save (deps finished earlier), but a
         # conan install that died mid-graph must never publish its partial
@@ -465,7 +484,7 @@ jobs:
           steps.conan_install.outcome == 'success' &&
           github.event_name == 'push' &&
           github.repository == 'PlotJuggler/PJ4' &&
-          env.CONAN_CACHE_HIT != '1' &&
+          (env.CONAN_CACHE_HIT != '1' || env.CONAN_CACHE_DIRTY == '1') &&
           (steps.setup_oras.outcome == 'success' || steps.setup_oras_fallback.outcome == 'success')
         shell: pwsh
         run: |

@@ -90,6 +90,15 @@ jobs:
       - name: Install cmake and ninja
         run: pip install cmake ninja
 
+      - name: Set up MSVC environment
+        # The detected Conan profile is part of the cache identity, so MSVC must
+        # be active before the cache tag is computed. This prevents binaries
+        # built with one runner toolset (for example msvc/193) from being
+        # restored as a false hit for another (msvc/194).
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       # ─────────────────────────── Conan cache: restore ───────────────────────────
 
       - name: Setup oras (OCI Registry As Storage)
@@ -126,20 +135,40 @@ jobs:
           "$installDir" | Out-File -FilePath $env:GITHUB_PATH -Append
 
       - name: Compute Conan cache tag
-        # Cache identity = CACHE_VERSION salt + conanfile.txt hash. Bump the salt
-        # to evict a poisoned cache. Shares the salt scheme with windows-ci.yml so
-        # a release and CI run of the same conanfile hit the same OCI tag.
+        # Cache identity includes both dependency declarations and the effective
+        # Conan/MSVC profile. The old key only hashed conanfile.txt, so an msvc/193
+        # blob restored as a HIT on an msvc/194 runner, rebuilt ~30 packages, and
+        # then never healed because HITs were not republished.
         id: conan_cache
         shell: pwsh
         run: |
-          $cacheVersion = "v6"
+          $cacheVersion = "v7"
+          conan profile detect --force
+          $profilePath = (& conan profile path default | Out-String).Trim()
+          if (-not (Test-Path -LiteralPath $profilePath -PathType Leaf)) {
+            throw "Conan default profile not found at '$profilePath'"
+          }
+          $profileFingerprintPath = Join-Path $env:RUNNER_TEMP "pj4-conan-cache-profile.txt"
+          $profileText = Get-Content -LiteralPath $profilePath -Raw
+          @(
+            $profileText.TrimEnd(),
+            "[workflow-overrides]",
+            "build_type=RelWithDebInfo",
+            "compiler.cppstd=20",
+            "cpython/*:shared=True",
+            "cpython/*:build_type=Release",
+            "tools.cmake.cmaketoolchain:generator=Ninja Multi-Config"
+          ) -join "`n" | Set-Content -LiteralPath $profileFingerprintPath -NoNewline
+          $profileHash = (Get-FileHash $profileFingerprintPath -Algorithm SHA256).Hash.Substring(0, 16).ToLower()
           $fileHash = (Get-FileHash conanfile.txt -Algorithm SHA256).Hash.Substring(0, 16).ToLower()
-          $hash = "$cacheVersion-$fileHash"
+          $hash = "$cacheVersion-$profileHash-$fileHash"
           $owner = "${{ github.repository_owner }}".ToLower()
           $tag = "ghcr.io/$owner/pj4-conan-cache:windows-msvc-relwithdebinfo-$hash"
           "hash=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "restore_prefix=conan-windows-msvc-relwithdebinfo-$cacheVersion-" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "restore_prefix=conan-windows-msvc-relwithdebinfo-$cacheVersion-$profileHash-" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Effective Conan profile:`n$profileText"
+          Write-Host "Profile fingerprint: $profileHash"
           Write-Host "Cache tag: $tag"
 
       - name: Login to ghcr.io
@@ -281,11 +310,6 @@ jobs:
           restore-keys: |
             sccache-windows-msvc-relwithdebinfo-
 
-      - name: Set up MSVC environment
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-
       # ─────────────────────────── Build ───────────────────────────
 
       - name: Conan install
@@ -300,10 +324,16 @@ jobs:
           # so the embedded interpreter must link shared (Release CRT, matching the
           # RelWithDebInfo /MD graph). Ninja Multi-Config so sccache's compiler
           # launcher is honoured (VS/MSBuild ignores it).
+          conan_log="${RUNNER_TEMP}/pj4-conan-install.log"
           conan install . --output-folder=build --build=missing \
             -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
             -o "cpython/*:shared=True" -s "cpython/*:build_type=Release" \
-            -c tools.cmake.cmaketoolchain:generator="Ninja Multi-Config"
+            -c tools.cmake.cmaketoolchain:generator="Ninja Multi-Config" \
+            2>&1 | tee "$conan_log"
+          if grep -q "Building from source" "$conan_log"; then
+            echo "CONAN_CACHE_DIRTY=1" >> "$GITHUB_ENV"
+            echo "::notice::Conan built missing binaries; the OCI cache will be refreshed."
+          fi
 
       - name: Build PlotJuggler 4 (app)
         shell: bash
@@ -380,14 +410,14 @@ jobs:
           key: sccache-windows-msvc-relwithdebinfo-${{ github.sha }}
 
       - name: Save Conan cache to ghcr.io
-        # Only push from the canonical repo on runs that got a clean conan
-        # install (partial closure must never be persisted as the official
-        # blob). Skip on cache HIT — the tag content is already up to date.
+        # Publish after a clean Conan install on a miss, or heal a nominal HIT
+        # when Conan still had to build missing binaries. A hit is not proof
+        # that the restored closure was complete.
         if: |
           always() &&
           steps.conan_install.outcome == 'success' &&
           github.repository == 'PlotJuggler/PJ4' &&
-          env.CONAN_CACHE_HIT != '1' &&
+          (env.CONAN_CACHE_HIT != '1' || env.CONAN_CACHE_DIRTY == '1') &&
           (steps.setup_oras.outcome == 'success' || steps.setup_oras_fallback.outcome == 'success')
         shell: pwsh
         run: |
