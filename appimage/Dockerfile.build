@@ -1,21 +1,27 @@
 # syntax=docker/dockerfile:1
 # SPDX-License-Identifier: MPL-2.0
 #
-# Fully-baked PlotJuggler 4 AppImage builder.
+# PlotJuggler 4 AppImage builder — one file, two targets:
 #
-# Base: ubuntu:22.04 (glibc 2.35) — matches the release.yml runner and gives the
-# broadest AppImage compatibility. Everything the build needs is baked into image
-# layers so a container run fetches NOTHING at run time (the one exception is
-# --plugins-registry, which downloads published plugin zips):
-#   * Qt from versions.env -> /opt/.qt/<version>/gcc_64  (via the repo's install_qt6.sh)
-#   * Conan dep closure    -> /root/.conan2              (prebuilt, RelWithDebInfo)
-#   * pinned linuxdeploy  -> /opt/linuxdeploy/
+#   * ci-base (docker build --target ci-base): THIN toolchain image for CI.
+#     Ubuntu 22.04 (glibc 2.35 floor — hosted 22.04 runners retire 2027-04,
+#     actions/runner-images#14254) + apt/pip build deps + pinned
+#     linuxdeploy/appimagetool. NO Qt and NO Conan closure baked in: the CI
+#     container job provisions those per-run from actions/cache + the JFrog
+#     Conan remote (see .github/workflows/linux-appimage-release.yml).
+#     Published to ghcr.io/plotjuggler/pj4-appimage-builder by
+#     .github/workflows/appimage-builder-image.yml.
 #
-# The container runs as ROOT internally so it can read the baked /root/.conan2 and
-# /opt/.qt; the entrypoint chowns the generated build/ + *.AppImage back to the
-# invoking host user (HOST_UID/HOST_GID). Root-then-chown avoids a fragile in-image
-# UID match while keeping host outputs host-owned.
-FROM ubuntu:22.04
+#   * default final stage: FULLY-BAKED local builder for
+#     appimage/build_in_docker.sh — Qt (versions.env) and the prebuilt Conan
+#     dep closure live in image layers so a container run fetches NOTHING (the
+#     one exception is --plugins-registry, which downloads published plugin zips).
+#
+# The container runs as ROOT internally so it can read the baked /root/.conan2
+# and /opt/.qt; the entrypoint chowns the generated build/ + *.AppImage back to
+# the invoking host user (HOST_UID/HOST_GID). Root-then-chown avoids a fragile
+# in-image UID match while keeping host outputs host-owned.
+FROM ubuntu:22.04 AS ci-base
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Etc/UTC
@@ -39,18 +45,45 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #    install_qt6.sh finds it (command -v aqt) and SKIPS its own bare `pip install`.
 RUN python3 -m pip install --no-cache-dir 'aqtinstall>=3.3' 'conan>=2,<3'
 
-# 3) Bake Qt via the repo's install_qt6.sh using versions.env. Running it from
+ARG PJ_APPIMAGE_ARCH
+RUN test -n "$PJ_APPIMAGE_ARCH"
+ENV PJ_APPIMAGE_ARCH=$PJ_APPIMAGE_ARCH
+
+# 3) Bake PINNED linuxdeploy + its Qt plugin + appimagetool. All three publish
+#    mainly rolling 'continuous' tags, so the PIN = freezing the exact bytes into
+#    this layer (build_appimage.sh uses a pre-existing appimage/<name>.AppImage
+#    instead of downloading). SHA256SUMS records provenance. The optional build
+#    args, when non-empty, assert the bytes and FAIL the build on mismatch;
+#    default empty = record-only.
+ARG LINUXDEPLOY_SHA256=
+ARG LINUXDEPLOY_QT_SHA256=
+ARG APPIMAGETOOL_SHA256=
+RUN mkdir -p /opt/linuxdeploy && cd /opt/linuxdeploy \
+ && wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-${PJ_APPIMAGE_ARCH}.AppImage \
+ && wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-${PJ_APPIMAGE_ARCH}.AppImage \
+ && wget -q https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${PJ_APPIMAGE_ARCH}.AppImage \
+ && chmod +x linuxdeploy-${PJ_APPIMAGE_ARCH}.AppImage linuxdeploy-plugin-qt-${PJ_APPIMAGE_ARCH}.AppImage appimagetool-${PJ_APPIMAGE_ARCH}.AppImage \
+ && if [ -n "${LINUXDEPLOY_SHA256}" ]; then echo "${LINUXDEPLOY_SHA256}  linuxdeploy-${PJ_APPIMAGE_ARCH}.AppImage" | sha256sum -c -; fi \
+ && if [ -n "${LINUXDEPLOY_QT_SHA256}" ]; then echo "${LINUXDEPLOY_QT_SHA256}  linuxdeploy-plugin-qt-${PJ_APPIMAGE_ARCH}.AppImage" | sha256sum -c -; fi \
+ && if [ -n "${APPIMAGETOOL_SHA256}" ]; then echo "${APPIMAGETOOL_SHA256}  appimagetool-${PJ_APPIMAGE_ARCH}.AppImage" | sha256sum -c -; fi \
+ && sha256sum linuxdeploy-${PJ_APPIMAGE_ARCH}.AppImage linuxdeploy-plugin-qt-${PJ_APPIMAGE_ARCH}.AppImage appimagetool-${PJ_APPIMAGE_ARCH}.AppImage > SHA256SUMS \
+ && cat SHA256SUMS
+
+# ---------------------------------------------------------------------------
+# Fully-baked local builder (default target) — used by build_in_docker.sh.
+# ---------------------------------------------------------------------------
+FROM ci-base
+
+# 4) Bake Qt via the repo's install_qt6.sh using versions.env. Running it from
 #    /opt lands Qt under /opt/.qt/ — a stable path outside the eventual /work bind mount.
 ARG PJ_QT_VERSION
-ARG PJ_APPIMAGE_ARCH
-RUN test -n "$PJ_QT_VERSION" && test -n "$PJ_APPIMAGE_ARCH"
+RUN test -n "$PJ_QT_VERSION"
 ENV PJ_QT_VERSION=$PJ_QT_VERSION
-ENV PJ_APPIMAGE_ARCH=$PJ_APPIMAGE_ARCH
 COPY versions.env /opt/versions.env
 COPY install_qt6.sh /opt/install_qt6.sh
 RUN bash /opt/install_qt6.sh
 
-# 4) Warm the Conan cache into /root/.conan2 with the SAME settings build.sh uses,
+# 5) Warm the Conan cache into /root/.conan2 with the SAME settings build.sh uses,
 #    so the run-time conan install is an offline cache hit. Only the requires file
 #    is needed to resolve.
 COPY conanfile.txt /opt/conan-ctx/conanfile.txt
@@ -60,21 +93,6 @@ RUN conan profile detect --force \
         -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
  && rm -rf /tmp/conan-warm \
  && conan cache clean "*" --build --source --temp || true
-
-# 5) Bake a PINNED linuxdeploy + its Qt plugin. linuxdeploy publishes mainly the
-#    rolling 'continuous' tag, so the PIN = freezing the exact bytes into this
-#    layer. SHA256SUMS records provenance. The optional build args, when non-empty,
-#    assert the bytes and FAIL the build on mismatch; default empty = record-only.
-ARG LINUXDEPLOY_SHA256=
-ARG LINUXDEPLOY_QT_SHA256=
-RUN mkdir -p /opt/linuxdeploy && cd /opt/linuxdeploy \
- && wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-${PJ_APPIMAGE_ARCH}.AppImage \
- && wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-${PJ_APPIMAGE_ARCH}.AppImage \
- && chmod +x linuxdeploy-${PJ_APPIMAGE_ARCH}.AppImage linuxdeploy-plugin-qt-${PJ_APPIMAGE_ARCH}.AppImage \
- && if [ -n "${LINUXDEPLOY_SHA256}" ]; then echo "${LINUXDEPLOY_SHA256}  linuxdeploy-${PJ_APPIMAGE_ARCH}.AppImage" | sha256sum -c -; fi \
- && if [ -n "${LINUXDEPLOY_QT_SHA256}" ]; then echo "${LINUXDEPLOY_QT_SHA256}  linuxdeploy-plugin-qt-${PJ_APPIMAGE_ARCH}.AppImage" | sha256sum -c -; fi \
- && sha256sum linuxdeploy-${PJ_APPIMAGE_ARCH}.AppImage linuxdeploy-plugin-qt-${PJ_APPIMAGE_ARCH}.AppImage > SHA256SUMS \
- && cat SHA256SUMS
 
 # 6) Baked entrypoint (quoted heredoc => nothing expanded at image-build time).
 RUN cat > /usr/local/bin/pj4-build-entry.sh <<'PJEOF'
@@ -89,17 +107,18 @@ HOST_GID="${HOST_GID:-0}"
 
 git config --global --add safe.directory '*' || true
 
-ln -sfn /opt/linuxdeploy/linuxdeploy-${PJ_APPIMAGE_ARCH}.AppImage \
-        /work/appimage/linuxdeploy-${PJ_APPIMAGE_ARCH}.AppImage
-ln -sfn /opt/linuxdeploy/linuxdeploy-plugin-qt-${PJ_APPIMAGE_ARCH}.AppImage \
-        /work/appimage/linuxdeploy-plugin-qt-${PJ_APPIMAGE_ARCH}.AppImage
+for tool in linuxdeploy linuxdeploy-plugin-qt appimagetool; do
+  ln -sfn /opt/linuxdeploy/${tool}-${PJ_APPIMAGE_ARCH}.AppImage \
+          /work/appimage/${tool}-${PJ_APPIMAGE_ARCH}.AppImage
+done
 
 cleanup() {
-  rm -f /work/appimage/linuxdeploy-${PJ_APPIMAGE_ARCH}.AppImage \
-        /work/appimage/linuxdeploy-plugin-qt-${PJ_APPIMAGE_ARCH}.AppImage || true
+  local tool f
+  for tool in linuxdeploy linuxdeploy-plugin-qt appimagetool; do
+    rm -f /work/appimage/${tool}-${PJ_APPIMAGE_ARCH}.AppImage || true
+  done
   chown -R "${HOST_UID}:${HOST_GID}" /work/build 2>/dev/null || true
   shopt -s nullglob
-  local f
   for f in /work/appimage/PlotJuggler-*-${PJ_APPIMAGE_ARCH}.AppImage; do
     chown "${HOST_UID}:${HOST_GID}" "$f" 2>/dev/null || true
   done

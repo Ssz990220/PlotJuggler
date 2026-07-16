@@ -1,0 +1,75 @@
+name: AppImage builder image
+
+# Builds and publishes the THIN AppImage CI builder image (the `ci-base` target
+# of appimage/Dockerfile.build) to GHCR. linux-appimage-release.yml runs its
+# build job inside this image to keep the glibc 2.35 floor after hosted
+# ubuntu-22.04 runners retire (actions/runner-images#14254). The fat local
+# builder target is NOT built here — build_in_docker.sh builds it on demand.
+
+on:
+  push:
+    # TEMPORARY dry-run trigger — remove feat/appimage-ci-redesign before merge.
+    branches: [main, feat/appimage-ci-redesign]
+    paths:
+      - appimage/Dockerfile.build
+      - .github/workflows/appimage-builder-image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: appimage-builder-image-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/plotjuggler/pj4-appimage-builder
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Read versions.env
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ./versions.env
+          echo "PJ_APPIMAGE_ARCH=${PJ_APPIMAGE_ARCH}" >> "${GITHUB_ENV}"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build ci-base target
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build -f appimage/Dockerfile.build --target ci-base \
+            --build-arg PJ_APPIMAGE_ARCH="${PJ_APPIMAGE_ARCH}" \
+            -t "${IMAGE}:${GITHUB_SHA}" -t "${IMAGE}:latest" .
+
+      - name: Smoke-test the image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm "${IMAGE}:${GITHUB_SHA}" bash -c "
+            set -e
+            command -v conan aqt cmake ninja ccache git wget patchelf
+            test -x /opt/linuxdeploy/linuxdeploy-${PJ_APPIMAGE_ARCH}.AppImage
+            test -x /opt/linuxdeploy/linuxdeploy-plugin-qt-${PJ_APPIMAGE_ARCH}.AppImage
+            test -x /opt/linuxdeploy/appimagetool-${PJ_APPIMAGE_ARCH}.AppImage
+            gcc --version | head -1"
+
+      - name: Push
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker push "${IMAGE}:${GITHUB_SHA}"
+          docker push "${IMAGE}:latest"
