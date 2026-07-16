@@ -268,13 +268,20 @@ jobs:
       - name: Configure ccache
         # Compiler-output cache for our own C++ — complementary to the Conan
         # cache (which holds prebuilt third-party packages, not our objects).
+        # Keep the regular-build namespace disjoint from TSan. The former
+        # `ccache-linux-` catch-all selected the newer ccache-linux-tsan-* entry
+        # and produced 0/810 hits because sanitizer objects are incompatible.
         uses: actions/cache@v5
         with:
           path: ~/.cache/ccache
-          key: ccache-linux-${{ github.ref_name }}-${{ github.sha }}
+          key: ccache-linux-build-${{ github.ref_name }}-${{ github.sha }}
+          # The final two are safe migration paths: both identify regular
+          # builds explicitly by ref and cannot match ccache-linux-tsan-*.
           restore-keys: |
+            ccache-linux-build-${{ github.ref_name }}-
+            ccache-linux-build-main-
             ccache-linux-${{ github.ref_name }}-
-            ccache-linux-
+            ccache-linux-main-
 
       - name: Set ccache limits
         # 2G, not 500M: the full compiled object set (esp. after the Qt
