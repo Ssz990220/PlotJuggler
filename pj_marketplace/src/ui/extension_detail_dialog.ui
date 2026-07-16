@@ -87,6 +87,7 @@
    <!-- Button row -->
    <item>
     <layout class="QHBoxLayout" name="btn_layout">
+     <property name="spacing"><number>8</number></property>
      <item>
       <widget class="QPushButton" name="github_btn">
        <property name="text"><string>Visit Website</string></property>

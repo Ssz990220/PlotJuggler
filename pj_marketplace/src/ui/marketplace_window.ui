@@ -15,6 +15,7 @@
    <!-- Toolbar -->
    <item>
     <layout class="QHBoxLayout" name="toolbar_layout">
+     <property name="spacing"><number>8</number></property>
      <item>
       <widget class="PJ::Search" name="search_edit_">
        <property name="placeholder"><string>Search extensions...</string></property>

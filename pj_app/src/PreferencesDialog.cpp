@@ -159,7 +159,7 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   // app's current state. Live preview: each valueChanged tick pushes
   // straight through MainWindow's setter (which clamps, persists, and
   // emits iconMetricsChanged) so the running app resizes in real time
-  // while the user scrubs. On Cancel we restore the snapshot.
+  // while the user scrubs. On reject (Esc or the title-bar close) we restore the snapshot.
   auto* main_window = qobject_cast<MainWindow*>(parent);
   ui_->iconSizeScrubber->setRange(12, 48);
   ui_->iconSizeScrubber->setSingleStep(1);
@@ -274,8 +274,8 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   // Reset-to-defaults button. Snaps each scrubber back to the
   // first-launch defaults; the scrubbers' valueChanged signals
   // already feed MainWindow's setters, so the running app live-
-  // previews the reset and Cancel still reverts to the dialog's
-  // open-time snapshot.
+  // previews the reset, and rejecting the dialog (Esc / title-bar close)
+  // still reverts to the dialog's open-time snapshot.
   // Same glyph as the timeline align-rail "reset all" button (restart_alt).
   // SvgButton re-tints itself on a theme change.
   ui_->buttonResetDefaults->setIconPath(u":/resources/svg/restart_alt.svg"_s);
@@ -367,7 +367,7 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
       main_window->setLayoutSpacing(original_metrics_.layout_spacing);
     }
   });
-  // The chrome setters above only apply live — commit to QSettings on OK. Cancel
+  // The chrome setters above only apply live — commit to QSettings on OK. Rejecting
   // restores the snapshot and never persisted, so the .ini keeps the originals.
   connect(this, &QDialog::accepted, this, [this, main_window]() {
     if (main_window != nullptr) {
@@ -388,7 +388,6 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   });
 
   connect(ui_->buttonOk, &QPushButton::clicked, this, &QDialog::accept);
-  connect(ui_->buttonCancel, &QPushButton::clicked, this, &QDialog::reject);
 }
 
 PreferencesDialog::~PreferencesDialog() {
