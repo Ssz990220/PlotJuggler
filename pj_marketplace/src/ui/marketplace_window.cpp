@@ -6,7 +6,6 @@
 #include <QComboBox>
 #include <QDialog>
 #include <QEvent>
-#include <QFontMetrics>
 #include <QFormLayout>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -427,13 +426,17 @@ void MarketplaceWindow::populateCards(bool preserve_scroll) {
     card_layout->addLayout(top_row);
 
     auto* bottom_row = new QHBoxLayout();
-    auto* desc_lbl = new QLabel(card);
+    auto* desc_lbl = new QLabel(ext.description, card);
     desc_lbl->setObjectName("extCardDescription");
-    QFontMetrics fm(desc_lbl->font());
-    desc_lbl->setText(fm.elidedText(ext.description, Qt::ElideRight, 400));
-    bottom_row->addWidget(desc_lbl);
-    bottom_row->addStretch();
+    // Show the full description, wrapped to multiple lines, using the width left
+    // by the action button — never truncate it with an ellipsis. The stretch
+    // factor lets it take the available horizontal space (and grow taller as it
+    // wraps); the button keeps its fixed width on the right.
+    desc_lbl->setWordWrap(true);
+    bottom_row->addWidget(desc_lbl, /*stretch=*/1);
     bottom_row->addLayout(btn_box);
+    // Keep the button pinned to the top of a now-possibly-multiline row.
+    bottom_row->setAlignment(btn_box, Qt::AlignTop);
     card_layout->addLayout(bottom_row);
 
     ui_->cards_layout_->insertWidget(ui_->cards_layout_->count() - 1, card);
