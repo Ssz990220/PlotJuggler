@@ -8,8 +8,7 @@ name: AppImage builder image
 
 on:
   push:
-    # TEMPORARY dry-run trigger — remove feat/appimage-ci-redesign before merge.
-    branches: [main, feat/appimage-ci-redesign]
+    branches: [main]
     paths:
       - appimage/Dockerfile.build
       - .github/workflows/appimage-builder-image.yml
