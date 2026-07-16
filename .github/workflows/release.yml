@@ -5,15 +5,14 @@ name: Release AppImage
 # PJ4's heavier setup (Qt from aqt into ./.qt, deps from Conan) — so it reuses
 # the same Qt/Conan/ccache caching that linux-ci.yml relies on.
 #
-# Triggers:
-#   - push of a `v*` tag  -> build + publish the AppImage to that tag's Release
-#   - workflow_dispatch   -> build an AppImage from any branch (artifact only, no
-#                            Release upload) for smoke-testing the packaging
+# Trigger: workflow_dispatch only — build an AppImage from any branch (artifact
+# only; attaches to a Release only when dispatched on a tag ref). The `v*` tag
+# trigger moved to linux-appimage-release.yml, the authoritative release build:
+# both workflows produced the SAME asset name (PlotJuggler-<tag>-x86_64.AppImage)
+# and raced to attach it to the tag's Release. This lighter registry-driven
+# flavor is kept for packaging smoke tests.
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - 'v*'
 
 permissions:
   contents: write   # softprops/action-gh-release needs write to create/update the Release
@@ -28,7 +27,6 @@ jobs:
       - uses: actions/checkout@v6
         with:
           submodules: recursive
-          fetch-depth: 0   # tags/describe need full history
 
       - name: Read versions
         id: versions

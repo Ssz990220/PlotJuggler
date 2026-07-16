@@ -37,7 +37,11 @@ jobs:
           - name: linux-64
             os: ubuntu-22.04
           - name: win-64
-            os: windows-latest
+            # windows-2022, not windows-latest: the sccache namespace
+            # (SCCACHE_GHA_VERSION) is shared with windows-ci.yml and
+            # windows-release.yml, which pin windows-2022 — a runner-image
+            # drift means a different MSVC and a polluted/cold object cache.
+            os: windows-2022
     # Windows gap-package builds + Qt link are slow; give headroom over the
     # 6-hour GitHub default so a hang is caught by the job, not the runner.
     timeout-minutes: 120
@@ -117,7 +121,7 @@ jobs:
         # (which needs the very channel this step produces) and regardless of
         # whether the runner's platform is in the manifest yet. `pixi run` would
         # instead try to solve the default env first and fail.
-        run: pixi exec --spec "rattler-build>=0.66" rattler-build build --recipe-dir recipes/ -m recipes/variants.yaml -c conda-forge --output-dir local-channel
+        run: pixi exec --spec "rattler-build>=0.66,<0.67" rattler-build build --recipe-dir recipes/ -m recipes/variants.yaml -c conda-forge --output-dir local-channel
 
       # MSVC (cl.exe) + Ninja for the PJ4 app build. Deliberately AFTER the
       # channel build: rattler-build runs conda's own vs2022 activation
