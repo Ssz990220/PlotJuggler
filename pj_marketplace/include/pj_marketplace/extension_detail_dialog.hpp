@@ -25,9 +25,11 @@ class ExtensionDetailDialog : public Dialog {
   // install or is waiting in the install queue / Update All batch): when set, the
   // dialog shows a disabled "Installing" indicator and offers no action, so it
   // cannot enqueue the same operation a second time behind the running one.
+  // `is_bundled` marks a "core" extension shipped with the application: it can be
+  // updated but never uninstalled, so the Uninstall action is shown disabled.
   explicit ExtensionDetailDialog(
       const Extension& ext, const QString& installed_version, bool needs_restart = false, bool installing = false,
-      QWidget* parent = nullptr);
+      bool is_bundled = false, QWidget* parent = nullptr);
   ~ExtensionDetailDialog() override;
 
  signals:

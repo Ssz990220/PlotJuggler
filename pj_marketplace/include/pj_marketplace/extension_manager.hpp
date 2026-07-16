@@ -61,6 +61,18 @@ class ExtensionManager : public QObject {
   // Returns true when the latest disk scan found this extension id.
   bool isInstalled(const QString& id) const;
 
+  // Marks an installed extension as bundled ("core"): shipped with the
+  // application and seeded into the extensions dir. Writes a marker file inside
+  // the extension's directory, so the folder stays self-descriptive (no external
+  // registry). Idempotent. Called by the host seed after copying a bundled
+  // plugin in; preserved across updates by applyPendingInstalls().
+  void markBundled(const QString& id);
+
+  // Returns true when the extension carries the bundled ("core") marker. Bundled
+  // extensions cannot be uninstalled — uninstall() refuses them and the UI shows
+  // the Uninstall action disabled.
+  bool isBundled(const QString& id) const;
+
   // Rebuilds installed state by scanning extension directories for plugin DSOs.
   void refreshInstalledFromDisk();
 

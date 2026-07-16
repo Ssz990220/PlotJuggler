@@ -24,6 +24,10 @@ namespace {
 static constexpr const char* kPendingUninstallMarker = ".pj_pending_uninstall";
 static constexpr const char* kPendingInstallIntent = ".pj_pending_install";
 static constexpr const char* kQuarantinePrefix = ".pj_quarantine_";
+// Marks an extension as bundled ("core"): shipped with the app and seeded into
+// the extensions dir. Its presence in the extension's own directory makes the
+// folder self-descriptive and gates uninstall — no external registry needed.
+static constexpr const char* kBundledMarker = ".pj_bundled";
 static constexpr int kMaxDiagnostics = 50;
 
 QString extRoot(const QString& extensions_dir, const QString& id) {
@@ -468,6 +472,16 @@ void ExtensionManager::uninstall(const QString& extension_id) {
     return;
   }
 
+  // Bundled ("core") extensions ship with the application and cannot be removed.
+  // The UI disables the Uninstall action; this is the backend guard for any other
+  // path that reaches here.
+  if (isBundled(extension_id)) {
+    emitUninstallFailure(
+        extension_id,
+        QString("Extension \"%1\" ships with the application and cannot be uninstalled").arg(extension_id));
+    return;
+  }
+
   const QString dir_path = installed_[extension_id].path;
 
   if (!QDir(dir_path).removeRecursively()) {
@@ -625,6 +639,12 @@ void ExtensionManager::applyPendingInstalls() {
 
     const QString dst = extRoot(extensions_dir_, intent.id);
 
+    // Preserve the bundled ("core") marker across an update: the staged payload
+    // comes from the registry without it, so if the version being replaced was
+    // bundled, re-apply the marker after promotion — a core plugin stays core
+    // (uninstall-locked) after updating.
+    const bool replaced_was_bundled = isBundled(intent.id);
+
     // Replace any prior copy of this id stored under a different directory name
     // (e.g. a bundled plugin) so promoting to "<id>" does not leave a duplicate.
     replaceConflictingInstallDirs(intent.id, dst);
@@ -675,6 +695,9 @@ void ExtensionManager::applyPendingInstalls() {
     }
 
     QFile::remove(pendingInstallIntentPath(dst));
+    if (replaced_was_bundled) {
+      markBundled(intent.id);
+    }
     registerInstalledExtension(intent.id, dst, discovered.record);
     pending_backup_path_.clear();
     emit installFinished(intent.id, true);
@@ -706,6 +729,25 @@ void ExtensionManager::applyPendingUninstalls() {
 
 bool ExtensionManager::isInstalled(const QString& id) const {
   return installed_.contains(id);
+}
+
+void ExtensionManager::markBundled(const QString& id) {
+  if (!invalidExtensionIdReason(id).isEmpty()) {
+    return;
+  }
+  // Existence is the signal; content is irrelevant. Best-effort — a bundled
+  // plugin still loads without the marker, it just wouldn't be uninstall-locked.
+  QFile marker(QDir(extRoot(extensions_dir_, id)).absoluteFilePath(kBundledMarker));
+  if (!marker.open(QIODevice::WriteOnly)) {
+    reportDiagnostic(id, QString("Could not write bundled marker for \"%1\"").arg(id), /*is_error=*/false);
+  }
+}
+
+bool ExtensionManager::isBundled(const QString& id) const {
+  if (!invalidExtensionIdReason(id).isEmpty()) {
+    return false;
+  }
+  return QFile::exists(QDir(extRoot(extensions_dir_, id)).absoluteFilePath(kBundledMarker));
 }
 
 bool ExtensionManager::hasPendingInstall(const QString& id) const {

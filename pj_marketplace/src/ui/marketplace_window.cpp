@@ -498,7 +498,10 @@ void MarketplaceWindow::openDetail(const QString& ext_id) {
     const bool in_update_queue =
         std::any_of(update_queue_.begin(), update_queue_.end(), [&](const Extension& e) { return e.id == ext_id; });
     const bool installing = ext_id == active_install_id_ || pending_clicks_.contains(ext_id) || in_update_queue;
-    ExtensionDetailDialog dlg(ext, installed_version, needs_restart, installing, this);
+    // Core (bundled) extensions ship with the app and can't be uninstalled — the
+    // dialog shows the Uninstall action locked.
+    const bool is_bundled = ext_mgr_->isBundled(ext_id);
+    ExtensionDetailDialog dlg(ext, installed_version, needs_restart, installing, is_bundled, this);
     connect(&dlg, &ExtensionDetailDialog::installRequested, this, [this, ext_id]() { onActionButtonClicked(ext_id); });
     connect(
         &dlg, &ExtensionDetailDialog::uninstallRequested, this, [this, ext_id]() { onUninstallButtonClicked(ext_id); });

@@ -132,7 +132,24 @@ class ExtensionCatalogService : public QObject {
   // custom folders and, when extensions_dir_is_explicit, the --plugin-dir
   // override — are marked authoritative (a hard override in the catalog's
   // duplicate-id resolution); marketplace/bundled folders stay managed.
-  [[nodiscard]] std::vector<PluginDirEntry> buildScanHierarchy(bool extensions_dir_is_explicit) const;
+  // `include_bundled` is false once bundled plugins have been seeded into the
+  // marketplace dir (default mode): the bundled dir is then a one-time source, not
+  // a live scan tier, so the marketplace dir is the single source of truth and a
+  // seeded plugin never reads as "loaded but not installed".
+  [[nodiscard]] std::vector<PluginDirEntry> buildScanHierarchy(
+      bool extensions_dir_is_explicit, bool include_bundled) const;
+
+  // One-time migration: copy each bundled plugin (from <prefix>/lib/plotjuggler/
+  // plugins) into the marketplace extensions dir and mark it bundled ("core") via
+  // ExtensionManager::markBundled, so its Uninstall action is locked. Runs at
+  // construction BEFORE the plugin scan and AFTER the ExtensionManager applies
+  // pending staged installs, so a staged upgrade is promoted first and the seed
+  // never clobbers it. The record is the extensions dir itself — no external
+  // ledger: an id already present there is left untouched, and since core plugins
+  // cannot be uninstalled, a core folder is never removed and never re-seeded.
+  // Best-effort: a copy failure is logged and retried next launch. Only meaningful
+  // for the default marketplace dir (a --plugin-dir override is user-managed).
+  void seedBundledPlugins();
 
   QString extensions_dir_;
   DiagnosticSink sink_;

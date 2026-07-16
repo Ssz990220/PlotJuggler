@@ -15,7 +15,8 @@
 namespace PJ {
 
 ExtensionDetailDialog::ExtensionDetailDialog(
-    const Extension& ext, const QString& installed_version, bool needs_restart, bool installing, QWidget* parent)
+    const Extension& ext, const QString& installed_version, bool needs_restart, bool installing, bool is_bundled,
+    QWidget* parent)
     : Dialog(parent), ui_(new Ui::ExtensionDetailDialog) {
   // The Dialog content area already owns a zero-margin layout, so build the .ui
   // onto a child body and add it, rather than setupUi(contentWidget()).
@@ -127,10 +128,17 @@ ExtensionDetailDialog::ExtensionDetailDialog(
 
     if (installed) {
       ui_->uninstall_btn->setVisible(true);
-      connect(ui_->uninstall_btn, &QPushButton::clicked, this, [this]() {
-        emit uninstallRequested();
-        accept();
-      });
+      if (is_bundled) {
+        // Core extension shipped with the application: shown but locked, so the
+        // user sees it exists yet cannot remove it.
+        ui_->uninstall_btn->setEnabled(false);
+        ui_->uninstall_btn->setToolTip(tr("This extension ships with the application and cannot be uninstalled"));
+      } else {
+        connect(ui_->uninstall_btn, &QPushButton::clicked, this, [this]() {
+          emit uninstallRequested();
+          accept();
+        });
+      }
     }
   }
 
