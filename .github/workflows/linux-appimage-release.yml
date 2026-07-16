@@ -27,8 +27,6 @@ name: Release AppImage (embedded plugins)
 on:
   workflow_dispatch:
   push:
-    # TEMPORARY dry-run trigger — remove the branches list before merge.
-    branches: [feat/appimage-ci-redesign]
     tags:
       - 'v*'
 
