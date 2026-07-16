@@ -85,6 +85,14 @@ jobs:
           set -euo pipefail
           digest="$(docker buildx imagetools inspect "${IMAGE}:${GITHUB_SHA}" --format '{{ .Manifest.Digest }}')"
           test -n "$digest"
-          gh variable set PJ4_APPIMAGE_BUILDER_IMAGE \
-            --repo "${GITHUB_REPOSITORY}" --body "${IMAGE}@${digest}"
-          echo "Pinned ${IMAGE}@${digest}"
+          # GITHUB_TOKEN cannot write repository variables (HTTP 403 even with
+          # actions:write), so this is best-effort: it works once an admin
+          # supplies a PAT-backed variable path or sets the variable manually.
+          # Until then the release workflow's :latest fallback applies — still
+          # gated by this workflow's smoke test, just not digest-immutable.
+          if gh variable set PJ4_APPIMAGE_BUILDER_IMAGE \
+               --repo "${GITHUB_REPOSITORY}" --body "${IMAGE}@${digest}"; then
+            echo "Pinned ${IMAGE}@${digest}"
+          else
+            echo "::warning::Could not update PJ4_APPIMAGE_BUILDER_IMAGE (GITHUB_TOKEN cannot write repo variables). Set it manually to ${IMAGE}@${digest} for digest-pinned pulls."
+          fi

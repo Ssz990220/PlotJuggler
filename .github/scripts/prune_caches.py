@@ -58,6 +58,15 @@ def _family(key: str) -> str:
     return _ROLLING_SUFFIX.sub("", key)
 
 
+def _delete_cache(repo: str, cache: dict) -> None:
+    """Delete one entry, tolerating races: a PR-close cleanup or GitHub's own
+    eviction can remove it between our list call and this delete."""
+    try:
+        _gh_api(repo, f"actions/caches/{cache['id']}", method="DELETE")
+    except subprocess.CalledProcessError as error:
+        print(f"  (delete failed for {cache['key']}, continuing: {error.stderr.strip()})")
+
+
 def _gh_api(repo: str, path: str, method: str | None = None) -> str:
     args = ["gh", "api"]
     if method:
@@ -134,7 +143,7 @@ def prune(repo: str, keep: int, apply: bool) -> int:
             verb = "deleting" if apply else "would delete"
             print(f"{verb} {cache['size_in_bytes'] / 1e9:6.2f} GB  {cache['ref']}  {cache['key']}")
             if apply:
-                _gh_api(repo, f"actions/caches/{cache['id']}", method="DELETE")
+                _delete_cache(repo, cache)
             freed += cache["size_in_bytes"]
         else:
             retained.append(cache)
@@ -149,7 +158,7 @@ def prune(repo: str, keep: int, apply: bool) -> int:
             verb = "deleting" if apply else "would delete"
             print(f"{verb} {stale['size_in_bytes'] / 1e9:6.2f} GB  {ref}  {stale['key']}")
             if apply:
-                _gh_api(repo, f"actions/caches/{stale['id']}", method="DELETE")
+                _delete_cache(repo, stale)
             freed += stale["size_in_bytes"]
 
     total = sum(c["size_in_bytes"] for c in caches)

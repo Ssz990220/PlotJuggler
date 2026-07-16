@@ -13,6 +13,15 @@ if [[ "${PJ_USE_JFROG:-false}" != "true" ]]; then
   exit 0
 fi
 
+# A committed lockfile pins every recipe revision, which makes revision
+# refreshing pointless — and actively breaks: `conan graph info .` auto-loads
+# ./conan.lock in strict mode and fails on platform-only tool requires the
+# other platform's lock leg never captured (e.g. strawberryperl on MSVC).
+if [[ -f conan.lock ]]; then
+  echo "Skipping Conan recipe sync: conan.lock pins recipe revisions"
+  exit 0
+fi
+
 sync_home="$(mktemp -d)"
 graph_file="${sync_home}/graph.json"
 local_recipe_list="${sync_home}/local-recipes.json"

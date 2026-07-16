@@ -332,6 +332,7 @@ jobs:
             conan_remotes=(-r=plotjuggler-conan -r=conancenter)
           fi
           conan install . --output-folder=build --build=missing "${conan_remotes[@]}" \
+            --lockfile=conan.lock --lockfile-partial \
             -s build_type=RelWithDebInfo -s compiler.cppstd=20
 
       - name: Publish app closure to JFrog

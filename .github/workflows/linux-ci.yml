@@ -184,11 +184,10 @@ jobs:
 
       - name: Configure JFrog Conan repository (read-only, pull requests)
         # Same-repo PRs resolve through a READ-ONLY JFrog credential so they
-        # see the same recipe revisions + binaries as trusted runs; without it
-        # ConanCenter revision drift forces from-source rebuilds of packages
-        # whose binaries already exist. The deploy-capable token remains
-        # trusted-events-only. Fork PRs receive no secrets at all and fall
-        # through to ConanCenter automatically.
+        # see the same recipe revisions + binaries as trusted runs. This path
+        # is best-effort by design: missing or rejected credentials degrade to
+        # ConanCenter-only (a fallback must never fail the build). Fork PRs
+        # receive no secrets at all and fall through automatically.
         if: github.event_name == 'pull_request' || github.repository != 'PlotJuggler/PJ4'
         id: conan_remote_read
         shell: bash
@@ -197,17 +196,27 @@ jobs:
           JFROG_READ_TOKEN: ${{ secrets.JFROG_READ_TOKEN }}
         run: |
           set -euo pipefail
-          if [[ -z "${JFROG_READ_USER:-}" || -z "${JFROG_READ_TOKEN:-}" ]]; then
-            echo "No read-only JFrog credential available; using ConanCenter only."
-            echo "PJ_USE_JFROG=false" >> "$GITHUB_ENV"
-            exit 0
+          repo_url="https://plotjuggler.jfrog.io/artifactory/api/conan/plotjuggler-conan"
+          use_jfrog=false
+          if curl -sf -o /dev/null --max-time 15 "${repo_url}/v2/ping"; then
+            # Anonymous read enabled server-side: no credential, no login, and
+            # fork PRs (which receive no secrets) benefit too.
+            conan remote add plotjuggler-conan "${repo_url}" --force --index=0
+            use_jfrog=true
+            echo "JFrog anonymous read access verified."
+          elif [[ -n "${JFROG_READ_USER:-}" && -n "${JFROG_READ_TOKEN:-}" ]]; then
+            conan remote add plotjuggler-conan "${repo_url}" --force --index=0
+            if conan remote login plotjuggler-conan "$JFROG_READ_USER" -p "$JFROG_READ_TOKEN"; then
+              use_jfrog=true
+              echo "configured=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "::warning::Read-only JFrog login rejected; falling back to ConanCenter only."
+              conan remote remove plotjuggler-conan || true
+            fi
+          else
+            echo "No JFrog read access available; using ConanCenter only."
           fi
-          conan remote add plotjuggler-conan \
-            "https://plotjuggler.jfrog.io/artifactory/api/conan/plotjuggler-conan" \
-            --force --index=0
-          conan remote login plotjuggler-conan "$JFROG_READ_USER" -p "$JFROG_READ_TOKEN"
-          echo "PJ_USE_JFROG=true" >> "$GITHUB_ENV"
-          echo "configured=true" >> "$GITHUB_OUTPUT"
+          echo "PJ_USE_JFROG=${use_jfrog}" >> "$GITHUB_ENV"
 
       - name: Configure JFrog Conan repository
         if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/PJ4'
@@ -493,10 +502,41 @@ jobs:
           restore-keys: |
             conan-linux-gcc-relwithdebinfo-v2-
 
-      - name: Configure public Conan repository for pull requests
+      - name: Configure JFrog Conan repository (read-only, pull requests)
+        # Same-repo PRs resolve through a READ-ONLY JFrog credential so they
+        # see the same recipe revisions + binaries as trusted runs. This path
+        # is best-effort by design: missing or rejected credentials degrade to
+        # ConanCenter-only (a fallback must never fail the build). Fork PRs
+        # receive no secrets at all and fall through automatically.
         if: github.event_name == 'pull_request' || github.repository != 'PlotJuggler/PJ4'
+        id: conan_remote_read
         shell: bash
-        run: echo "PJ_USE_JFROG=false" >> "$GITHUB_ENV"
+        env:
+          JFROG_READ_USER: ${{ vars.JFROG_READ_USER || secrets.JFROG_READ_USER }}
+          JFROG_READ_TOKEN: ${{ secrets.JFROG_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          repo_url="https://plotjuggler.jfrog.io/artifactory/api/conan/plotjuggler-conan"
+          use_jfrog=false
+          if curl -sf -o /dev/null --max-time 15 "${repo_url}/v2/ping"; then
+            # Anonymous read enabled server-side: no credential, no login, and
+            # fork PRs (which receive no secrets) benefit too.
+            conan remote add plotjuggler-conan "${repo_url}" --force --index=0
+            use_jfrog=true
+            echo "JFrog anonymous read access verified."
+          elif [[ -n "${JFROG_READ_USER:-}" && -n "${JFROG_READ_TOKEN:-}" ]]; then
+            conan remote add plotjuggler-conan "${repo_url}" --force --index=0
+            if conan remote login plotjuggler-conan "$JFROG_READ_USER" -p "$JFROG_READ_TOKEN"; then
+              use_jfrog=true
+              echo "configured=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "::warning::Read-only JFrog login rejected; falling back to ConanCenter only."
+              conan remote remove plotjuggler-conan || true
+            fi
+          else
+            echo "No JFrog read access available; using ConanCenter only."
+          fi
+          echo "PJ_USE_JFROG=${use_jfrog}" >> "$GITHUB_ENV"
 
       - name: Configure JFrog Conan repository
         if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/PJ4'
