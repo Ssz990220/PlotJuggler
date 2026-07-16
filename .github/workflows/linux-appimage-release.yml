@@ -367,6 +367,11 @@ jobs:
       - name: Audit AppImage glibc floor
         # The whole point of the container: nothing bundled may require a glibc
         # newer than 2.35. Extract and scan every ELF's versioned GLIBC_ needs.
+        # Exempt the ROS 2 per-distro INNER binaries (ros2-topic-subscriber/
+        # dist/<distro>/): they are deliberately built in each distro's own
+        # container (jazzy/rolling -> Ubuntu 24.04 / glibc 2.38) and are only
+        # dlopen'ed on machines that run that distro. The proxy .so the app
+        # loads directly sits OUTSIDE dist/ and stays subject to the audit.
         shell: bash
         run: |
           set -euo pipefail
@@ -376,6 +381,9 @@ jobs:
           ./app.AppImage --appimage-extract >/dev/null
           bad_found=""
           while IFS= read -r -d '' f; do
+            case "$f" in
+              */plugins/ros2-topic-subscriber/dist/*) continue ;;
+            esac
             if file -b "$f" | grep -q ELF; then
               bad="$(strings -a "$f" | grep -oE 'GLIBC_2\.[0-9]+' | sort -uV | awk -F. '$2 > 35' || true)"
               if [[ -n "$bad" ]]; then
