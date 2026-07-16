@@ -1,0 +1,70 @@
+name: Conan lock refresh
+
+# Regenerates the committed conan.lock (both platform legs) against current
+# ConanCenter recipe revisions and opens a PR when it changed. The lockfile is
+# why CI builds are rare: every job resolves the exact pinned graph JFrog holds
+# binaries for, so upstream revision drift can never force from-source rebuilds
+# mid-PR. Drift is instead absorbed here, deliberately, once a month (or on
+# demand) — and the lock-bump PR's own CI run builds + publishes any genuinely
+# new binaries exactly once.
+#
+# Requires the repo setting "Allow GitHub Actions to create and approve pull
+# requests" (Settings -> Actions -> General) for the PR step.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 5 1 * *"   # monthly; drift is absorbed on our schedule, not upstream's
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: conan-lock-refresh
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install Conan
+        run: python3 -m pip install --no-cache-dir 'conan>=2,<3'
+
+      - name: Regenerate the merged lockfile
+        # Same two legs the committed lock was born from: the Linux gcc graph,
+        # then the Windows MSVC graph extending the same lock (settings mirror
+        # linux-ci.yml / windows-ci.yml). --update forces current ConanCenter
+        # revisions instead of whatever a cache holds.
+        shell: bash
+        run: |
+          set -euo pipefail
+          conan profile detect --force
+          conan lock create . --update \
+            -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
+            --lockfile-out=conan.lock
+          conan lock create . --update \
+            -s:h os=Windows -s:h arch=x86_64 \
+            -s:h compiler=msvc -s:h compiler.version=194 -s:h compiler.runtime=dynamic \
+            -s:h build_type=RelWithDebInfo -s:h compiler.cppstd=20 \
+            -o "cpython/*:shared=True" -s:h "cpython/*:build_type=Release" \
+            --lockfile=conan.lock --lockfile-out=conan.lock
+
+      - name: Open a PR when the lock moved
+        uses: peter-evans/create-pull-request@v7
+        with:
+          add-paths: conan.lock
+          branch: bot/conan-lock-refresh
+          commit-message: "chore(conan): refresh conan.lock recipe revisions"
+          title: "chore(conan): refresh conan.lock recipe revisions"
+          body: |
+            Automated conan.lock refresh against current ConanCenter recipe
+            revisions. This PR's CI run compiles any newly-pinned binaries once;
+            after merge, the trusted run publishes them to JFrog and every
+            subsequent build downloads instead of building.
+          delete-branch: true

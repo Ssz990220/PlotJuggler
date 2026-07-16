@@ -115,7 +115,7 @@ jobs:
           # Hash every conanfile.txt under the tree (today the top-level
           # one; future submodules under PJ4 may add their own) so the
           # key invalidates when any of them changes.
-          hash=$(find . -name conanfile.txt -not -path './build/*' -not -path './.git/*' \
+          hash=$(find . \( -name conanfile.txt -o -name conan.lock \) -not -path './build/*' -not -path './.git/*' \
                   -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16)
           owner="${GITHUB_REPOSITORY_OWNER,,}"
           tag="ghcr.io/${owner}/pj4-conan-cache:linux-gcc-relwithdebinfo-${hash}"
@@ -182,13 +182,32 @@ jobs:
           restore-keys: |
             conan-linux-gcc-relwithdebinfo-v2-
 
-      - name: Configure public Conan repository for pull requests
+      - name: Configure JFrog Conan repository (read-only, pull requests)
+        # Same-repo PRs resolve through a READ-ONLY JFrog credential so they
+        # see the same recipe revisions + binaries as trusted runs; without it
+        # ConanCenter revision drift forces from-source rebuilds of packages
+        # whose binaries already exist. The deploy-capable token remains
+        # trusted-events-only. Fork PRs receive no secrets at all and fall
+        # through to ConanCenter automatically.
         if: github.event_name == 'pull_request' || github.repository != 'PlotJuggler/PJ4'
+        id: conan_remote_read
         shell: bash
+        env:
+          JFROG_READ_USER: ${{ vars.JFROG_READ_USER || secrets.JFROG_READ_USER }}
+          JFROG_READ_TOKEN: ${{ secrets.JFROG_READ_TOKEN }}
         run: |
-          # The current JFrog token can deploy packages, so never expose it to
-          # pull-request or fork-controlled workflow code.
-          echo "PJ_USE_JFROG=false" >> "$GITHUB_ENV"
+          set -euo pipefail
+          if [[ -z "${JFROG_READ_USER:-}" || -z "${JFROG_READ_TOKEN:-}" ]]; then
+            echo "No read-only JFrog credential available; using ConanCenter only."
+            echo "PJ_USE_JFROG=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          conan remote add plotjuggler-conan \
+            "https://plotjuggler.jfrog.io/artifactory/api/conan/plotjuggler-conan" \
+            --force --index=0
+          conan remote login plotjuggler-conan "$JFROG_READ_USER" -p "$JFROG_READ_TOKEN"
+          echo "PJ_USE_JFROG=true" >> "$GITHUB_ENV"
+          echo "configured=true" >> "$GITHUB_OUTPUT"
 
       - name: Configure JFrog Conan repository
         if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/PJ4'
@@ -315,6 +334,7 @@ jobs:
           fi
           conan_log="${RUNNER_TEMP}/pj4-conan-install.log"
           conan install . --output-folder=build --build=missing "${conan_remotes[@]}" \
+            --lockfile=conan.lock --lockfile-partial \
             -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
             2>&1 | tee "$conan_log"
           if grep -q "Building from source" "$conan_log"; then
@@ -334,7 +354,7 @@ jobs:
       - name: Remove JFrog credentials from Conan home
         # ~/.conan2 is archived below. Logout even when install/upload fails
         # so a deploy-capable token can never enter GHCR or Actions caches.
-        if: always() && steps.conan_remote.outputs.authenticated == 'true'
+        if: always() && (steps.conan_remote.outputs.authenticated == 'true' || steps.conan_remote_read.outputs.configured == 'true')
         shell: bash
         run: conan remote logout plotjuggler-conan
 
@@ -452,7 +472,7 @@ jobs:
         run: |
           set -euo pipefail
           # Same hash as the `build` job so we restore its prebuilt closure.
-          hash=$(find . -name conanfile.txt -not -path './build/*' -not -path './.git/*' \
+          hash=$(find . \( -name conanfile.txt -o -name conan.lock \) -not -path './build/*' -not -path './.git/*' \
                   -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16)
           echo "hash=${hash}" >> "${GITHUB_OUTPUT}"
 
@@ -583,7 +603,7 @@ jobs:
       - name: Remove JFrog credentials from Conan home
         # The combined actions/cache step saves ~/.conan2 during post-job
         # cleanup, so remove authentication first on both success and failure.
-        if: always() && steps.conan_remote.outputs.authenticated == 'true'
+        if: always() && (steps.conan_remote.outputs.authenticated == 'true' || steps.conan_remote_read.outputs.configured == 'true')
         shell: bash
         run: conan remote logout plotjuggler-conan
 

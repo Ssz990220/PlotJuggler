@@ -133,7 +133,9 @@ jobs:
           # one stable MSVC/RelWithDebInfo graph. JFrog remains authoritative
           # for trusted runs; this OCI snapshot is the read-only PR/fork path.
           $cacheVersion = "v6"
-          $fileHash = (Get-FileHash conanfile.txt -Algorithm SHA256).Hash.Substring(0, 16).ToLower()
+          $combined = (Get-FileHash conanfile.txt -Algorithm SHA256).Hash + (Get-FileHash conan.lock -Algorithm SHA256).Hash
+          $stream = [System.IO.MemoryStream]::new([System.Text.Encoding]::UTF8.GetBytes($combined))
+          $fileHash = (Get-FileHash -InputStream $stream -Algorithm SHA256).Hash.Substring(0, 16).ToLower()
           $hash = "$cacheVersion-$fileHash"
           $tag = "ghcr.io/plotjuggler/pj4-conan-cache:windows-msvc-relwithdebinfo-$hash"
           "hash=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
@@ -192,14 +194,32 @@ jobs:
           restore-keys: |
             ${{ steps.public_conan_cache.outputs.restore_prefix }}
 
-      - name: Configure public Conan repository for pull requests
+      - name: Configure JFrog Conan repository (read-only, pull requests)
+        # Same-repo PRs resolve through a READ-ONLY JFrog credential so they
+        # see the same recipe revisions + binaries as trusted runs; without it
+        # ConanCenter revision drift forces from-source rebuilds of packages
+        # whose binaries already exist. The deploy-capable token remains
+        # trusted-events-only. Fork PRs receive no secrets at all and fall
+        # through to ConanCenter automatically.
         if: github.event_name == 'pull_request' || github.repository != 'PlotJuggler/PJ4'
+        id: conan_remote_read
         shell: bash
+        env:
+          JFROG_READ_USER: ${{ vars.JFROG_READ_USER || secrets.JFROG_READ_USER }}
+          JFROG_READ_TOKEN: ${{ secrets.JFROG_READ_TOKEN }}
         run: |
-          # Never expose the deploy-capable JFrog credential to pull-request or
-          # fork-controlled workflow code. These jobs may build missing public
-          # packages but cannot publish them.
-          echo "PJ_USE_JFROG=false" >> "$GITHUB_ENV"
+          set -euo pipefail
+          if [[ -z "${JFROG_READ_USER:-}" || -z "${JFROG_READ_TOKEN:-}" ]]; then
+            echo "No read-only JFrog credential available; using ConanCenter only."
+            echo "PJ_USE_JFROG=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          conan remote add plotjuggler-conan \
+            "https://plotjuggler.jfrog.io/artifactory/api/conan/plotjuggler-conan" \
+            --force --index=0
+          conan remote login plotjuggler-conan "$JFROG_READ_USER" -p "$JFROG_READ_TOKEN"
+          echo "PJ_USE_JFROG=true" >> "$GITHUB_ENV"
+          echo "configured=true" >> "$GITHUB_OUTPUT"
 
       - name: Configure JFrog Conan repository
         if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/PJ4'
@@ -375,6 +395,7 @@ jobs:
           fi
           conan_log="${RUNNER_TEMP}/pj4-conan-install.log"
           conan install . --output-folder=build --build=missing "${conan_remotes[@]}" \
+            --lockfile=conan.lock --lockfile-partial \
             -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
             -o "cpython/*:shared=True" -s "cpython/*:build_type=Release" \
             -c tools.cmake.cmaketoolchain:generator="Ninja Multi-Config" \
@@ -396,7 +417,7 @@ jobs:
       - name: Remove JFrog credentials from Conan home
         # ~/.conan2 is archived below. Logout even if install/upload fails so a
         # deploy-capable credential can never enter the public GHCR artifact.
-        if: always() && steps.conan_remote.outputs.authenticated == 'true'
+        if: always() && (steps.conan_remote.outputs.authenticated == 'true' || steps.conan_remote_read.outputs.configured == 'true')
         shell: bash
         run: conan remote logout plotjuggler-conan
 

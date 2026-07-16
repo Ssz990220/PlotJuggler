@@ -42,6 +42,14 @@ if [[ "${PJ_USE_JFROG:-false}" == "true" ]]; then
   CONAN_REMOTE_ARGS=(-r plotjuggler-conan -r conancenter)
 fi
 
+# Committed lockfile pins every recipe revision so local and CI builds resolve
+# the exact graph JFrog holds binaries for (rebuilds happen only when the lock
+# moves). --lockfile-partial keeps platform-only additions resolvable.
+CONAN_LOCKFILE_ARGS=()
+if [[ -f "${SCRIPT_DIR}/conan.lock" ]]; then
+  CONAN_LOCKFILE_ARGS=(--lockfile="${SCRIPT_DIR}/conan.lock" --lockfile-partial)
+fi
+
 # Foundation concurrency tests exercised under ThreadSanitizer. Keep in sync with
 # the `tsan` job in .github/workflows/linux-ci.yml.
 TSAN_TESTS=(engine_thread_safety_test engine_concurrency_test)
@@ -50,7 +58,7 @@ if [[ "$TSAN" == "1" ]]; then
   BUILD_DIR="${SCRIPT_DIR}/build-tsan"
 
   if [[ "$SKIP_CONAN_INSTALL" == "0" ]]; then
-    conan install "$SCRIPT_DIR" --output-folder="$BUILD_DIR" --build=missing \
+    conan install "$SCRIPT_DIR" --output-folder="$BUILD_DIR" --build=missing "${CONAN_LOCKFILE_ARGS[@]}" \
       -s build_type=RelWithDebInfo -s compiler.cppstd=20 "${CONAN_REMOTE_ARGS[@]}"
   elif [[ ! -f "$BUILD_DIR/conan_toolchain.cmake" ]]; then
     echo "Missing $BUILD_DIR/conan_toolchain.cmake; run Conan install first." >&2
@@ -85,7 +93,7 @@ BUILD_DIR="${SCRIPT_DIR}/build"
 # may have unrelated private remotes that host forked recipes under a user
 # channel; those must never shadow PJ4's intended dependency graph.
 if [[ "$SKIP_CONAN_INSTALL" == "0" ]]; then
-  conan install "$SCRIPT_DIR" --output-folder="$BUILD_DIR" --build=missing \
+  conan install "$SCRIPT_DIR" --output-folder="$BUILD_DIR" --build=missing "${CONAN_LOCKFILE_ARGS[@]}" \
     -s build_type=RelWithDebInfo -s compiler.cppstd=20 "${CONAN_REMOTE_ARGS[@]}"
 elif [[ ! -f "$BUILD_DIR/conan_toolchain.cmake" ]]; then
   echo "Missing $BUILD_DIR/conan_toolchain.cmake; run Conan install first." >&2
