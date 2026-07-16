@@ -312,9 +312,16 @@ jobs:
         # 500M cap thrashed — ccache evicted this build's own early objects
         # mid-run (observed: 25 cleanups, 39% hit rate), leaving every later
         # build permanently partially-cold. 2G holds the whole warm set.
+        # compiler_check=content / hash_dir=false / base_dir: hash objects
+        # independently of the compiler mtime and the workspace root so the
+        # linux-appimage-release container job (same gcc 11.4, different
+        # workspace path) can reuse this cache via its restore-keys.
         run: |
           ccache --set-config=max_size=2G
           ccache --set-config=compression=true
+          ccache --set-config=compiler_check=content
+          ccache --set-config=hash_dir=false
+          ccache --set-config=base_dir="${GITHUB_WORKSPACE}"
           ccache -z
 
       - name: Conan install

@@ -27,6 +27,8 @@ name: Release AppImage (embedded plugins)
 on:
   workflow_dispatch:
   push:
+    # TEMPORARY dry-run trigger — remove the branches list before merge.
+    branches: [feat/appimage-ci-redesign]
     tags:
       - 'v*'
 
@@ -43,19 +45,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
-      - name: Free up disk space on the runner
-        # One Docker image per supported ROS 2 distro; the default runner's free
-        # space does not hold them all.
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: false
-
       - name: Use HTTPS for github.com submodules
         run: git config --global url."https://github.com/".insteadOf "git@github.com:"
 
@@ -80,7 +69,39 @@ jobs:
           git clone --depth 1 --recurse-submodules --shallow-submodules \
             https://github.com/PlotJuggler/pj-official-plugins.git "$target"
 
+      - name: Compute ros2 bundle cache key
+        # The bundle is a pure function of the plugins repo tip (the ros2
+        # sources + run-local.sh) and the SDK submodule (conan-exported as
+        # /core into every distro container).
+        id: ros2key
+        shell: bash
+        run: |
+          set -euo pipefail
+          plugins_sha="$(git -C plotjuggler_sdk/pj_ported_plugins rev-parse HEAD)"
+          sdk_sha="$(git -C plotjuggler_sdk rev-parse HEAD)"
+          echo "key=ros2-bundle-v1-${plugins_sha}-${sdk_sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore ros2 bundle cache
+        id: ros2cache
+        uses: actions/cache@v5
+        with:
+          path: plotjuggler_sdk/pj_ported_plugins/dist_ros2
+          key: ${{ steps.ros2key.outputs.key }}
+
+      - name: Free up disk space on the runner
+        # One Docker image per supported ROS 2 distro; the default runner's
+        # free space does not hold them all. The rm -rf list matches
+        # linux-ci.yml (seconds, vs minutes for the apt-based cleanup actions).
+        if: steps.ros2cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/lib/node_modules
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          df -h /
+
       - name: Build ros2 proxy + all distros
+        if: steps.ros2cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -106,7 +127,10 @@ jobs:
     needs: ros2-bundle
     timeout-minutes: 240
     container:
-      image: ghcr.io/plotjuggler/pj4-appimage-builder:latest
+      # Digest-pinned by appimage-builder-image.yml (it updates the repo
+      # variable after each smoke-tested push); :latest is only the bootstrap
+      # fallback for a repo where the variable does not exist yet.
+      image: ${{ vars.PJ4_APPIMAGE_BUILDER_IMAGE || 'ghcr.io/plotjuggler/pj4-appimage-builder:latest' }}
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -200,19 +224,36 @@ jobs:
             conan-appimage-v1-
             conan-linux-gcc-relwithdebinfo-v2-
 
-      - name: Cache ccache
-        uses: actions/cache@v5
+      - name: Restore ccache
+        # Explicit restore/save split: the plain action's post-job save is
+        # skipped when the job fails, which is exactly when preserving the
+        # compiled objects matters most (failures here are usually late —
+        # packaging or audit — after the full compile already happened).
+        id: ccache-restore
+        uses: actions/cache/restore@v5
         with:
           path: ~/.cache/ccache
           key: ccache-appimage-${{ github.sha }}
+          # Last fallback: linux-ci's cache from main — same source tree, same
+          # gcc 11.4. Sharable because both sides hash with
+          # compiler_check=content, hash_dir=false, base_dir (below).
           restore-keys: |
             ccache-appimage-
+            ccache-linux-build-main-
 
-      - name: Set ccache limits
+      - name: Configure ccache
+        # compiler_check=content + hash_dir=false + base_dir make object hashes
+        # independent of the compiler binary's mtime and of the workspace root,
+        # so this container job (/__w/PJ4/PJ4) and linux-ci's runner job
+        # (/home/runner/work/PJ4/PJ4) hit each other's objects. Trade-off:
+        # cached objects may embed the sibling workspace path in debug info.
         shell: bash
         run: |
           ccache --set-config=max_size=2G
           ccache --set-config=compression=true
+          ccache --set-config=compiler_check=content
+          ccache --set-config=hash_dir=false
+          ccache --set-config=base_dir="${GITHUB_WORKSPACE}"
           ccache -z
 
       - name: Configure public Conan repository (forks)
@@ -356,6 +397,15 @@ jobs:
           path: ~/.conan2
           key: conan-appimage-v1-${{ hashFiles('conanfile.txt', 'plotjuggler_sdk/pj_ported_plugins/SDK_VERSION') }}
 
+      - name: Save ccache
+        # always(): keep the objects even when a late step fails. Skipped only
+        # on an exact-key hit (immutable keys make re-saving a no-op anyway).
+        if: always() && steps.ccache-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.cache/ccache
+          key: ccache-appimage-${{ github.sha }}
+
       - name: ccache stats
         if: always()
         shell: bash
@@ -382,7 +432,10 @@ jobs:
               */plugins/ros2-topic-subscriber/dist/*) continue ;;
             esac
             if file -b "$f" | grep -q ELF; then
-              bad="$(strings -a "$f" | grep -oE 'GLIBC_2\.[0-9]+' | sort -uV | awk -F. '$2 > 35' || true)"
+              # readelf -V prints the version-needs section (.gnu.version_r) —
+              # the actual GLIBC versions the loader will demand, unlike a raw
+              # strings scan which also matches incidental mentions.
+              bad="$(readelf -V "$f" 2>/dev/null | grep -oE 'GLIBC_2\.[0-9]+' | sort -uV | awk -F. '$2 > 35' || true)"
               if [[ -n "$bad" ]]; then
                 echo "::error::${f#squashfs-root/} requires ${bad//$'\n'/, } (> GLIBC_2.35)"
                 bad_found=1
