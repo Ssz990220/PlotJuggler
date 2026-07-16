@@ -330,7 +330,6 @@ void MarketplaceWindow::populateCards(bool preserve_scroll) {
   }
 
   const auto installed = ext_mgr_->installedExtensions();
-  bool has_updatable = false;
   for (const Extension& ext : filtered_) {
     const QString ext_id = ext.id;
 
@@ -359,13 +358,6 @@ void MarketplaceWindow::populateCards(bool preserve_scroll) {
 
     const bool has_update = ext_mgr_->hasUpdate(ext);
     const bool has_newer_local = ext_mgr_->hasNewerInstalledVersion(ext);
-    const bool pending = ext_mgr_->hasPendingInstall(ext.id) || ext_mgr_->hasPendingUninstall(ext.id);
-    // A staged update keeps its old installed version until restart, so
-    // hasUpdate() stays true — exclude already-pending extensions so "Update
-    // All" doesn't stay enabled and re-stage what is already queued for restart.
-    if (has_update && !pending) {
-      has_updatable = true;
-    }
 
     QString version_text = ext.version;
     if (installed.contains(ext.id)) {
@@ -447,7 +439,19 @@ void MarketplaceWindow::populateCards(bool preserve_scroll) {
     ui_->cards_layout_->insertWidget(ui_->cards_layout_->count() - 1, card);
   }
 
-  ui_->update_all_btn_->setEnabled(has_updatable && update_queue_.isEmpty());
+  // Enable "Update All" if ANY loaded extension has an update — not just the
+  // filtered subset shown as cards — so the button's reach matches its action.
+  // A staged update keeps its old installed version until restart, so
+  // hasUpdate() stays true; exclude already-pending extensions so the button
+  // doesn't stay enabled to re-stage what is already queued for restart.
+  bool any_updatable = false;
+  for (const Extension& ext : extensions_) {
+    if (ext_mgr_->hasUpdate(ext) && !ext_mgr_->hasPendingInstall(ext.id) && !ext_mgr_->hasPendingUninstall(ext.id)) {
+      any_updatable = true;
+      break;
+    }
+  }
+  ui_->update_all_btn_->setEnabled(any_updatable && update_queue_.isEmpty());
 
   if (preserve_scroll) {
     QTimer::singleShot(
@@ -755,10 +759,13 @@ void MarketplaceWindow::onUninstallButtonClicked(const QString& ext_id) {
 void MarketplaceWindow::onUpdateAllClicked() {
   clearStickyStatus();
   update_queue_.clear();
-  for (const auto& ext : filtered_) {
-    // Skip extensions already staged for restart: a staged update leaves the
-    // installed version unchanged (so hasUpdate() stays true) but re-queuing it
-    // would just re-download and re-stage the same payload.
+  // Iterate every loaded extension, not just the currently filtered/searched
+  // subset: "Update All" means all updatable extensions, regardless of the
+  // active category filter or search term. Skip extensions already staged for
+  // restart: a staged update leaves the installed version unchanged (so
+  // hasUpdate() stays true) but re-queuing it would just re-download and
+  // re-stage the same payload.
+  for (const auto& ext : extensions_) {
     if (ext_mgr_->hasUpdate(ext) && !ext_mgr_->hasPendingInstall(ext.id) && !ext_mgr_->hasPendingUninstall(ext.id)) {
       update_queue_.append(ext);
     }
