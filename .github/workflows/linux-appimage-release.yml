@@ -87,8 +87,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # --core must be ABSOLUTE: run-local.sh bind-mounts it as /core, and
+          # docker treats a relative -v source as a named volume (empty dir).
           plotjuggler_sdk/pj_ported_plugins/data_stream_ros2/docker/run-local.sh \
-            --bundle --core plotjuggler_sdk
+            --bundle --core "${PWD}/plotjuggler_sdk"
 
       - name: Upload ros2 bundle
         uses: actions/upload-artifact@v4
