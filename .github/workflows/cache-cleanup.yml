@@ -20,6 +20,10 @@ name: Cache cleanup
 on:
   pull_request:
     types: [closed]
+  push:
+    # Prune right after every merge: the rolling per-SHA families otherwise
+    # hold 2-3 near-identical generations (~1-2 GB) between cron ticks.
+    branches: [main]
   schedule:
     # Every 6 h: bounds how much per-push churn accumulates between prunes.
     # The job is seconds of ubuntu time (just API calls), so cost is negligible.

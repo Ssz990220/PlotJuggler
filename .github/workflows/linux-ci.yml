@@ -270,7 +270,12 @@ jobs:
         # Keep the regular-build namespace disjoint from TSan. The former
         # `ccache-linux-` catch-all selected the newer ccache-linux-tsan-* entry
         # and produced 0/810 hits because sanitizer objects are incompatible.
-        uses: actions/cache@v5
+        # Restore-only on pull requests: PR-scoped archives (~0.65 GB per open
+        # PR) were a top consumer of the shared 10 GB quota whose LRU eviction
+        # victim is the Windows sccache. PRs still restore main's objects, so
+        # only the PR's own edits recompile on repeat pushes.
+        id: ccache_restore
+        uses: actions/cache/restore@v5
         with:
           path: ~/.cache/ccache
           key: ccache-linux-build-${{ github.ref_name }}-${{ github.sha }}
@@ -385,6 +390,14 @@ jobs:
         with:
           path: ~/.conan2
           key: conan-linux-gcc-relwithdebinfo-v2-${{ steps.conan_cache.outputs.hash }}
+
+      - name: Save ccache
+        # always(): objects from a build whose tests failed are still valid.
+        if: always() && github.event_name != 'pull_request' && steps.ccache_restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.cache/ccache
+          key: ccache-linux-build-${{ github.ref_name }}-${{ github.sha }}
 
       - name: ccache stats
         if: success()

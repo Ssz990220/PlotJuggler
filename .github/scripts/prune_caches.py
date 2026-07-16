@@ -21,11 +21,21 @@ trailing rolling suffix (``-<7..64 hex>``) stripped, then keeps the newest
 content-stable keys (Qt, pre-commit) have no hex suffix, form singleton
 families, and are therefore never touched.
 
+Two further classes of dead weight are removed outright:
+
+* caches scoped to ``refs/heads/*`` whose branch no longer exists (a merged
+  feature branch's conan/ccache archives otherwise linger until the 7-day TTL);
+* caches scoped to ``refs/tags/*`` older than a grace window — tag runs can
+  RESTORE from the default branch but nothing can ever restore from another
+  tag's ref, so tag-scoped saves are write-only garbage (the grace window keeps
+  same-tag re-runs of a failed release warm).
+
 Dry-run by default; pass ``--apply`` to actually delete. Auth and transport go
 through the ``gh`` CLI (``GH_TOKEN`` in CI), so no token handling lives here.
 """
 
 import argparse
+import datetime
 import json
 import os
 import re
@@ -35,6 +45,12 @@ import sys
 # Rolling per-SHA / per-conanfile-hash suffix appended to a stable key stem.
 _ROLLING_SUFFIX = re.compile(r"-[0-9a-f]{7,64}$")
 _PR_CACHE_REF = re.compile(r"^refs/pull/[0-9]+/merge$")
+_BRANCH_CACHE_REF = re.compile(r"^refs/heads/(.+)$")
+_TAG_CACHE_REF = re.compile(r"^refs/tags/")
+
+# Keep tag-scoped caches this long so a re-run of a just-failed release still
+# restores its own saves; beyond it they are unreachable by any other ref.
+_TAG_GRACE = datetime.timedelta(hours=48)
 
 
 def _family(key: str) -> str:
@@ -74,22 +90,49 @@ def _list_open_pr_refs(repo: str) -> set[str]:
         page += 1
 
 
+def _list_branch_names(repo: str) -> set[str]:
+    """Names of every live branch (for detecting deleted-branch cache refs)."""
+    names: set[str] = set()
+    page = 1
+    while True:
+        batch = json.loads(_gh_api(repo, f"branches?per_page=100&page={page}"))
+        names.update(branch["name"] for branch in batch)
+        if len(batch) < 100:
+            return names
+        page += 1
+
+
+def _is_dead_ref(cache: dict, open_pr_refs: set[str], branch_names: set[str],
+                 now: datetime.datetime) -> bool:
+    """True when no future workflow run can ever restore this cache."""
+    ref = cache["ref"]
+    if _PR_CACHE_REF.fullmatch(ref):
+        return ref not in open_pr_refs
+    branch = _BRANCH_CACHE_REF.fullmatch(ref)
+    if branch:
+        return branch.group(1) not in branch_names
+    if _TAG_CACHE_REF.match(ref):
+        created = datetime.datetime.fromisoformat(cache["created_at"].replace("Z", "+00:00"))
+        return now - created > _TAG_GRACE
+    return False
+
+
 def prune(repo: str, keep: int, apply: bool) -> int:
     """Delete all but the newest ``keep`` caches per (ref, family). Returns bytes freed."""
     caches = _list_caches(repo)
     open_pr_refs = _list_open_pr_refs(repo)
+    branch_names = _list_branch_names(repo)
+    now = datetime.datetime.now(datetime.timezone.utc)
     retained: list[dict] = []
     freed = 0
 
-    # A PR-close workflow can finish before that PR's still-running jobs save
-    # their caches. Scheduled/manual pruning is the backstop for those late
-    # writes: closed PR refs are unreachable by future jobs and all their cache
-    # entries are dead weight.
+    # Dead refs first: closed-PR merge refs (a PR-close workflow can finish
+    # before that PR's still-running jobs save their caches — this is the
+    # backstop), deleted branches, and tag refs past the re-run grace window.
     for cache in caches:
-        ref = cache["ref"]
-        if _PR_CACHE_REF.fullmatch(ref) and ref not in open_pr_refs:
+        if _is_dead_ref(cache, open_pr_refs, branch_names, now):
             verb = "deleting" if apply else "would delete"
-            print(f"{verb} {cache['size_in_bytes'] / 1e9:6.2f} GB  {ref}  {cache['key']}")
+            print(f"{verb} {cache['size_in_bytes'] / 1e9:6.2f} GB  {cache['ref']}  {cache['key']}")
             if apply:
                 _gh_api(repo, f"actions/caches/{cache['id']}", method="DELETE")
             freed += cache["size_in_bytes"]

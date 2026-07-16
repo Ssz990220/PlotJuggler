@@ -163,9 +163,12 @@ jobs:
       # Linux keeps its compact ccache archive. Windows no longer creates a
       # second per-commit sccache archive; its object cache is shared with
       # windows-ci.yml and windows-release.yml through sccache itself.
-      - name: Cache compiler objects (Linux)
+      # Restore-only on pull requests (same quota policy as linux-ci): PRs
+      # restore main's objects and recompile only their own edits.
+      - name: Restore compiler objects (Linux)
         if: runner.os == 'Linux'
-        uses: actions/cache@v5
+        id: ccache_restore
+        uses: actions/cache/restore@v5
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-${{ matrix.name }}-${{ github.sha }}
@@ -175,6 +178,13 @@ jobs:
       - name: Build PJ4
         shell: bash
         run: pixi run build
+
+      - name: Save compiler objects (Linux)
+        if: always() && runner.os == 'Linux' && github.event_name != 'pull_request' && steps.ccache_restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ matrix.name }}-${{ github.sha }}
 
       - name: Show compiler cache stats (Linux)
         if: runner.os == 'Linux'
