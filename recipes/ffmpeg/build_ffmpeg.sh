@@ -96,14 +96,17 @@ if [[ "${target_platform:-}" == win-* ]]; then
   # and which its environment may not even provide (LNK1181 on zlib.lib).
   # Normalize each .pc to the canonical shared form: the public surface is
   # exactly `-L${libdir} -l<name>`; dependency metadata moves to
-  # Requires.private (still traversed for --cflags), and the stale
-  # Libs.private/empty lines are dropped. conda-forge patches this same
+  # Requires.private (still traversed for --cflags), and Libs.private is
+  # dropped ENTIRELY — this package ships only shared DLLs + import libs, so
+  # no consumer can static-link, and the upstream line carries MSVC-style
+  # tokens (`-libpath:…`, `zlib.lib`) that pkgconf mis-parses as `-l` inputs
+  # (LNK1181 on zlib.lib in the consumer link). conda-forge patches this same
   # emission for its Windows ffmpeg builds.
   for name in avcodec avformat avutil swscale; do
     pc="$library_prefix_u/lib/pkgconfig/lib${name}.pc"
     sed -i -E \
       -e "s|^Libs:.*|Libs: -L\${libdir} -l${name}|" \
-      -e '/^Libs\.private:[[:space:]]*$/d' \
+      -e '/^Libs\.private:/d' \
       -e '/^Requires\.private:[[:space:]]*$/d' \
       -e 's|^Requires:[[:space:]]*(.+)$|Requires.private: \1|' \
       -e '/^Requires:[[:space:]]*$/d' \

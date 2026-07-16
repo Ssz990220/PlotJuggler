@@ -23,7 +23,6 @@ jobs:
 
   build:
     if: github.event.pull_request.draft == false
-    needs: pre-commit
     # Keep the application CI ABI-compatible with the published official
     # plugins and windows-release.yml. windows-latest now selects VS18/MSVC
     # 14.5x, while both release pipelines deliberately use VS2022/MSVC 14.44.

@@ -23,7 +23,6 @@ jobs:
 
   build:
     if: github.event.pull_request.draft == false
-    needs: pre-commit
     runs-on: ubuntu-22.04
     # Backstop against hangs (a deadlocked test otherwise holds the runner for
     # GitHub's 6-hour default). Worst observed legitimate run — cold Conan +
@@ -404,7 +403,6 @@ jobs:
     # in parallel with `build`, sharing its cached Qt + RelWithDebInfo Conan
     # closure (only our own sources get instrumented). See ./build.sh --tsan.
     if: github.event.pull_request.draft == false
-    needs: pre-commit
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     permissions:

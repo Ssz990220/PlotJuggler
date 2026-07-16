@@ -94,7 +94,23 @@ jobs:
           run-install: false
           cache: false
 
+      - name: Cache built local channel
+        # The gap packages (luau, mcap, cloudini, nanoarrow, ffmpeg — the
+        # latter compiled from source) are a pure function of recipes/**, yet
+        # they were rebuilt on EVERY run (~20-40 min per leg). Cache the built
+        # .conda channel and skip rattler-build entirely on an exact hit.
+        # bld/ (work dirs, failure forensics) is excluded: large and useless
+        # on the hit path.
+        id: channel-cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            local-channel
+            !local-channel/bld
+          key: local-channel-${{ matrix.name }}-${{ hashFiles('recipes/**') }}
+
       - name: Build local conda channel (gap packages)
+        if: steps.channel-cache.outputs.cache-hit != 'true'
         shell: bash
         # pixi exec runs rattler-build in an ephemeral env, independent of the
         # project lockfile — so it works before the default env can be solved
