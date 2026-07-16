@@ -25,11 +25,6 @@ jobs:
     # it needs to run before the PR is marked ready.
     name: pixi-build (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
-    # Windows is now a REQUIRED shipped target. continue-on-error stays true
-    # only until this leg proves green with the local LGPL ffmpeg package —
-    # then it must flip to false (and become a required branch-protection
-    # check) so the shipped platform gates PRs like Linux does.
-    continue-on-error: ${{ matrix.name == 'win-64' }}
     strategy:
       fail-fast: false
       matrix:
