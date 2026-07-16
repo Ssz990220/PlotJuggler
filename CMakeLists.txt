@@ -42,7 +42,11 @@ option(PJ_BUILD_RASTER_HELPER "Build the standalone pj-raster-helper (doomgeneri
 # build: the SDK's ported-plugins collection, and pj_datastore's parquet
 # example (PJ_BUILD_PARQUET_IMPORT_EXAMPLE is now a pj_datastore option, pinned
 # off here before that subdirectory is added).
-set(PJ_BUILD_TESTS ON CACHE BOOL "Build foundation (SDK + pj_datastore) tests" FORCE)
+# Default ON (local and CI builds need the suite); release/packaging
+# pipelines pass -DPJ_BUILD_TESTS=OFF — they never run ctest, and the 271
+# per-fixture static test binaries are ~17 GB of an otherwise ~5 GB tree.
+set(PJ_BUILD_TESTS ON CACHE BOOL "Build foundation (SDK + pj_datastore) tests")
+option(PJ_BUILD_DEMOS "Build the pj_scene3D standalone dev demos" ON)
 set(PJ_BUILD_PARQUET_IMPORT_EXAMPLE OFF CACHE BOOL "" FORCE)
 set(PJ_BUILD_PORTED_PLUGINS OFF CACHE BOOL "" FORCE)
 
@@ -144,7 +148,9 @@ if(PJ_BUILD_TOOLS)
 endif()
 add_subdirectory(pj_scene3D/core)
 add_subdirectory(pj_scene3D/widgets)
-add_subdirectory(pj_scene3D/demos)
+if(PJ_BUILD_DEMOS)
+    add_subdirectory(pj_scene3D/demos)
+endif()
 add_subdirectory(pj_marketplace)
 add_subdirectory(pj_dialog_host)
 add_subdirectory(pj_runtime)

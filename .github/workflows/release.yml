@@ -94,6 +94,11 @@ jobs:
           restore-keys: ccache-appimage-
 
       - name: Build plotjuggler4
+        # Tests/demos never ship and this flow runs no ctest; skip their
+        # ~271 uncacheable links and ~17 GB of build tree.
+        env:
+          PJ_BUILD_TESTS: "OFF"
+          PJ_BUILD_DEMOS: "OFF"
         run: ./build.sh
 
       - name: Build AppImage

@@ -32,6 +32,12 @@ if command -v ccache &>/dev/null; then
   CMAKE_CCACHE_ARGS+=("-DCMAKE_C_COMPILER_LAUNCHER=ccache" "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache")
 fi
 
+# Release/packaging pipelines export these to skip building the test suite
+# and the scene3D dev demos (neither ships, and no release flow runs ctest).
+PJ_FLAG_ARGS=()
+[[ -n "${PJ_BUILD_TESTS:-}" ]] && PJ_FLAG_ARGS+=("-DPJ_BUILD_TESTS=${PJ_BUILD_TESTS}")
+[[ -n "${PJ_BUILD_DEMOS:-}" ]] && PJ_FLAG_ARGS+=("-DPJ_BUILD_DEMOS=${PJ_BUILD_DEMOS}")
+
 # CI can opt into PlotJuggler's authenticated Artifactory remote while local
 # builds and untrusted pull requests remain reproducible against ConanCenter.
 # Keep the remotes explicit so unrelated developer remotes can never shadow the
@@ -74,7 +80,7 @@ if [[ "$TSAN" == "1" ]]; then
     -DCMAKE_PREFIX_PATH="${QT_DIR}" \
     -DPJ_ENABLE_TSAN=ON \
     -DPJ4_BUILD_APP=OFF \
-    "${CMAKE_CCACHE_ARGS[@]+"${CMAKE_CCACHE_ARGS[@]}"}"
+    "${CMAKE_CCACHE_ARGS[@]+"${CMAKE_CCACHE_ARGS[@]}"}" "${PJ_FLAG_ARGS[@]+"${PJ_FLAG_ARGS[@]}"}"
 
   cmake --build "$BUILD_DIR" --target "${TSAN_TESTS[@]}" -j "$(nproc)"
 
@@ -105,7 +111,7 @@ cmake -S "$SCRIPT_DIR" -B "$BUILD_DIR" \
   -DCMAKE_BUILD_TYPE=RelWithDebInfo \
   -DCMAKE_PREFIX_PATH="${QT_DIR}" \
   -DPJ_VERSION="${PJ_VERSION:-${PJ_APP_VERSION}}" \
-  "${CMAKE_CCACHE_ARGS[@]+"${CMAKE_CCACHE_ARGS[@]}"}"
+  "${CMAKE_CCACHE_ARGS[@]+"${CMAKE_CCACHE_ARGS[@]}"}" "${PJ_FLAG_ARGS[@]+"${PJ_FLAG_ARGS[@]}"}"
 
 # Surface the compile DB (CMAKE_EXPORT_COMPILE_COMMANDS writes it under build/) at
 # the repo root so clangd/editors resolve includes without extra config. The root

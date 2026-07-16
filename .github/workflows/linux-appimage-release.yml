@@ -364,6 +364,11 @@ jobs:
         # --host-build: "host" here IS the jammy container (glibc 2.35 floor).
         # --skip-ros2: the bundle was downloaded above into the exact path the
         # script checks (data_stream_ros2/dist_ros2).
+        # Tests and demos never ship and no release flow runs ctest; skipping
+        # them drops ~271 uncacheable test links and ~17 GB of build tree.
+        env:
+          PJ_BUILD_TESTS: "OFF"
+          PJ_BUILD_DEMOS: "OFF"
         shell: bash
         run: |
           set -euo pipefail

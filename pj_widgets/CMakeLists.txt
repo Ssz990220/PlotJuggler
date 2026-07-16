@@ -104,7 +104,9 @@ if(PJ_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
-add_subdirectory(demos)
+if(PJ_BUILD_DEMOS)
+    add_subdirectory(demos)
+endif()
 
 option(PJ_BUILD_WIDGET_DEMOS "Build pj_widgets demo apps" ${PJ_BUILD_TESTS})
 if(PJ_BUILD_WIDGET_DEMOS)
