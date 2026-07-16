@@ -24,7 +24,12 @@ jobs:
   build:
     if: github.event.pull_request.draft == false
     needs: pre-commit
-    runs-on: windows-latest
+    # Keep the application CI ABI-compatible with the published official
+    # plugins and windows-release.yml. windows-latest now selects VS18/MSVC
+    # 14.5x, while both release pipelines deliberately use VS2022/MSVC 14.44.
+    # Pinning this also lets CI and the installer share the same sccache objects
+    # and Conan package IDs instead of maintaining two Windows toolchain graphs.
+    runs-on: windows-2022
     # PJ4 v1 is Linux-only by policy (see CLAUDE.md). This job runs as a
     # portability tracker: it surfaces POSIX-isms early without blocking
     # PRs while the codebase converges on cross-platform cleanliness.
