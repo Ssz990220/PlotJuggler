@@ -42,7 +42,10 @@ jobs:
     timeout-minutes: 150
     permissions:
       contents: read
-      packages: read   # pull the canonical read-only Conan cache from ghcr.io
+      # PR/fork tokens are downgraded to read-only by GitHub. Trusted manual and
+      # main runs use write access to refresh the public, credential-free Conan
+      # snapshot after resolving the authoritative graph from JFrog.
+      packages: write
 
     env:
       # Share object-level MSVC results with the release and Pixi workflows.
@@ -89,7 +92,6 @@ jobs:
 
       - name: Setup oras for public Conan cache
         id: setup_oras
-        if: github.event_name == 'pull_request' || github.repository != 'PlotJuggler/PJ4'
         continue-on-error: true
         uses: oras-project/setup-oras@v1
         with:
@@ -97,9 +99,7 @@ jobs:
 
       - name: Setup oras (manual download fallback)
         id: setup_oras_fallback
-        if: >-
-          (github.event_name == 'pull_request' || github.repository != 'PlotJuggler/PJ4') &&
-          steps.setup_oras.outcome == 'failure'
+        if: steps.setup_oras.outcome == 'failure'
         continue-on-error: true
         shell: pwsh
         run: |
@@ -128,12 +128,11 @@ jobs:
 
       - name: Compute public Conan cache tag
         id: public_conan_cache
-        if: github.event_name == 'pull_request' || github.repository != 'PlotJuggler/PJ4'
         shell: pwsh
         run: |
-          # Match the immutable cache identity published by the proven
-          # push-to-main Windows workflow. JFrog remains authoritative for
-          # trusted runs; this OCI artifact is a read-only PR/fork fallback.
+          # The runner is pinned to windows-2022 above, so this identity maps to
+          # one stable MSVC/RelWithDebInfo graph. JFrog remains authoritative
+          # for trusted runs; this OCI snapshot is the read-only PR/fork path.
           $cacheVersion = "v6"
           $fileHash = (Get-FileHash conanfile.txt -Algorithm SHA256).Hash.Substring(0, 16).ToLower()
           $hash = "$cacheVersion-$fileHash"
@@ -145,7 +144,6 @@ jobs:
 
       - name: Login to ghcr.io for public Conan cache
         if: >-
-          (github.event_name == 'pull_request' || github.repository != 'PlotJuggler/PJ4') &&
           github.repository_owner == 'PlotJuggler' &&
           (steps.setup_oras.outcome == 'success' || steps.setup_oras_fallback.outcome == 'success')
         shell: pwsh
@@ -395,6 +393,46 @@ jobs:
           # built by --build=missing for the next trusted Windows job.
           conan upload "*" -r=plotjuggler-conan --confirm \
             -cc core.upload:parallel=4
+
+      - name: Remove JFrog credentials from Conan home
+        # ~/.conan2 is archived below. Logout even if install/upload fails so a
+        # deploy-capable credential can never enter the public GHCR artifact.
+        if: always() && steps.conan_remote.outputs.authenticated == 'true'
+        shell: bash
+        run: conan remote logout plotjuggler-conan
+
+      - name: Publish public Conan cache to ghcr.io
+        # Trusted jobs first resolve exact recipes/binaries through JFrog, then
+        # refresh the credential-free public snapshot consumed by PRs/forks.
+        # Re-pushing the content-addressed layers is cheap when nothing changed,
+        # while keeping the mutable tag complete when JFrog gains a new binary.
+        if: >-
+          github.event_name != 'pull_request' &&
+          github.repository == 'PlotJuggler/PJ4' &&
+          steps.conan_install.outcome == 'success' &&
+          (steps.setup_oras.outcome == 'success' || steps.setup_oras_fallback.outcome == 'success')
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.public_conan_cache.outputs.tag }}"
+          $tarball = Join-Path $env:RUNNER_TEMP "conan-cache.tar.zst"
+
+          # Exclude transient source/build trees; consumers only need recipes
+          # and package binaries. Authentication was removed in the prior step.
+          conan cache clean "*" --build --source --temp
+          if ($LASTEXITCODE -ne 0) { throw "conan cache clean failed" }
+
+          tar --zstd -cf $tarball -C $env:USERPROFILE .conan2
+          if ($LASTEXITCODE -ne 0) { throw "packing the Conan cache failed" }
+          $sizeMb = [math]::Round((Get-Item $tarball).Length / 1MB, 1)
+          Write-Host "Publishing ${sizeMb} MB Conan snapshot to $tag"
+
+          Push-Location $env:RUNNER_TEMP
+          try {
+            oras push $tag "conan-cache.tar.zst:application/vnd.oci.image.layer.v1.tar+zstd"
+            if ($LASTEXITCODE -ne 0) { throw "oras push failed" }
+          } finally {
+            Pop-Location
+          }
 
       - name: Build
         shell: bash
