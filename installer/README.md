@@ -142,11 +142,11 @@ Options: `-SkipPlugins` (fast core-only installer), `-PluginIds a,b,c` (override
 the curated registry ids), `-PluginRegistryUrl <url-or-json-path>` (registry
 source), and `-PluginPlatform <key>` (defaults to `windows-x86_64`).
 
-The default whitelist preserves the 12 plugins that previously built successfully:
+The default whitelist bundles these 13 published plugins:
 `mcap-loader`, `csv-loader`, `parquet-loader`, `ulog-loader`, `dummy-streamer`,
 `foxglove-bridge`, `plotjuggler-bridge`, `ros-parser`, `protobuf-parser`,
-`json-parser`, `toolbox-quaternion`, and `toolbox-transform-editor`.
-`toolbox-mosaico` is not whitelisted because it has no published registry entry.
+`json-parser`, `toolbox-quaternion`, `toolbox-transform-editor`, and
+`toolbox-mosaico`.
 
 ## Install-time behaviour
 

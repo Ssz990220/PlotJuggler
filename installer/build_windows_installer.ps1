@@ -92,7 +92,7 @@ param(
     "mcap-loader", "csv-loader", "parquet-loader", "ulog-loader",
     "dummy-streamer", "foxglove-bridge", "plotjuggler-bridge",
     "ros-parser", "protobuf-parser", "json-parser",
-    "toolbox-quaternion", "toolbox-transform-editor"
+    "toolbox-quaternion", "toolbox-transform-editor", "toolbox-mosaico"
   ),
   [string]$PluginPlatform = "windows-x86_64",
   [string]$ConanHome  = "$env:USERPROFILE\.conan2",
