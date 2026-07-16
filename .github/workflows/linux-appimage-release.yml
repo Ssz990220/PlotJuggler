@@ -37,6 +37,23 @@ jobs:
     timeout-minutes: 360
 
     steps:
+      - name: Free up disk space on the runner
+        # ubuntu-22.04 runners ship with ~14 GB free; the release AppImage build
+        # (Docker builder image + Conan cache + FFmpeg/Arrow/gRPC + PJ4 core +
+        # the 13 curated plugins + ROS 2 multi-distro bundles) fills it up. The
+        # first cold run hit `ar: libpj_datastore.a: No space left on device`
+        # mid-compile. Drop ~30 GB of preinstalled toolchains we do not need
+        # (Android, .NET, Haskell, big Docker base images) up front.
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: false
+
       - name: Use HTTPS for github.com submodules
         run: git config --global url."https://github.com/".insteadOf "git@github.com:"
 
