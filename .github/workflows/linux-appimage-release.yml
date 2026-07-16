@@ -96,7 +96,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ros2-bundle
-          path: plotjuggler_sdk/pj_ported_plugins/data_stream_ros2/dist_ros2
+          # run-local.sh writes the bundle tree to the PLUGINS-REPO root
+          # (pj_ported_plugins/dist_ros2) — NOT under data_stream_ros2/, which
+          # is where build_release_appimage.sh reads it. The appimage job's
+          # download step bridges that drift by placing the artifact at the
+          # reader's path.
+          path: plotjuggler_sdk/pj_ported_plugins/dist_ros2
           if-no-files-found: error
 
   appimage:
