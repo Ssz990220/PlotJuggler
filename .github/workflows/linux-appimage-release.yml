@@ -83,7 +83,7 @@ jobs:
 
       - name: Restore ros2 bundle cache
         id: ros2cache
-        uses: actions/cache@v5
+        uses: actions/cache/restore@v5
         with:
           path: plotjuggler_sdk/pj_ported_plugins/dist_ros2
           key: ${{ steps.ros2key.outputs.key }}
@@ -109,6 +109,16 @@ jobs:
           # docker treats a relative -v source as a named volume (empty dir).
           plotjuggler_sdk/pj_ported_plugins/data_stream_ros2/docker/run-local.sh \
             --bundle --core "${PWD}/plotjuggler_sdk"
+
+      - name: Save ros2 bundle cache
+        # Not on tag refs: nothing can restore another tag's caches, so those
+        # saves are write-only quota waste (dispatch runs on main keep the
+        # main-scoped entry warm, which tag runs CAN restore).
+        if: github.ref_type != 'tag' && steps.ros2cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: plotjuggler_sdk/pj_ported_plugins/dist_ros2
+          key: ${{ steps.ros2key.outputs.key }}
 
       - name: Upload ros2 bundle
         uses: actions/upload-artifact@v4
@@ -384,14 +394,14 @@ jobs:
         run: conan remote logout plotjuggler-conan
 
       - name: Trim Conan cache before saving
-        if: always() && steps.conan-cache.outputs.cache-hit != 'true'
+        if: always() && github.ref_type != 'tag' && steps.conan-cache.outputs.cache-hit != 'true'
         shell: bash
         run: conan cache clean "*" --build --source --temp || true
 
       - name: Save Conan cache
         # always(): a failed app compile must still persist the expensive
         # third-party closure. Runs after logout (no credentials in the cache).
-        if: always() && steps.conan-cache.outputs.cache-hit != 'true'
+        if: always() && github.ref_type != 'tag' && steps.conan-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
         with:
           path: ~/.conan2
@@ -400,7 +410,7 @@ jobs:
       - name: Save ccache
         # always(): keep the objects even when a late step fails. Skipped only
         # on an exact-key hit (immutable keys make re-saving a no-op anyway).
-        if: always() && steps.ccache-restore.outputs.cache-hit != 'true'
+        if: always() && github.ref_type != 'tag' && steps.ccache-restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
         with:
           path: ~/.cache/ccache
