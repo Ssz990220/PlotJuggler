@@ -24,6 +24,7 @@
 #include <QStyle>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <QVersionNumber>
 #include <QWindow>
 #include <algorithm>
 
@@ -234,6 +235,13 @@ void MarketplaceWindow::setupSignals() {
     status_error_sticky_ = false;
     populateCards();
     setStatus(QString("Extension %1 staged — will be uninstalled after restart").arg(id));
+  });
+
+  connect(ext_mgr_, &ExtensionManager::downgradePendingRestart, this, [this](const QString& id) {
+    ui_->progress_bar_->setVisible(false);
+    status_error_sticky_ = false;
+    populateCards();
+    setStatus(QString("Extension %1 will revert to its bundled version after restart").arg(id));
   });
 
   connect(registry_mgr_, &RegistryManager::fetchError, this, [this](const QString& error) {
@@ -681,11 +689,33 @@ void MarketplaceWindow::showDetail(const QString& ext_id) {
     // exactly as the old subdialog did.
     if (is_installed) {
       form.uninstall_btn->setVisible(true);
-      if (is_bundled) {
-        // Core extension shipped with the application: shown but locked, so the
-        // user sees it exists yet cannot remove it.
+      // Empty when not core; otherwise the version the app ships, used to lock
+      // uninstall (installed == bundled) or offer downgrade-to-bundled.
+      const QString bundled_version = ext_mgr_->bundledVersion(ext_id);
+      // For a core plugin, compare the installed version to the one it ships with.
+      const int installed_vs_bundled =
+          is_bundled ? QVersionNumber::compare(
+                           QVersionNumber::fromString(installed_version), QVersionNumber::fromString(bundled_version))
+                     : 0;
+      if (is_bundled && installed_vs_bundled <= 0) {
+        // Core extension at its bundled version: it ships with the app and can't be
+        // removed. Shown but locked, so the user sees it exists yet cannot remove it.
         form.uninstall_btn->setEnabled(false);
         form.uninstall_btn->setToolTip(tr("This extension ships with the application and cannot be uninstalled"));
+      } else if (is_bundled) {
+        // Core extension updated ABOVE its bundled version: offer to revert to the
+        // shipped version instead of a plain uninstall. The bundled build ships with
+        // the app, so it is always a compatible downgrade. Functionally this
+        // uninstalls the updated copy; the seed restores the bundled version on the
+        // next launch. Red style via the #extButtonDowngrade rule.
+        form.uninstall_btn->setText(tr("Downgrade to bundled v%1").arg(bundled_version));
+        form.uninstall_btn->setObjectName("extButtonDowngrade");
+        form.uninstall_btn->setToolTip(
+            tr("Reverts to the bundled version v%1 on the next launch").arg(bundled_version));
+        connect(form.uninstall_btn, &QPushButton::clicked, this, [this, ext_id]() {
+          clearStickyStatus();
+          ext_mgr_->downgradeToBundled(ext_id);
+        });
       } else {
         connect(
             form.uninstall_btn, &QPushButton::clicked, this, [this, ext_id]() { onUninstallButtonClicked(ext_id); });

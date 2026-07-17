@@ -24,10 +24,6 @@ namespace {
 static constexpr const char* kPendingUninstallMarker = ".pj_pending_uninstall";
 static constexpr const char* kPendingInstallIntent = ".pj_pending_install";
 static constexpr const char* kQuarantinePrefix = ".pj_quarantine_";
-// Marks an extension as bundled ("core"): shipped with the app and seeded into
-// the extensions dir. Its presence in the extension's own directory makes the
-// folder self-descriptive and gates uninstall — no external registry needed.
-static constexpr const char* kBundledMarker = ".pj_bundled";
 static constexpr int kMaxDiagnostics = 50;
 
 QString extRoot(const QString& extensions_dir, const QString& id) {
@@ -472,14 +468,19 @@ void ExtensionManager::uninstall(const QString& extension_id) {
     return;
   }
 
-  // Bundled ("core") extensions ship with the application and cannot be removed.
-  // The UI disables the Uninstall action; this is the backend guard for any other
-  // path that reaches here.
+  // A core extension AT its bundled version cannot be removed — it ships with the
+  // application. One updated ABOVE its bundled version can be reverted (the UI's
+  // "downgrade to bundled"): allow the uninstall here, and the seed restores the
+  // bundled version on the next launch. This is the backend guard mirroring the UI.
   if (isBundled(extension_id)) {
-    emitUninstallFailure(
-        extension_id,
-        QString("Extension \"%1\" ships with the application and cannot be uninstalled").arg(extension_id));
-    return;
+    const QVersionNumber installed_ver = QVersionNumber::fromString(installed_[extension_id].version);
+    const QVersionNumber bundled_ver = QVersionNumber::fromString(bundledVersion(extension_id));
+    if (QVersionNumber::compare(installed_ver, bundled_ver) <= 0) {
+      emitUninstallFailure(
+          extension_id,
+          QString("Extension \"%1\" ships with the application and cannot be uninstalled").arg(extension_id));
+      return;
+    }
   }
 
   const QString dir_path = installed_[extension_id].path;
@@ -502,6 +503,39 @@ void ExtensionManager::uninstall(const QString& extension_id) {
 
   installed_.remove(extension_id);
   emit uninstallFinished(extension_id, true);
+}
+
+void ExtensionManager::downgradeToBundled(const QString& extension_id) {
+  refreshInstalledFromDisk();
+
+  if (!installed_.contains(extension_id)) {
+    emitUninstallFailure(extension_id, QString("Extension \"%1\" is not installed").arg(extension_id));
+    return;
+  }
+  if (!isBundled(extension_id)) {
+    emitUninstallFailure(
+        extension_id, QString("Extension \"%1\" does not ship with the application").arg(extension_id));
+    return;
+  }
+  const QVersionNumber installed_ver = QVersionNumber::fromString(installed_[extension_id].version);
+  const QVersionNumber bundled_ver = QVersionNumber::fromString(bundledVersion(extension_id));
+  if (QVersionNumber::compare(installed_ver, bundled_ver) <= 0) {
+    emitUninstallFailure(extension_id, QString("Extension \"%1\" is already at its bundled version").arg(extension_id));
+    return;
+  }
+
+  // Stage the removal of the updated copy — do NOT delete now: an immediate remove
+  // would hot-swap the loaded DSO and the card would read "Install". Mark it for
+  // restart cleanup so the card shows "Needs Restart"; on the next launch
+  // applyPendingUninstalls removes it and the host seed restores the bundled
+  // version (always compatible, since it ships with the app).
+  const QString dir_path = installed_[extension_id].path;
+  if (!schedulePendingUninstall(dir_path)) {
+    emitUninstallFailure(extension_id, QString("Could not stage the downgrade of \"%1\"").arg(extension_id));
+    return;
+  }
+  installed_.remove(extension_id);
+  emit downgradePendingRestart(extension_id);
 }
 
 void ExtensionManager::update(const Extension& ext) {
@@ -639,12 +673,6 @@ void ExtensionManager::applyPendingInstalls() {
 
     const QString dst = extRoot(extensions_dir_, intent.id);
 
-    // Preserve the bundled ("core") marker across an update: the staged payload
-    // comes from the registry without it, so if the version being replaced was
-    // bundled, re-apply the marker after promotion — a core plugin stays core
-    // (uninstall-locked) after updating.
-    const bool replaced_was_bundled = isBundled(intent.id);
-
     // Replace any prior copy of this id stored under a different directory name
     // (e.g. a bundled plugin) so promoting to "<id>" does not leave a duplicate.
     replaceConflictingInstallDirs(intent.id, dst);
@@ -695,9 +723,6 @@ void ExtensionManager::applyPendingInstalls() {
     }
 
     QFile::remove(pendingInstallIntentPath(dst));
-    if (replaced_was_bundled) {
-      markBundled(intent.id);
-    }
     registerInstalledExtension(intent.id, dst, discovered.record);
     pending_backup_path_.clear();
     emit installFinished(intent.id, true);
@@ -731,23 +756,20 @@ bool ExtensionManager::isInstalled(const QString& id) const {
   return installed_.contains(id);
 }
 
-void ExtensionManager::markBundled(const QString& id) {
-  if (!invalidExtensionIdReason(id).isEmpty()) {
-    return;
-  }
-  // Existence is the signal; content is irrelevant. Best-effort — a bundled
-  // plugin still loads without the marker, it just wouldn't be uninstall-locked.
-  QFile marker(QDir(extRoot(extensions_dir_, id)).absoluteFilePath(kBundledMarker));
-  if (!marker.open(QIODevice::WriteOnly)) {
-    reportDiagnostic(id, QString("Could not write bundled marker for \"%1\"").arg(id), /*is_error=*/false);
-  }
+void ExtensionManager::setBundledVersions(const QMap<QString, QString>& id_to_version) {
+  bundled_versions_ = id_to_version;
 }
 
 bool ExtensionManager::isBundled(const QString& id) const {
-  if (!invalidExtensionIdReason(id).isEmpty()) {
-    return false;
-  }
-  return QFile::exists(QDir(extRoot(extensions_dir_, id)).absoluteFilePath(kBundledMarker));
+  // "Core" = the id ships with the application. The host computes the bundled
+  // id -> version map from the bundled plugin directory and hands it in via
+  // setBundledVersions(); no per-folder marker. Empty (standalone marketplace app
+  // or a --plugin-dir run) means nothing is core.
+  return bundled_versions_.contains(id);
+}
+
+QString ExtensionManager::bundledVersion(const QString& id) const {
+  return bundled_versions_.value(id);
 }
 
 bool ExtensionManager::hasPendingInstall(const QString& id) const {

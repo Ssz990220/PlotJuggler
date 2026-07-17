@@ -15,8 +15,8 @@
 namespace PJ {
 
 ExtensionDetailDialog::ExtensionDetailDialog(
-    const Extension& ext, const QString& installed_version, bool needs_restart, bool installing, bool is_bundled,
-    QWidget* parent)
+    const Extension& ext, const QString& installed_version, bool needs_restart, bool installing,
+    const QString& bundled_version, QWidget* parent)
     : Dialog(parent), ui_(new Ui::ExtensionDetailDialog) {
   // The Dialog content area already owns a zero-margin layout, so build the .ui
   // onto a child body and add it, rather than setupUi(contentWidget()).
@@ -128,12 +128,33 @@ ExtensionDetailDialog::ExtensionDetailDialog(
 
     if (installed) {
       ui_->uninstall_btn->setVisible(true);
-      if (is_bundled) {
-        // Core extension shipped with the application: shown but locked, so the
-        // user sees it exists yet cannot remove it.
+      const bool is_bundled = !bundled_version.isEmpty();
+      // For a core plugin, compare the installed version to the one it ships with.
+      const int installed_vs_bundled =
+          is_bundled ? QVersionNumber::compare(
+                           QVersionNumber::fromString(installed_version), QVersionNumber::fromString(bundled_version))
+                     : 0;
+      if (is_bundled && installed_vs_bundled <= 0) {
+        // Core extension at its bundled version: it ships with the app and can't be
+        // removed. Shown but locked, so the user sees it exists yet cannot remove it.
         ui_->uninstall_btn->setEnabled(false);
         ui_->uninstall_btn->setToolTip(tr("This extension ships with the application and cannot be uninstalled"));
+      } else if (is_bundled) {
+        // Core extension updated ABOVE its bundled version: offer to revert to the
+        // shipped version instead of a plain uninstall. The bundled build ships
+        // with the app, so it is always a compatible downgrade. Functionally this
+        // uninstalls the updated copy; the seed restores the bundled version on the
+        // next launch. Red style via the #extButtonDowngrade rule.
+        ui_->uninstall_btn->setText(tr("Downgrade to bundled v%1").arg(bundled_version));
+        ui_->uninstall_btn->setObjectName("extButtonDowngrade");
+        ui_->uninstall_btn->setToolTip(
+            tr("Reverts to the bundled version v%1 on the next launch").arg(bundled_version));
+        connect(ui_->uninstall_btn, &QPushButton::clicked, this, [this]() {
+          emit downgradeRequested();
+          accept();
+        });
       } else {
+        // Regular marketplace install: normal uninstall.
         connect(ui_->uninstall_btn, &QPushButton::clicked, this, [this]() {
           emit uninstallRequested();
           accept();

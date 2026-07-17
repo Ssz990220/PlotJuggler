@@ -140,15 +140,16 @@ class ExtensionCatalogService : public QObject {
       bool extensions_dir_is_explicit, bool include_bundled) const;
 
   // One-time migration: copy each bundled plugin (from <prefix>/lib/plotjuggler/
-  // plugins) into the marketplace extensions dir and mark it bundled ("core") via
-  // ExtensionManager::markBundled, so its Uninstall action is locked. Runs at
-  // construction BEFORE the plugin scan and AFTER the ExtensionManager applies
-  // pending staged installs, so a staged upgrade is promoted first and the seed
-  // never clobbers it. The record is the extensions dir itself — no external
-  // ledger: an id already present there is left untouched, and since core plugins
-  // cannot be uninstalled, a core folder is never removed and never re-seeded.
-  // Best-effort: a copy failure is logged and retried next launch. Only meaningful
-  // for the default marketplace dir (a --plugin-dir override is user-managed).
+  // plugins) into the marketplace extensions dir, and hand the full bundled
+  // id -> version map to the ExtensionManager (setBundledVersions) so it locks
+  // uninstall of those "core" plugins by id — no per-folder marker, so the lock
+  // survives updates — and can offer "downgrade to bundled" for updated ones.
+  // Runs at construction BEFORE the plugin scan and AFTER the ExtensionManager
+  // applies pending staged installs, so a staged upgrade is promoted first and the
+  // seed never clobbers it. The extensions dir itself is the copy record: an id
+  // already present there is left untouched (not re-copied). Best-effort: a copy
+  // failure is logged and retried next launch. Only meaningful for the default
+  // marketplace dir (a --plugin-dir override is user-managed).
   void seedBundledPlugins();
 
   QString extensions_dir_;

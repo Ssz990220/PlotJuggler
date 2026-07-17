@@ -2150,6 +2150,19 @@ QPushButton#extBadgeLocalNewer {
     font-weight: 600;
 }
 
+/* Downgrade-to-bundled: a core plugin updated above its bundled version. Red, to
+   read as a "revert/remove" action distinct from Install/Update. Sits on the
+   detail dialog's uninstall_btn, so it keeps that button's rounded shape. */
+QPushButton#extButtonDowngrade {
+    border: none;
+    border-radius: ${radius_input}px;
+    padding: ${space_snug}px ${space_comfortable}px;
+    font-weight: 600;
+    background: ${status_error};
+    color: ${on_status_error};
+}
+QPushButton#extButtonDowngrade:hover { background: ${status_error}; color: ${on_status_error}; }
+
 /* Action buttons (not the status badges) get a minimum width so they read as
    buttons rather than hugging their label. */
 QPushButton#extButtonInstall,

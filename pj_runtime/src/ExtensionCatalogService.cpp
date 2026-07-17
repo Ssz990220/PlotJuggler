@@ -6,6 +6,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QLoggingCategory>
+#include <QMap>
 #include <QSettings>
 #include <algorithm>
 #include <filesystem>
@@ -168,17 +169,22 @@ void ExtensionCatalogService::seedBundledPlugins() {
 
   const std::filesystem::path bundled_root(bundled.toStdString());
 
+  // Every bundled id -> version, whether or not it gets copied this run. Handed to
+  // the ExtensionManager so it can lock uninstall of "core" plugins by id and
+  // offer "downgrade to bundled" when the installed version is above the bundled
+  // one — no per-folder marker.
+  QMap<QString, QString> bundled_versions;
+
   for (const PluginDescriptor& descriptor : scan->plugins) {
     const QString id = QString::fromStdString(descriptor.id);
     if (id.isEmpty()) {
       continue;
     }
+    bundled_versions.insert(id, QString::fromStdString(descriptor.version));
     const QString dest_dir = extensions_dir_ + "/" + id;
 
     // Already present in the marketplace dir (a prior seed, or a user install):
-    // leave it untouched. The folder's existence is the record — no external
-    // ledger. Bundled plugins are uninstall-locked (marked below), so a core
-    // folder is never removed via the UI and never needs re-seeding.
+    // leave it untouched. The folder's existence is the record — no re-copy.
     if (QDir(dest_dir).exists()) {
       continue;
     }
@@ -222,11 +228,12 @@ void ExtensionCatalogService::seedBundledPlugins() {
       continue;
     }
 
-    // Mark it bundled ("core") so the marketplace locks its Uninstall action; the
-    // marker lives inside the plugin's own folder, keeping it self-descriptive.
-    extension_manager_->markBundled(id);
     qCInfo(lcCatalog) << "Seeded bundled plugin" << id << "into" << dest_dir;
   }
+
+  // Hand the full bundled id -> version map to the ExtensionManager so it locks
+  // uninstall of these "core" plugins (isBundled) and can offer downgrade-to-bundled.
+  extension_manager_->setBundledVersions(bundled_versions);
 }
 
 ExtensionCatalogService::~ExtensionCatalogService() = default;

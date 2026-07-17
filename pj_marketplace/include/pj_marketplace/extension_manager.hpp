@@ -47,6 +47,15 @@ class ExtensionManager : public QObject {
   // Removes an installed extension or schedules Windows cleanup after restart.
   void uninstall(const QString& extension_id);
 
+  // Reverts a core extension that was updated ABOVE its bundled version back to the
+  // shipped one. Staged, not immediate: it marks the updated copy for restart
+  // cleanup (so the card shows "Needs Restart", not "Install") and emits
+  // downgradePendingRestart(). On the next launch applyPendingUninstalls removes it
+  // and the host seed restores the bundled version. Safe because the bundled build
+  // ships with the app and is always compatible. No-op if `id` is not a core
+  // extension sitting above its bundled version.
+  void downgradeToBundled(const QString& extension_id);
+
   // Replaces an installed extension. Stages the new version in pending_dir_;
   // applyPendingInstalls() promotes it (backing up the old one) at the next
   // startup, so an update never hot-swaps a loaded DSO.
@@ -61,17 +70,23 @@ class ExtensionManager : public QObject {
   // Returns true when the latest disk scan found this extension id.
   bool isInstalled(const QString& id) const;
 
-  // Marks an installed extension as bundled ("core"): shipped with the
-  // application and seeded into the extensions dir. Writes a marker file inside
-  // the extension's directory, so the folder stays self-descriptive (no external
-  // registry). Idempotent. Called by the host seed after copying a bundled
-  // plugin in; preserved across updates by applyPendingInstalls().
-  void markBundled(const QString& id);
+  // Sets id -> version for the plugins that ship with the application ("core"),
+  // computed by the host from the bundled plugin directory. Membership (not a
+  // per-folder marker) gates uninstall, so it survives updates and needs no
+  // on-disk flag; the version enables the "downgrade to bundled" affordance.
+  void setBundledVersions(const QMap<QString, QString>& id_to_version);
 
-  // Returns true when the extension carries the bundled ("core") marker. Bundled
-  // extensions cannot be uninstalled — uninstall() refuses them and the UI shows
-  // the Uninstall action disabled.
+  // Returns true when `id` ships with the application ("core"). A core extension
+  // at its bundled version cannot be uninstalled (uninstall() refuses it, the UI
+  // disables the action); a core extension updated ABOVE its bundled version can
+  // be reverted via "downgrade to bundled". False when no bundled set was provided
+  // (standalone app / --plugin-dir run).
   bool isBundled(const QString& id) const;
+
+  // The version `id` ships with, or empty if `id` is not core. Used to decide
+  // between the disabled Uninstall (installed == bundled) and the "downgrade to
+  // bundled" action (installed > bundled), and to show the version transition.
+  QString bundledVersion(const QString& id) const;
 
   // Rebuilds installed state by scanning extension directories for plugin DSOs.
   void refreshInstalledFromDisk();
@@ -154,6 +169,10 @@ class ExtensionManager : public QObject {
   // Emitted when uninstall requires restart cleanup.
   void uninstallPendingRestart(const QString& id);
 
+  // Emitted when a core extension is staged to revert to its bundled version on the
+  // next launch (downgradeToBundled). The card shows "Needs Restart".
+  void downgradePendingRestart(const QString& id);
+
   // Emitted whenever a diagnostic is appended to diagnostics().
   void diagnosticReported(const QString& id, const QString& message, bool is_error);
 
@@ -200,6 +219,11 @@ class ExtensionManager : public QObject {
   DiagnosticSink sink_;
 
   QMap<QString, InstalledExtension> installed_;
+
+  // id -> version for the plugins that ship with the application ("core"), set by
+  // the host via setBundledVersions(). Membership locks uninstall (isBundled); the
+  // version drives the downgrade-to-bundled affordance. Empty by default.
+  QMap<QString, QString> bundled_versions_;
 
   // Non-empty while a fetch is running; guards against concurrent install() calls.
   QString pending_id_;

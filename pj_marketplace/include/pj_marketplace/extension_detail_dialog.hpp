@@ -25,16 +25,22 @@ class ExtensionDetailDialog : public Dialog {
   // install or is waiting in the install queue / Update All batch): when set, the
   // dialog shows a disabled "Installing" indicator and offers no action, so it
   // cannot enqueue the same operation a second time behind the running one.
-  // `is_bundled` marks a "core" extension shipped with the application: it can be
-  // updated but never uninstalled, so the Uninstall action is shown disabled.
+  // `bundled_version` is the version this extension ships with ("core"), or empty
+  // if it is not bundled. A core plugin at its bundled version shows the Uninstall
+  // action disabled (it ships with the app); one updated above its bundled version
+  // shows a "Downgrade to bundled" action instead — the bundled build is always a
+  // compatible downgrade.
   explicit ExtensionDetailDialog(
       const Extension& ext, const QString& installed_version, bool needs_restart = false, bool installing = false,
-      bool is_bundled = false, QWidget* parent = nullptr);
+      const QString& bundled_version = {}, QWidget* parent = nullptr);
   ~ExtensionDetailDialog() override;
 
  signals:
   void installRequested();
   void uninstallRequested();
+  // Emitted for a core plugin updated above its bundled version: revert to the
+  // shipped version (staged for the next launch) rather than a plain uninstall.
+  void downgradeRequested();
 
  private:
   Ui::ExtensionDetailDialog* ui_ = nullptr;
