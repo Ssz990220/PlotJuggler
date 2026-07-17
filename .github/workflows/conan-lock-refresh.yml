@@ -2,11 +2,11 @@ name: Conan lock refresh
 
 # Regenerates the committed conan.lock (both platform legs) against current
 # ConanCenter recipe revisions and opens a PR when it changed. The lockfile is
-# why CI builds are rare: every job resolves the exact pinned graph JFrog holds
-# binaries for, so upstream revision drift can never force from-source rebuilds
-# mid-PR. Drift is instead absorbed here, deliberately, once a month (or on
-# demand) — and the lock-bump PR's own CI run builds + publishes any genuinely
-# new binaries exactly once.
+# why CI builds are rare: every job resolves the exact pinned graph the cached
+# snapshots hold binaries for, so upstream revision drift can never force
+# from-source rebuilds mid-PR. Drift is instead absorbed here, deliberately,
+# once a month (or on demand) — and the lock-bump PR's own CI run builds +
+# persists any genuinely new binaries exactly once.
 #
 # Requires the repo setting "Allow GitHub Actions to create and approve pull
 # requests" (Settings -> Actions -> General) for the PR step.
@@ -65,6 +65,6 @@ jobs:
           body: |
             Automated conan.lock refresh against current ConanCenter recipe
             revisions. This PR's CI run compiles any newly-pinned binaries once;
-            after merge, the trusted run publishes them to JFrog and every
-            subsequent build downloads instead of building.
+            after merge, the trusted run refreshes the cached snapshots and
+            every subsequent build restores instead of building.
           delete-branch: true

@@ -24,22 +24,18 @@ jobs:
     # Pinning this also lets CI and the installer share the same sccache objects
     # and Conan package IDs instead of maintaining two Windows toolchain graphs.
     runs-on: depot-windows-2022-4
-    # PJ4 v1 is Linux-only by policy (see CLAUDE.md). This job runs as a
-    # portability tracker: it surfaces POSIX-isms early without blocking
-    # PRs while the codebase converges on cross-platform cleanliness.
+    # Windows is a required shipped target (CLAUDE.md), but this job stays
+    # non-blocking for now: Windows runtime packaging is still being
+    # productionized, so failures surface on the PR without gating the merge.
     continue-on-error: true
-    # Backstop against hangs (a deadlocked test otherwise holds the runner for
+    # Backstop against hangs (a deadlocked build otherwise holds the runner for
     # GitHub's 6-hour default). A first run can still rebuild a missing Conan
-    # closure from source before publishing it to Artifactory, then compile the
+    # closure from source before the cache save persists it, then compile the
     # app with a cold sccache. Keep enough margin for that bootstrap case.
     # 150 leaves margin over that while still catching real hangs.
     timeout-minutes: 150
     permissions:
       contents: read
-      # PR/fork tokens are downgraded to read-only by GitHub. Trusted manual and
-      # main runs use write access to refresh the public, credential-free Conan
-      # snapshot after resolving the authoritative graph from JFrog.
-      packages: write
 
     steps:
       - name: Use HTTPS for github.com submodules
@@ -65,9 +61,9 @@ jobs:
 
       - uses: conan-io/setup-conan@v1
         with:
-          # Third-party binaries are resolved from the PlotJuggler JFrog local
-          # repository first, with ConanCenter as fallback. Do not also archive
-          # ~/.conan2 in Actions cache.
+          # Binaries come from the Depot-backed Actions cache below, with
+          # ConanCenter source builds as the fallback. Do not also archive
+          # ~/.conan2 through setup-conan itself.
           cache_packages: false
 
       - name: Setup MSVC environment
@@ -77,171 +73,32 @@ jobs:
         with:
           arch: x64
 
-      - name: Setup oras for public Conan cache
-        id: setup_oras
-        continue-on-error: true
-        uses: oras-project/setup-oras@v1
-        with:
-          version: "1.3.0"
-
-      - name: Setup oras (manual download fallback)
-        id: setup_oras_fallback
-        if: steps.setup_oras.outcome == 'failure'
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          $version = "1.3.0"
-          $url = "https://github.com/oras-project/oras/releases/download/v$version/oras_${version}_windows_amd64.zip"
-          $zip = Join-Path $env:RUNNER_TEMP "oras.zip"
-          $installDir = Join-Path $env:RUNNER_TEMP "oras-bin"
-          New-Item -ItemType Directory -Force -Path $installDir | Out-Null
-
-          $attempts = 0
-          while ($attempts -lt 5) {
-            try {
-              Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
-              break
-            } catch {
-              $attempts++
-              if ($attempts -ge 5) { throw }
-              $delay = [math]::Pow(2, $attempts) * 5
-              Write-Host "Download attempt $attempts failed: $_. Retry in ${delay}s..."
-              Start-Sleep -Seconds $delay
-            }
-          }
-          Expand-Archive -Path $zip -DestinationPath $installDir -Force
-          "$installDir" | Out-File -FilePath $env:GITHUB_PATH -Append
-          & "$installDir\oras.exe" version
-
-      - name: Compute public Conan cache tag
+      - name: Compute Conan cache key
         id: public_conan_cache
         shell: pwsh
         run: |
           # The runner is pinned to windows-2022 above, so this identity maps to
-          # one stable MSVC/RelWithDebInfo graph. JFrog remains authoritative
-          # for trusted runs; this OCI snapshot is the read-only PR/fork path.
+          # one stable MSVC/RelWithDebInfo graph. The Depot-backed Actions cache
+          # is the binary store; ConanCenter is the source-build fallback.
           $cacheVersion = "v6"
           $combined = (Get-FileHash conanfile.txt -Algorithm SHA256).Hash + (Get-FileHash conan.lock -Algorithm SHA256).Hash
           $stream = [System.IO.MemoryStream]::new([System.Text.Encoding]::UTF8.GetBytes($combined))
           $fileHash = (Get-FileHash -InputStream $stream -Algorithm SHA256).Hash.Substring(0, 16).ToLower()
           $hash = "$cacheVersion-$fileHash"
-          $tag = "ghcr.io/plotjuggler/pj4-conan-cache:windows-msvc-relwithdebinfo-$hash"
           "hash=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "restore_prefix=conan-windows-msvc-relwithdebinfo-$cacheVersion-" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          Write-Host "Public cache tag: $tag"
 
-      - name: Login to ghcr.io for public Conan cache
-        if: >-
-          github.repository_owner == 'PlotJuggler' &&
-          (steps.setup_oras.outcome == 'success' || steps.setup_oras_fallback.outcome == 'success')
-        shell: pwsh
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          $env:GHCR_TOKEN | oras login ghcr.io -u $env:GITHUB_ACTOR --password-stdin
-
-      - name: Restore public Conan cache from ghcr.io
-        if: >-
-          (github.event_name == 'pull_request' || github.repository != 'PlotJuggler/PJ4') &&
-          (steps.setup_oras.outcome == 'success' || steps.setup_oras_fallback.outcome == 'success')
-        shell: pwsh
-        run: |
-          $tag = "${{ steps.public_conan_cache.outputs.tag }}"
-          $pullDir = Join-Path $env:RUNNER_TEMP "conan-cache-pull"
-          New-Item -ItemType Directory -Force -Path $pullDir | Out-Null
-          Push-Location $pullDir
-          try {
-            oras pull $tag 2>&1 | Out-Host
-            $pulled = $LASTEXITCODE
-          } finally {
-            Pop-Location
-          }
-          $tarball = Join-Path $pullDir "conan-cache.tar.zst"
-          if ($pulled -eq 0 -and (Test-Path $tarball)) {
-            Write-Host "Cache HIT: extracting $tarball"
-            New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.conan2" | Out-Null
-            tar --zstd -xf $tarball -C $env:USERPROFILE
-            "CONAN_CACHE_HIT=1" | Out-File -FilePath $env:GITHUB_ENV -Append
-          } else {
-            Write-Host "Cache MISS for $tag; ConanCenter remains available as a fallback"
-          }
-          $global:LASTEXITCODE = 0
-
-      - name: Restore public Conan cache from GitHub Actions cache
-        # Tertiary fallback if the OCI registry or oras setup is unavailable.
-        # There is deliberately no matching save step: per-PR copies would
-        # consume the repository's shared Actions-cache budget.
-        if: >-
-          (github.event_name == 'pull_request' || github.repository != 'PlotJuggler/PJ4') &&
-          env.CONAN_CACHE_HIT != '1'
+      - name: Restore Conan cache
+        # On Depot runners actions/cache is backed by Depot Cache storage.
+        # Prefix fallback: an older closure for the same toolchain still seeds
+        # most packages, so only changed deps rebuild.
+        id: conan-gha-cache
         uses: actions/cache/restore@v5
         with:
           path: ~/.conan2
           key: conan-windows-msvc-relwithdebinfo-${{ steps.public_conan_cache.outputs.hash }}
           restore-keys: |
             ${{ steps.public_conan_cache.outputs.restore_prefix }}
-
-      - name: Configure JFrog Conan repository (read-only, pull requests)
-        # Same-repo PRs resolve through a READ-ONLY JFrog credential so they
-        # see the same recipe revisions + binaries as trusted runs. This path
-        # is best-effort by design: missing or rejected credentials degrade to
-        # ConanCenter-only (a fallback must never fail the build). Fork PRs
-        # receive no secrets at all and fall through automatically.
-        if: github.event_name == 'pull_request' || github.repository != 'PlotJuggler/PJ4'
-        id: conan_remote_read
-        shell: bash
-        env:
-          JFROG_READ_USER: ${{ vars.JFROG_READ_USER || secrets.JFROG_READ_USER }}
-          JFROG_READ_TOKEN: ${{ secrets.JFROG_READ_TOKEN }}
-        run: |
-          set -euo pipefail
-          repo_url="https://plotjuggler.jfrog.io/artifactory/api/conan/plotjuggler-conan"
-          use_jfrog=false
-          if curl -sf -o /dev/null --max-time 15 "${repo_url}/v2/ping"; then
-            # Anonymous read enabled server-side: no credential, no login, and
-            # fork PRs (which receive no secrets) benefit too.
-            conan remote add plotjuggler-conan "${repo_url}" --force --index=0
-            use_jfrog=true
-            echo "JFrog anonymous read access verified."
-          elif [[ -n "${JFROG_READ_USER:-}" && -n "${JFROG_READ_TOKEN:-}" ]]; then
-            conan remote add plotjuggler-conan "${repo_url}" --force --index=0
-            if conan remote login plotjuggler-conan "$JFROG_READ_USER" -p "$JFROG_READ_TOKEN"; then
-              use_jfrog=true
-              echo "configured=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "::warning::Read-only JFrog login rejected; falling back to ConanCenter only."
-              conan remote remove plotjuggler-conan || true
-            fi
-          else
-            echo "No JFrog read access available; using ConanCenter only."
-          fi
-          echo "PJ_USE_JFROG=${use_jfrog}" >> "$GITHUB_ENV"
-
-      - name: Configure JFrog Conan repository
-        if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/PJ4'
-        id: conan_remote
-        shell: bash
-        env:
-          # Prefer the non-sensitive Actions variable, but also support
-          # organizations that provision both JFrog values as secrets.
-          JFROG_USER: ${{ vars.JFROG_USER || secrets.JFROG_USER }}
-          JFROG_TOKEN: ${{ secrets.JFROG_TOKEN }}
-        run: |
-          set -euo pipefail
-
-          if [[ -z "$JFROG_USER" || -z "$JFROG_TOKEN" ]]; then
-            echo "::error::Configure JFROG_USER as an Actions variable or secret, and JFROG_TOKEN as an Actions secret."
-            exit 1
-          fi
-
-          conan remote add plotjuggler-conan \
-            "https://plotjuggler.jfrog.io/artifactory/api/conan/plotjuggler-conan" \
-            --force --index=0
-          conan remote login plotjuggler-conan "$JFROG_USER" -p "$JFROG_TOKEN"
-          echo "PJ_USE_JFROG=true" >> "$GITHUB_ENV"
-          echo "authenticated=true" >> "$GITHUB_OUTPUT"
-          conan remote list
 
       - name: Seed Conan source download cache
         # Some third-party source tarballs live on hosts that reject
@@ -363,9 +220,8 @@ jobs:
           version: "v0.16.0"
 
       - name: Conan install
-        # Search PlotJuggler's shared JFrog package store first, then use public
-        # ConanCenter for anything not uploaded yet. Pull requests use only the
-        # public fallback and never publish.
+        # The restored closure supplies prebuilt binaries; ConanCenter covers
+        # (and builds from source) anything missing.
         id: conan_install
         shell: bash
         run: |
@@ -383,74 +239,33 @@ jobs:
           # CRT-compatible with the rest of the RelWithDebInfo graph (both use the
           # release /MD runtime). Both overrides are scoped to cpython only and
           # Windows-CI-only; Linux links CPython statically.
-          conan_remotes=(-r=conancenter)
-          if [[ "$PJ_USE_JFROG" == "true" ]]; then
-            bash .github/scripts/sync-conan-recipes.sh \
-              -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
-              -o "cpython/*:shared=True" -s "cpython/*:build_type=Release" \
-              -c tools.cmake.cmaketoolchain:generator="Ninja Multi-Config"
-            conan_remotes=(-r=plotjuggler-conan -r=conancenter)
-          fi
           conan_log="${RUNNER_TEMP}/pj4-conan-install.log"
-          conan install . --output-folder=build --build=missing "${conan_remotes[@]}" \
+          conan install . --output-folder=build --build=missing -r=conancenter \
             --lockfile=conan.lock --lockfile-partial \
             -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
             -o "cpython/*:shared=True" -s "cpython/*:build_type=Release" \
             -c tools.cmake.cmaketoolchain:generator="Ninja Multi-Config" \
             2>&1 | tee "$conan_log"
           if grep -q "Building from source" "$conan_log"; then
-            echo "::notice::Conan built missing binaries; trusted jobs will publish them to JFrog."
+            echo "::notice::Conan built missing binaries; the cache save below persists them."
           fi
 
-      - name: Publish Conan packages to JFrog
-        if: steps.conan_install.outcome == 'success' && steps.conan_remote.outputs.authenticated == 'true'
+      - name: Trim Conan cache before saving
+        # Drop build/source/temp trees so only recipes and package binaries
+        # persist.
+        if: always() && steps.conan-gha-cache.outputs.cache-hit != 'true'
         shell: bash
-        run: |
-          # Conan compares recipe/package revisions and skips artifacts already
-          # present in JFrog. This seeds both ConanCenter downloads and binaries
-          # built by --build=missing for the next trusted Windows job.
-          conan upload "*" -r=plotjuggler-conan --confirm \
-            -cc core.upload:parallel=4
+        run: conan cache clean "*" --build --source --temp || true
 
-      - name: Remove JFrog credentials from Conan home
-        # ~/.conan2 is archived below. Logout even if install/upload fails so a
-        # deploy-capable credential can never enter the public GHCR artifact.
-        if: always() && (steps.conan_remote.outputs.authenticated == 'true' || steps.conan_remote_read.outputs.configured == 'true')
-        shell: bash
-        run: conan remote logout plotjuggler-conan
-
-      - name: Publish public Conan cache to ghcr.io
-        # Trusted jobs first resolve exact recipes/binaries through JFrog, then
-        # refresh the credential-free public snapshot consumed by PRs/forks.
-        # Re-pushing the content-addressed layers is cheap when nothing changed,
-        # while keeping the mutable tag complete when JFrog gains a new binary.
-        if: >-
-          github.event_name != 'pull_request' &&
-          github.repository == 'PlotJuggler/PJ4' &&
-          steps.conan_install.outcome == 'success' &&
-          (steps.setup_oras.outcome == 'success' || steps.setup_oras_fallback.outcome == 'success')
-        shell: pwsh
-        run: |
-          $tag = "${{ steps.public_conan_cache.outputs.tag }}"
-          $tarball = Join-Path $env:RUNNER_TEMP "conan-cache.tar.zst"
-
-          # Exclude transient source/build trees; consumers only need recipes
-          # and package binaries. Authentication was removed in the prior step.
-          conan cache clean "*" --build --source --temp
-          if ($LASTEXITCODE -ne 0) { throw "conan cache clean failed" }
-
-          tar --zstd -cf $tarball -C $env:USERPROFILE .conan2
-          if ($LASTEXITCODE -ne 0) { throw "packing the Conan cache failed" }
-          $sizeMb = [math]::Round((Get-Item $tarball).Length / 1MB, 1)
-          Write-Host "Publishing ${sizeMb} MB Conan snapshot to $tag"
-
-          Push-Location $env:RUNNER_TEMP
-          try {
-            oras push $tag "conan-cache.tar.zst:application/vnd.oci.image.layer.v1.tar+zstd"
-            if ($LASTEXITCODE -ne 0) { throw "oras push failed" }
-          } finally {
-            Pop-Location
-          }
+      - name: Save Conan cache
+        # always(): a failed app compile must still persist the expensive
+        # third-party closure. Immutable keys make a re-save a no-op, so skip
+        # only on an exact-key hit.
+        if: always() && steps.conan-gha-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.conan2
+          key: conan-windows-msvc-relwithdebinfo-${{ steps.public_conan_cache.outputs.hash }}
 
       - name: Build
         shell: bash
@@ -496,15 +311,11 @@ jobs:
             echo "::warning::sccache unavailable; building without a compiler cache"
           fi
 
-          # PJ_BUILD_TESTS=OFF: skip compiling/linking the test binaries (the
-          # dominant share of build time). Windows test execution lives in the
-          # Pixi CI win-64 leg, which runs the full suite.
           cmake -S . -B build -G "Ninja Multi-Config" \
             -DCMAKE_TOOLCHAIN_FILE="build/conan_toolchain.cmake" \
             -DCMAKE_PREFIX_PATH="$QT_DIR" \
             -DCMAKE_POLICY_DEFAULT_CMP0141=NEW \
             -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded \
-            -DPJ_BUILD_TESTS=OFF \
             "${launcher_args[@]}"
 
           cmake --build build --config RelWithDebInfo --parallel
@@ -514,3 +325,33 @@ jobs:
           if [[ "$SCCACHE_AVAILABLE" == "true" ]]; then
             sccache --show-stats
           fi
+
+      - name: Test
+        # Prepend Qt's and FFmpeg's bin/ dirs to PATH so the OS loader can resolve
+        # their DLLs (Qt6Core.dll, avcodec/avformat/avutil/swscale) when ctest
+        # launches the test executables. Without this they exit 0xC0000135
+        # (STATUS_DLL_NOT_FOUND) before any test code runs.
+        shell: bash
+        run: |
+          export PATH="$(pwd)/.qt/${PJ_QT_VERSION}/msvc2022_64/bin:$PATH"
+          # FFmpeg's Conan bin dir(s) are emitted at configure time by
+          # pj_scene2D/core/CMakeLists.txt (Conan's package path is hashed and not
+          # knowable here). Prepend each so every exe that transitively links
+          # pj_scene2d_core resolves the FFmpeg DLLs — covers all such tests at once,
+          # no per-target list.
+          if [[ -f build/pj_ffmpeg_bin_dirs.txt ]]; then
+            while IFS= read -r _d; do
+              [[ -n "$_d" ]] && export PATH="$(cygpath -u "$_d"):$PATH"
+            done < build/pj_ffmpeg_bin_dirs.txt
+          fi
+          # CPython runtime dir (pythonXY.dll) for python_engine_test — emitted by
+          # pj_scripting/CMakeLists.txt when cpython is built shared (Windows only).
+          # Same rationale as the FFmpeg dirs above.
+          if [[ -f build/pj_python_bin_dirs.txt ]]; then
+            while IFS= read -r _d; do
+              [[ -n "$_d" ]] && export PATH="$(cygpath -u "$_d"):$PATH"
+            done < build/pj_python_bin_dirs.txt
+          fi
+          # --timeout kills any single test after 2 min so a deadlocked test
+          # fails loudly with its name in the log instead of stalling the job.
+          ctest --test-dir build --build-config RelWithDebInfo --output-on-failure --timeout 120

@@ -10,9 +10,9 @@ name: Release AppImage (embedded plugins)
 #   * appimage job: runs INSIDE ghcr.io/plotjuggler/pj4-appimage-builder
 #     (Ubuntu 22.04 / glibc 2.35 — hosted 22.04 runners retire 2027-04,
 #     actions/runner-images#14254, so the floor lives in the container, not the
-#     runner label). Third-party Conan binaries resolve from the JFrog remote
-#     first and are published back on trusted runs; Qt / ccache / ~/.conan2 use
-#     actions/cache. This replaces the former fat-Docker flow (image-baked Qt +
+#     runner label). Third-party Conan binaries restore from the actions/cache
+#     closure (seeded by linux-ci), with ConanCenter source builds as fallback;
+#     Qt / ccache use actions/cache too. This replaces the former fat-Docker flow (image-baked Qt +
 #     Conan closure persisted as multi-GB tarballs inside the 10 GB per-repo
 #     Actions cache quota, where they evicted linux-ci's caches).
 #
@@ -85,6 +85,18 @@ jobs:
         with:
           path: plotjuggler_sdk/pj_ported_plugins/dist_ros2
           key: ${{ steps.ros2key.outputs.key }}
+
+      - name: Free up disk space on the runner
+        # This job runs on a GitHub-hosted runner (~14 GB free), and a bundle
+        # rebuild pulls one Docker image per supported ROS 2 distro — more than
+        # the default free space holds. Reclaim the preinstalled toolchains.
+        if: steps.ros2cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/lib/node_modules
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          df -h /
 
       - name: Build ros2 proxy + all distros
         if: steps.ros2cache.outputs.cache-hit != 'true'
@@ -215,7 +227,7 @@ jobs:
           # Prefix fallbacks: an older appimage closure first, else seed from
           # linux-ci's saved closure — same ubuntu-22.04 / gcc-11 /
           # RelWithDebInfo / cppstd=20 profile, so its packages are directly
-          # reusable here (the JFrog remote covers any residual miss).
+          # reusable here (ConanCenter source builds cover any residual miss).
           restore-keys: |
             conan-appimage-v1-
             conan-linux-gcc-relwithdebinfo-v2-
@@ -252,36 +264,6 @@ jobs:
           ccache --set-config=base_dir="${GITHUB_WORKSPACE}"
           ccache -z
 
-      - name: Configure public Conan repository (forks)
-        if: github.repository != 'PlotJuggler/PJ4'
-        shell: bash
-        run: echo "PJ_USE_JFROG=false" >> "$GITHUB_ENV"
-
-      - name: Configure JFrog Conan repository
-        # workflow_dispatch and tag pushes are repo-actor-driven (no fork PR
-        # code runs here), so the deploy-capable token is safe to use — same
-        # trust model as linux-ci's non-PR path.
-        if: github.repository == 'PlotJuggler/PJ4'
-        id: conan_remote
-        shell: bash
-        env:
-          JFROG_USER: ${{ vars.JFROG_USER || secrets.JFROG_USER }}
-          JFROG_TOKEN: ${{ secrets.JFROG_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [[ -z "$JFROG_USER" || -z "$JFROG_TOKEN" ]]; then
-            echo "::error::Configure JFROG_USER as an Actions variable or secret, and JFROG_TOKEN as an Actions secret."
-            exit 1
-          fi
-          conan profile detect --force
-          conan remote add plotjuggler-conan \
-            "https://plotjuggler.jfrog.io/artifactory/api/conan/plotjuggler-conan" \
-            --force --index=0
-          conan remote login plotjuggler-conan "$JFROG_USER" -p "$JFROG_TOKEN"
-          echo "PJ_USE_JFROG=true" >> "$GITHUB_ENV"
-          echo "authenticated=true" >> "$GITHUB_OUTPUT"
-          conan remote list
-
       - name: Seed Conan source download cache
         # minizip/1.2.13's zlib.net source URL rejects GitHub runners (HTTP
         # 415); reuse the checksum-verified repo-hosted seed like linux-ci.
@@ -313,23 +295,9 @@ jobs:
         run: |
           set -euo pipefail
           conan profile detect --force
-          conan_remotes=(-r=conancenter)
-          if [[ "${PJ_USE_JFROG:-false}" == "true" ]]; then
-            bash .github/scripts/sync-conan-recipes.sh \
-              -s build_type=RelWithDebInfo -s compiler.cppstd=20
-            conan_remotes=(-r=plotjuggler-conan -r=conancenter)
-          fi
-          conan install . --output-folder=build --build=missing "${conan_remotes[@]}" \
+          conan install . --output-folder=build --build=missing -r=conancenter \
             --lockfile=conan.lock --lockfile-partial \
             -s build_type=RelWithDebInfo -s compiler.cppstd=20
-
-      - name: Publish app closure to JFrog
-        if: steps.conan_install.outcome == 'success' && steps.conan_remote.outputs.authenticated == 'true'
-        shell: bash
-        run: |
-          # Existing revisions are skipped by Conan.
-          conan upload "*" -r=plotjuggler-conan --confirm \
-            -cc core.upload:parallel=4
 
       - name: Download ros2 bundle
         uses: actions/download-artifact@v4
@@ -368,22 +336,6 @@ jobs:
           fi
           echo "APPIMAGE=$appimage_path" >> "$GITHUB_ENV"
           echo "APPIMAGE_NAME=$(basename "$appimage_path")" >> "$GITHUB_ENV"
-
-      - name: Publish plugin/SDK closure to JFrog
-        # Second upload AFTER the full build: the plugins' build_type=Release
-        # dependency graph (Arrow Flight, gRPC, ...) is resolved inside
-        # build_release_appimage.sh, not by the app-graph install above.
-        if: always() && steps.conan_remote.outputs.authenticated == 'true'
-        shell: bash
-        run: |
-          conan upload "*" -r=plotjuggler-conan --confirm \
-            -cc core.upload:parallel=4 || true
-
-      - name: Remove JFrog credentials from Conan home
-        # ~/.conan2 is cached below; a deploy-capable token must never enter it.
-        if: always() && steps.conan_remote.outputs.authenticated == 'true'
-        shell: bash
-        run: conan remote logout plotjuggler-conan
 
       - name: Trim Conan cache before saving
         if: always() && github.ref_type != 'tag' && steps.conan-cache.outputs.cache-hit != 'true'

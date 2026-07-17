@@ -30,7 +30,6 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
-      packages: write   # push/pull the Conan cache OCI artifact on ghcr.io
 
     steps:
       - name: Use HTTPS for github.com submodules
@@ -55,48 +54,12 @@ jobs:
 
       - uses: conan-io/setup-conan@v1
         with:
-          # Trusted runs resolve packages from JFrog first. The existing GHCR
-          # and Actions caches remain as migration/fork fallback layers while
-          # the Linux package matrix is populated in Artifactory.
+          # Binaries come from the Depot-backed Actions cache below, with
+          # ConanCenter source builds as the fallback. Do not also archive
+          # ~/.conan2 through setup-conan itself.
           cache_packages: false
 
-      - name: Setup oras (OCI Registry As Storage)
-        # Primary install path. continue-on-error so a 5xx on the github.com
-        # release CDN doesn't kill CI — we have a fallback below, and worst
-        # case we degrade to "no Conan cache this run" (build still completes).
-        id: setup_oras
-        uses: oras-project/setup-oras@v1
-        continue-on-error: true
-
-      - name: Setup oras (manual download fallback)
-        id: setup_oras_fallback
-        if: steps.setup_oras.outcome == 'failure'
-        continue-on-error: true
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="1.3.0"
-          url="https://github.com/oras-project/oras/releases/download/v${version}/oras_${version}_linux_amd64.tar.gz"
-          tarball="${RUNNER_TEMP}/oras.tar.gz"
-          install_dir="${RUNNER_TEMP}/oras-bin"
-          mkdir -p "${install_dir}"
-
-          attempts=0
-          until curl -fsSL "${url}" -o "${tarball}"; do
-            attempts=$((attempts + 1))
-            if [ "${attempts}" -ge 5 ]; then
-              echo "Download failed after ${attempts} attempts" >&2
-              exit 1
-            fi
-            delay=$((5 * (2 ** attempts)))
-            echo "Download attempt ${attempts} failed; retrying in ${delay}s..."
-            sleep "${delay}"
-          done
-          tar -xzf "${tarball}" -C "${install_dir}"
-          echo "${install_dir}" >> "${GITHUB_PATH}"
-          "${install_dir}/oras" version
-
-      - name: Compute Conan cache tag
+      - name: Compute Conan cache hash
         id: conan_cache
         shell: bash
         run: |
@@ -106,57 +69,13 @@ jobs:
           # key invalidates when any of them changes.
           hash=$(find . \( -name conanfile.txt -o -name conan.lock \) -not -path './build/*' -not -path './.git/*' \
                   -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16)
-          owner="${GITHUB_REPOSITORY_OWNER,,}"
-          tag="ghcr.io/${owner}/pj4-conan-cache:linux-gcc-relwithdebinfo-${hash}"
           echo "hash=${hash}" >> "${GITHUB_OUTPUT}"
-          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
-          echo "Cache tag: ${tag}"
 
-      - name: Login to ghcr.io
-        if: github.repository_owner == 'PlotJuggler' && (steps.setup_oras.outcome == 'success' || steps.setup_oras_fallback.outcome == 'success')
-        shell: bash
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "${GHCR_TOKEN}" | oras login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
-
-      - name: Restore Conan cache from ghcr.io
-        if: github.repository_owner == 'PlotJuggler' && (steps.setup_oras.outcome == 'success' || steps.setup_oras_fallback.outcome == 'success')
-        shell: bash
-        run: |
-          set +e
-          tag="${{ steps.conan_cache.outputs.tag }}"
-          pull_dir="${RUNNER_TEMP}/conan-cache-pull"
-          mkdir -p "${pull_dir}"
-          (
-            cd "${pull_dir}"
-            oras pull "${tag}" 2>&1
-          )
-          pulled=$?
-          tarball="${pull_dir}/conan-cache.tar.zst"
-          if [ "${pulled}" -eq 0 ] && [ -f "${tarball}" ]; then
-            echo "Cache HIT: extracting ${tarball}"
-            mkdir -p "${HOME}/.conan2"
-            tar --zstd -xf "${tarball}" -C "${HOME}"
-            echo "CONAN_CACHE_HIT=1" >> "${GITHUB_ENV}"
-          else
-            echo "Cache MISS for ${tag} (cold start or first build of this conanfile)"
-          fi
-          # Always exit 0 — a missing tag is not a CI failure.
-          exit 0
-
-      - name: Restore Conan cache from GitHub Actions cache
-        # Fallback layer under the ghcr.io cache above. ghcr.io only restores on
-        # the canonical PlotJuggler repo (it needs the registry token) and only
-        # *saves* on push-to-main, so PRs that touch conanfile.txt — and every
-        # build on a fork — get a ghcr.io MISS and rebuild all third-party deps
-        # (~6.5 min: libiconv, lz4, zstd, ffmpeg, …) from source on every run.
-        # The native Actions cache fills that gap: it works on PRs and forks with
-        # no token, so a PR's 2nd+ run (and any PR rebased on a main that already
-        # primed this key) restores the built packages instead of recompiling.
-        # Skipped when ghcr.io already produced a HIT — ~/.conan2 is populated.
+      - name: Restore Conan cache
+        # On Depot runners actions/cache is backed by Depot Cache storage —
+        # the authoritative Conan binary store; ConanCenter source builds are
+        # the fallback.
         id: conan-gha-cache
-        if: env.CONAN_CACHE_HIT != '1'
         uses: actions/cache/restore@v5
         with:
           path: ~/.conan2
@@ -170,65 +89,6 @@ jobs:
           # (and its dependents) rebuild rather than the whole graph.
           restore-keys: |
             conan-linux-gcc-relwithdebinfo-v2-
-
-      - name: Configure JFrog Conan repository (read-only, pull requests)
-        # Same-repo PRs resolve through a READ-ONLY JFrog credential so they
-        # see the same recipe revisions + binaries as trusted runs. This path
-        # is best-effort by design: missing or rejected credentials degrade to
-        # ConanCenter-only (a fallback must never fail the build). Fork PRs
-        # receive no secrets at all and fall through automatically.
-        if: github.event_name == 'pull_request' || github.repository != 'PlotJuggler/PJ4'
-        id: conan_remote_read
-        shell: bash
-        env:
-          JFROG_READ_USER: ${{ vars.JFROG_READ_USER || secrets.JFROG_READ_USER }}
-          JFROG_READ_TOKEN: ${{ secrets.JFROG_READ_TOKEN }}
-        run: |
-          set -euo pipefail
-          repo_url="https://plotjuggler.jfrog.io/artifactory/api/conan/plotjuggler-conan"
-          use_jfrog=false
-          if curl -sf -o /dev/null --max-time 15 "${repo_url}/v2/ping"; then
-            # Anonymous read enabled server-side: no credential, no login, and
-            # fork PRs (which receive no secrets) benefit too.
-            conan remote add plotjuggler-conan "${repo_url}" --force --index=0
-            use_jfrog=true
-            echo "JFrog anonymous read access verified."
-          elif [[ -n "${JFROG_READ_USER:-}" && -n "${JFROG_READ_TOKEN:-}" ]]; then
-            conan remote add plotjuggler-conan "${repo_url}" --force --index=0
-            if conan remote login plotjuggler-conan "$JFROG_READ_USER" -p "$JFROG_READ_TOKEN"; then
-              use_jfrog=true
-              echo "configured=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "::warning::Read-only JFrog login rejected; falling back to ConanCenter only."
-              conan remote remove plotjuggler-conan || true
-            fi
-          else
-            echo "No JFrog read access available; using ConanCenter only."
-          fi
-          echo "PJ_USE_JFROG=${use_jfrog}" >> "$GITHUB_ENV"
-
-      - name: Configure JFrog Conan repository
-        if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/PJ4'
-        id: conan_remote
-        shell: bash
-        env:
-          JFROG_USER: ${{ vars.JFROG_USER || secrets.JFROG_USER }}
-          JFROG_TOKEN: ${{ secrets.JFROG_TOKEN }}
-        run: |
-          set -euo pipefail
-
-          if [[ -z "$JFROG_USER" || -z "$JFROG_TOKEN" ]]; then
-            echo "::error::Configure JFROG_USER as an Actions variable or secret, and JFROG_TOKEN as an Actions secret."
-            exit 1
-          fi
-
-          conan remote add plotjuggler-conan \
-            "https://plotjuggler.jfrog.io/artifactory/api/conan/plotjuggler-conan" \
-            --force --index=0
-          conan remote login plotjuggler-conan "$JFROG_USER" -p "$JFROG_TOKEN"
-          echo "PJ_USE_JFROG=true" >> "$GITHUB_ENV"
-          echo "authenticated=true" >> "$GITHUB_OUTPUT"
-          conan remote list
 
       - name: Seed Conan source download cache
         # minizip/1.2.13 has a single zlib.net source URL that rejects GitHub
@@ -330,93 +190,36 @@ jobs:
         run: |
           set -euo pipefail
           conan profile detect --force
-          conan_remotes=(-r=conancenter)
-          if [[ "$PJ_USE_JFROG" == "true" ]]; then
-            bash .github/scripts/sync-conan-recipes.sh \
-              -s build_type=RelWithDebInfo -s compiler.cppstd=20
-            conan_remotes=(-r=plotjuggler-conan -r=conancenter)
-          fi
           conan_log="${RUNNER_TEMP}/pj4-conan-install.log"
-          conan install . --output-folder=build --build=missing "${conan_remotes[@]}" \
+          conan install . --output-folder=build --build=missing -r=conancenter \
             --lockfile=conan.lock --lockfile-partial \
             -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
             2>&1 | tee "$conan_log"
           if grep -q "Building from source" "$conan_log"; then
-            echo "::notice::Conan built missing Linux binaries; trusted jobs will publish them to JFrog."
+            echo "::notice::Conan built missing Linux binaries; the cache saves below persist them."
           fi
 
-      - name: Publish Conan packages to JFrog
-        if: steps.conan_install.outcome == 'success' && steps.conan_remote.outputs.authenticated == 'true'
-        shell: bash
-        run: |
-          # Upload both downloaded recipes and Linux binaries built by
-          # --build=missing before compiling the application. Existing
-          # revisions are skipped by Conan.
-          conan upload "*" -r=plotjuggler-conan --confirm \
-            -cc core.upload:parallel=4
-
-      - name: Remove JFrog credentials from Conan home
-        # ~/.conan2 is archived below. Logout even when install/upload fails
-        # so a deploy-capable token can never enter GHCR or Actions caches.
-        if: always() && (steps.conan_remote.outputs.authenticated == 'true' || steps.conan_remote_read.outputs.configured == 'true')
-        shell: bash
-        run: conan remote logout plotjuggler-conan
-
       - name: Build
-        # Conan already generated build/conan_toolchain.cmake above. Do not
-        # resolve the graph twice (and do not require JFrog credentials during
-        # the much longer application compile).
-        # PJ_BUILD_TESTS=OFF: skip compiling/linking the test binaries (the
-        # dominant share of build time; see the root CMakeLists.txt note).
-        # Test execution coverage for this job lives in the tsan job below
-        # (foundation concurrency suite) and in Pixi CI (core suite on
-        # linux-64, full suite on win-64).
-        env:
-          PJ_BUILD_TESTS: "OFF"
+        # Conan already generated build/conan_toolchain.cmake above; do not
+        # resolve the graph twice. Tests compile here too: with warm compiler
+        # caches they cost ~1 min, and this job is the only CI environment
+        # that can run the GUI/GL widget suites (xvfb + Mesa llvmpipe).
         run: ./build.sh --skip-conan-install
-
-      - name: Save Conan cache to ghcr.io
-        # Only push from the canonical repo on real pushes (forks lack write
-        # access to ghcr.io packages). Skip on cache HIT — the tag content is
-        # already up to date, no point re-uploading the same bytes.
-        if: github.event_name == 'push' && github.repository == 'PlotJuggler/PJ4' && env.CONAN_CACHE_HIT != '1' && (steps.setup_oras.outcome == 'success' || steps.setup_oras_fallback.outcome == 'success')
-        shell: bash
-        run: |
-          set -euo pipefail
-          tag="${{ steps.conan_cache.outputs.tag }}"
-          tarball="${RUNNER_TEMP}/conan-cache.tar.zst"
-
-          # Trim build trees before packing so the uploaded artifact only
-          # contains the package binaries consumers actually need.
-          conan cache clean "*" --build --source --temp
-
-          echo "Packing ~/.conan2 -> ${tarball}"
-          tar --zstd -cf "${tarball}" -C "${HOME}" .conan2
-
-          size_mb=$(du -m "${tarball}" | cut -f1)
-          echo "Compressed cache size: ${size_mb} MB"
-
-          (
-            cd "${RUNNER_TEMP}"
-            oras push "${tag}" "conan-cache.tar.zst:application/vnd.oci.image.layer.v1.tar+zstd"
-          )
 
       - name: Trim Conan cache before saving
         # Drop build/source/temp trees so only the package binaries consumers
-        # need are persisted (matches the ghcr.io save above). Runs only when
-        # we're about to save a fresh GHA cache entry.
-        if: always() && env.CONAN_CACHE_HIT != '1' && steps.conan-gha-cache.outputs.cache-hit != 'true'
+        # need are persisted. Runs only when we're about to save a fresh entry.
+        if: always() && steps.conan-gha-cache.outputs.cache-hit != 'true'
         shell: bash
         run: conan cache clean "*" --build --source --temp || true
 
-      - name: Save Conan cache to GitHub Actions cache
+      - name: Save Conan cache
         # Persist the built closure under the exact conanfile hash so the next
-        # run on this branch (or any branch keyed identically) restores it.
-        # `always()` so a failing project compile still saves the third-party
-        # deps that finished earlier — they're the expensive part. Skipped on a
-        # ghcr.io HIT or an exact GHA-key hit: ~/.conan2 is already current, and
-        # GHA cache keys are immutable so re-saving the same key is a no-op.
-        if: always() && env.CONAN_CACHE_HIT != '1' && steps.conan-gha-cache.outputs.cache-hit != 'true'
+        # run on any identically-keyed branch restores it. `always()` so a
+        # failing project compile still saves the third-party deps that
+        # finished earlier — they're the expensive part. Keys are immutable,
+        # so skip only on an exact-key hit.
+        if: always() && steps.conan-gha-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
         with:
           path: ~/.conan2
@@ -434,6 +237,12 @@ jobs:
       - name: ccache stats
         if: success()
         run: ccache -s
+
+      - name: Test
+        # --timeout kills any single test after 2 min (the suite normally
+        # finishes in well under that), so one deadlocked test fails loudly
+        # with its name in the log instead of stalling the whole job.
+        run: xvfb-run -a ctest --test-dir build --output-on-failure --timeout 120
 
   tsan:
     # ThreadSanitizer guard for the datastore worker-thread races (e.g. the
@@ -491,65 +300,6 @@ jobs:
           key: conan-linux-gcc-relwithdebinfo-v2-${{ steps.conan_cache.outputs.hash }}
           restore-keys: |
             conan-linux-gcc-relwithdebinfo-v2-
-
-      - name: Configure JFrog Conan repository (read-only, pull requests)
-        # Same-repo PRs resolve through a READ-ONLY JFrog credential so they
-        # see the same recipe revisions + binaries as trusted runs. This path
-        # is best-effort by design: missing or rejected credentials degrade to
-        # ConanCenter-only (a fallback must never fail the build). Fork PRs
-        # receive no secrets at all and fall through automatically.
-        if: github.event_name == 'pull_request' || github.repository != 'PlotJuggler/PJ4'
-        id: conan_remote_read
-        shell: bash
-        env:
-          JFROG_READ_USER: ${{ vars.JFROG_READ_USER || secrets.JFROG_READ_USER }}
-          JFROG_READ_TOKEN: ${{ secrets.JFROG_READ_TOKEN }}
-        run: |
-          set -euo pipefail
-          repo_url="https://plotjuggler.jfrog.io/artifactory/api/conan/plotjuggler-conan"
-          use_jfrog=false
-          if curl -sf -o /dev/null --max-time 15 "${repo_url}/v2/ping"; then
-            # Anonymous read enabled server-side: no credential, no login, and
-            # fork PRs (which receive no secrets) benefit too.
-            conan remote add plotjuggler-conan "${repo_url}" --force --index=0
-            use_jfrog=true
-            echo "JFrog anonymous read access verified."
-          elif [[ -n "${JFROG_READ_USER:-}" && -n "${JFROG_READ_TOKEN:-}" ]]; then
-            conan remote add plotjuggler-conan "${repo_url}" --force --index=0
-            if conan remote login plotjuggler-conan "$JFROG_READ_USER" -p "$JFROG_READ_TOKEN"; then
-              use_jfrog=true
-              echo "configured=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "::warning::Read-only JFrog login rejected; falling back to ConanCenter only."
-              conan remote remove plotjuggler-conan || true
-            fi
-          else
-            echo "No JFrog read access available; using ConanCenter only."
-          fi
-          echo "PJ_USE_JFROG=${use_jfrog}" >> "$GITHUB_ENV"
-
-      - name: Configure JFrog Conan repository
-        if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/PJ4'
-        id: conan_remote
-        shell: bash
-        env:
-          JFROG_USER: ${{ vars.JFROG_USER || secrets.JFROG_USER }}
-          JFROG_TOKEN: ${{ secrets.JFROG_TOKEN }}
-        run: |
-          set -euo pipefail
-
-          if [[ -z "$JFROG_USER" || -z "$JFROG_TOKEN" ]]; then
-            echo "::error::Configure JFROG_USER as an Actions variable or secret, and JFROG_TOKEN as an Actions secret."
-            exit 1
-          fi
-
-          conan remote add plotjuggler-conan \
-            "https://plotjuggler.jfrog.io/artifactory/api/conan/plotjuggler-conan" \
-            --force --index=0
-          conan remote login plotjuggler-conan "$JFROG_USER" -p "$JFROG_TOKEN"
-          echo "PJ_USE_JFROG=true" >> "$GITHUB_ENV"
-          echo "authenticated=true" >> "$GITHUB_OUTPUT"
-          conan remote list
 
       - name: Seed Conan source download cache
         shell: bash
@@ -616,33 +366,8 @@ jobs:
           ccache --set-config=compression=true
           ccache -z
 
-      - name: Refresh ConanCenter recipe revisions in JFrog
-        if: steps.conan_remote.outputs.authenticated == 'true'
-        shell: bash
-        run: |
-          conan profile detect --force
-          bash .github/scripts/sync-conan-recipes.sh \
-            -s build_type=RelWithDebInfo -s compiler.cppstd=20
-
       - name: Build + run foundation tests under ThreadSanitizer
         run: ./build.sh --tsan
-
-      - name: Publish Conan packages to JFrog
-        # TSan resolves the same RelWithDebInfo dependency graph as the regular
-        # build, but a refreshed recipe can still require a binary that this
-        # runner is first to build. Persist it instead of rebuilding next run.
-        if: success() && steps.conan_remote.outputs.authenticated == 'true'
-        shell: bash
-        run: |
-          conan upload "*" -r=plotjuggler-conan --confirm \
-            -cc core.upload:parallel=4
-
-      - name: Remove JFrog credentials from Conan home
-        # The combined actions/cache step saves ~/.conan2 during post-job
-        # cleanup, so remove authentication first on both success and failure.
-        if: always() && (steps.conan_remote.outputs.authenticated == 'true' || steps.conan_remote_read.outputs.configured == 'true')
-        shell: bash
-        run: conan remote logout plotjuggler-conan
 
       - name: ccache stats
         if: success()
