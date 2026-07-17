@@ -86,18 +86,6 @@ jobs:
           path: plotjuggler_sdk/pj_ported_plugins/dist_ros2
           key: ${{ steps.ros2key.outputs.key }}
 
-      - name: Free up disk space on the runner
-        # One Docker image per supported ROS 2 distro; the default runner's
-        # free space does not hold them all. The rm -rf list matches
-        # linux-ci.yml (seconds, vs minutes for the apt-based cleanup actions).
-        if: steps.ros2cache.outputs.cache-hit != 'true'
-        shell: bash
-        run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
-            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/lib/node_modules
-          sudo docker image prune --all --force >/dev/null 2>&1 || true
-          df -h /
-
       - name: Build ros2 proxy + all distros
         if: steps.ros2cache.outputs.cache-hit != 'true'
         shell: bash
@@ -131,7 +119,7 @@ jobs:
           if-no-files-found: error
 
   appimage:
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-22.04-4
     needs: ros2-bundle
     timeout-minutes: 240
     container:

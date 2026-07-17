@@ -10,6 +10,15 @@ on:
   pull_request:
     branches: [main, development]
     types: [opened, synchronize, reopened, ready_for_review]
+    # Path-filtered: most PRs touch neither the manifest nor the recipes, and
+    # the Conan workflows already compile every C++ change. A pixi-only
+    # breakage from a plain source change surfaces on the push-to-main run.
+    paths:
+      - pixi.toml
+      - recipes/**
+      - "**/CMakeLists.txt"
+      - cmake/**
+      - .github/workflows/pixi-ci.yml
   push:
     branches: [main, development]
   workflow_dispatch:
@@ -20,9 +29,9 @@ concurrency:
 
 jobs:
   build:
-    # Unlike the canonical Conan workflows this runs on draft PRs too: the pixi
-    # build is exploratory and the Windows leg can only be validated in CI, so
-    # it needs to run before the PR is marked ready.
+    # No draft gate: the paths filter above already limits PR runs to
+    # packaging-relevant changes, and recipe work (the MSVC ffmpeg above all)
+    # can only be validated in CI — drafts included.
     name: pixi-build (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -30,19 +39,19 @@ jobs:
       matrix:
         include:
           - name: linux-64
-            os: ubuntu-22.04
+            os: depot-ubuntu-22.04-4
           - name: win-64
-            # windows-2022, not windows-latest: the sccache namespace
-            # (SCCACHE_GHA_VERSION) is shared with windows-ci.yml and
-            # windows-release.yml, which pin windows-2022 — a runner-image
-            # drift means a different MSVC and a polluted/cold object cache.
-            os: windows-2022
+            # windows-2022, not a newer image: the sccache object store is
+            # shared with windows-ci.yml and windows-release.yml, which pin
+            # windows-2022 — an image drift means a different MSVC and a
+            # polluted/cold object cache.
+            os: depot-windows-2022-4
     # Windows gap-package builds + Qt link are slow; give headroom over the
     # 6-hour GitHub default so a hang is caught by the job, not the runner.
     timeout-minutes: 120
 
     # Explicit cache locations for package downloads and Linux ccache. Windows
-    # sccache uses the same native GitHub backend as the Conan workflows below.
+    # sccache uses the same Depot Cache backend as the Conan workflows.
     env:
       PIXI_CACHE_DIR: ${{ github.workspace }}/.pixi_cache
       CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -55,14 +64,6 @@ jobs:
       - uses: actions/checkout@v6
         with:
           submodules: recursive
-
-      - name: Free up runner disk space (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
-            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/lib/node_modules
-          sudo docker image prune --all --force >/dev/null 2>&1 || true
-          df -h /
 
       # Persists pixi's downloaded package archives (~2.1 GB: Qt 6.11.1, the
       # compiler, every conda-forge library) across runs. There's no committed
@@ -138,6 +139,10 @@ jobs:
         run: sed -i 's/platforms = \["linux-64"\]/platforms = ["win-64"]/' pixi.toml
 
       - name: Install sccache (Windows)
+        # Only installs the binary; the backend is Depot Cache via the
+        # SCCACHE_WEBDAV_* env vars the Depot runner pre-sets. If installation
+        # flakes, the build falls back to an ephemeral local cache and remains
+        # correct.
         if: runner.os == 'Windows'
         id: setup_sccache
         continue-on-error: true
@@ -145,21 +150,10 @@ jobs:
         with:
           version: "v0.16.0"
 
-      - name: Enable native GitHub sccache backend (Windows)
-        # setup-sccache exports the short-lived Actions cache credentials. If
-        # installation flakes, leave these unset: Pixi's own sccache then uses
-        # an ephemeral local cache and the build remains correct.
-        if: runner.os == 'Windows' && steps.setup_sccache.outcome == 'success'
-        shell: bash
-        run: |
-          echo "SCCACHE_GHA_ENABLED=on" >> "$GITHUB_ENV"
-          echo "SCCACHE_GHA_VERSION=pj4-windows-msvc-relwithdebinfo-v1" >> "$GITHUB_ENV"
-
-      # Linux keeps its compact ccache archive. Windows no longer creates a
-      # second per-commit sccache archive; its object cache is shared with
-      # windows-ci.yml and windows-release.yml through sccache itself.
-      # Restore-only on pull requests (same quota policy as linux-ci): PRs
-      # restore main's objects and recompile only their own edits.
+      # Linux keeps its compact ccache archive. Windows shares its sccache
+      # object store with windows-ci.yml and windows-release.yml through
+      # Depot Cache. On Depot runners actions/cache is Depot-backed (not the
+      # shared 10 GB GitHub quota), so PR runs save as well as restore.
       - name: Restore compiler objects (Linux)
         if: runner.os == 'Linux'
         id: ccache_restore
@@ -175,7 +169,7 @@ jobs:
         run: pixi run build
 
       - name: Save compiler objects (Linux)
-        if: always() && runner.os == 'Linux' && github.event_name != 'pull_request' && steps.ccache_restore.outputs.cache-hit != 'true'
+        if: always() && runner.os == 'Linux' && steps.ccache_restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
         with:
           path: ${{ env.CCACHE_DIR }}

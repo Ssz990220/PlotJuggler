@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   appimage:
-    runs-on: ubuntu-22.04
+    runs-on: depot-ubuntu-22.04-4
     steps:
       - name: Use HTTPS for github.com submodules
         run: git config --global url."https://github.com/".insteadOf "git@github.com:"

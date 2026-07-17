@@ -23,7 +23,7 @@ jobs:
 
   build:
     if: github.event.pull_request.draft == false
-    runs-on: ubuntu-22.04
+    runs-on: depot-ubuntu-22.04-4
     # Backstop against hangs (a deadlocked test otherwise holds the runner for
     # GitHub's 6-hour default). Worst observed legitimate run — cold Conan +
     # cold ccache — is ~28 min.
@@ -33,17 +33,6 @@ jobs:
       packages: write   # push/pull the Conan cache OCI artifact on ghcr.io
 
     steps:
-      - name: Free up runner disk space
-        # ubuntu runners ship ~14 GB free; the RelWithDebInfo link of pj_app
-        # (FFmpeg/assimp/Qt + debug info) over the Conan closure can exceed it
-        # ("ld: No space left on device" during the final link). Reclaim the
-        # preinstalled toolchains this build never uses (~20-30 GB).
-        run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
-            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/lib/node_modules
-          sudo docker image prune --all --force >/dev/null 2>&1 || true
-          df -h /
-
       - name: Use HTTPS for github.com submodules
         run: git config --global url."https://github.com/".insteadOf "git@github.com:"
 
@@ -298,10 +287,9 @@ jobs:
         # Keep the regular-build namespace disjoint from TSan. The former
         # `ccache-linux-` catch-all selected the newer ccache-linux-tsan-* entry
         # and produced 0/810 hits because sanitizer objects are incompatible.
-        # Restore-only on pull requests: PR-scoped archives (~0.65 GB per open
-        # PR) were a top consumer of the shared 10 GB quota whose LRU eviction
-        # victim is the Windows sccache. PRs still restore main's objects, so
-        # only the PR's own edits recompile on repeat pushes.
+        # On Depot runners actions/cache is backed by Depot Cache storage (not
+        # GitHub's shared 10 GB quota), so PR runs save as well as restore —
+        # repeat pushes to a PR recompile only their own edits.
         id: ccache_restore
         uses: actions/cache/restore@v5
         with:
@@ -378,6 +366,13 @@ jobs:
         # Conan already generated build/conan_toolchain.cmake above. Do not
         # resolve the graph twice (and do not require JFrog credentials during
         # the much longer application compile).
+        # PJ_BUILD_TESTS=OFF: skip compiling/linking the test binaries (the
+        # dominant share of build time; see the root CMakeLists.txt note).
+        # Test execution coverage for this job lives in the tsan job below
+        # (foundation concurrency suite) and in Pixi CI (core suite on
+        # linux-64, full suite on win-64).
+        env:
+          PJ_BUILD_TESTS: "OFF"
         run: ./build.sh --skip-conan-install
 
       - name: Save Conan cache to ghcr.io
@@ -428,8 +423,9 @@ jobs:
           key: conan-linux-gcc-relwithdebinfo-v2-${{ steps.conan_cache.outputs.hash }}
 
       - name: Save ccache
-        # always(): objects from a build whose tests failed are still valid.
-        if: always() && github.event_name != 'pull_request' && steps.ccache_restore.outputs.cache-hit != 'true'
+        # always(): a failed build's objects are still valid. Saved on PR runs
+        # too — the entries live in Depot Cache storage, not the 10 GB quota.
+        if: always() && steps.ccache_restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
         with:
           path: ~/.cache/ccache
@@ -439,12 +435,6 @@ jobs:
         if: success()
         run: ccache -s
 
-      - name: Test
-        # --timeout kills any single test after 2 min (the suite normally
-        # finishes in well under that), so one deadlocked test fails loudly
-        # with its name in the log instead of stalling the whole job.
-        run: xvfb-run -a ctest --test-dir build --output-on-failure --timeout 120
-
   tsan:
     # ThreadSanitizer guard for the datastore worker-thread races (e.g. the
     # streaming pause/resume WriteCore swap). Builds + runs ONLY the Qt-free
@@ -452,7 +442,7 @@ jobs:
     # in parallel with `build`, sharing its cached Qt + RelWithDebInfo Conan
     # closure (only our own sources get instrumented). See ./build.sh --tsan.
     if: github.event.pull_request.draft == false
-    runs-on: ubuntu-22.04
+    runs-on: depot-ubuntu-22.04-4
     timeout-minutes: 45
     permissions:
       contents: read

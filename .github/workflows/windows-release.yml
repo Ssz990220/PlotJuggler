@@ -33,18 +33,14 @@ concurrency:
 jobs:
   windows-installer:
     # Match windows-ci.yml and the toolchain used for the published plugin artifacts.
-    runs-on: windows-2022
+    runs-on: depot-windows-2022-4
     # Backstop against hangs — app build plus registry download/validation/packaging.
     # Plugins are not compiled here.
     timeout-minutes: 180
 
-    env:
-      # Use sccache's object-level GitHub backend instead of archiving a new
-      # multi-hundred-MB local cache for every commit. The shared namespace lets
-      # Windows CI, release, and Pixi reuse identical MSVC compilation results.
-      SCCACHE_GHA_ENABLED: "on"
-      SCCACHE_GHA_VERSION: "pj4-windows-msvc-relwithdebinfo-v1"
-
+    # sccache uses Depot Cache via the SCCACHE_WEBDAV_* env vars the Depot
+    # runner pre-sets — the same org-wide object store as Windows CI and the
+    # Pixi win-64 leg, so the release reuses identical MSVC compilation results.
     steps:
       - name: Use HTTPS for github.com submodules
         shell: bash
