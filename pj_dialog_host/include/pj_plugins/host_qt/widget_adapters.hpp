@@ -12,9 +12,9 @@ namespace PJ {
 // for PlotJuggler's own styled equivalents, while keeping the ORIGINAL control
 // hidden and alive so plugin data/events keep flowing through it unchanged.
 //
-//   QRadioButton (exclusive pair) -> DualOptionsWidget (segmented control)
-//   QCheckBox                     -> ToggleSwitch (inline label on the left)
-//   QComboBox                     -> PJ::ComboBox styling (gradient popup)
+//   QRadioButton (exclusive group, 2+ buttons) -> DualOptionsWidget (segmented control)
+//   QCheckBox                                   -> ToggleSwitch (inline label on the left)
+//   QComboBox                                   -> PJ::ComboBox styling (gradient popup)
 //
 // The originals stay in the widget tree (hidden) and remain the source of truth
 // for plugin WidgetData and the event callbacks wired by connectWidgetSignals;
@@ -36,7 +36,7 @@ void forwardEmbeddedDialogClose(QWidget* content, QDialog* outer);
 
 /// Per-kind entry points (adaptStyledWidgets calls each). Exposed individually
 /// so each adapter can be unit-tested in isolation.
-void adaptRadioButtonPairs(QWidget* root);
+void adaptRadioGroups(QWidget* root);
 void adaptCheckBoxes(QWidget* root);
 void adaptComboBoxes(QWidget* root);
 /// Give every QTableView under `root` that opts in (dynamic bool property
@@ -58,7 +58,7 @@ void adaptGridTables(QWidget* root);
 void adaptScrollAreas(QWidget* root);
 
 /// Reactively adapt the single widget `w` if it just became adaptable (e.g.
-/// plugin data selected one option of a previously-unselected radio pair, or
+/// plugin data selected one option of a previously-unselected radio group, or
 /// gave a checkbox its text). No-op if `w` is already adapted or not adaptable.
 void tryAdaptStyledWidget(QWidget* w);
 

@@ -32,8 +32,10 @@ theme::Theme frameworkTheme() {
 DualOptionsWidget::DualOptionsWidget(QWidget* parent) : DualOptionsWidget(u"Option A"_s, u"Option B"_s, parent) {}
 
 DualOptionsWidget::DualOptionsWidget(const QString& opt0, const QString& opt1, QWidget* parent)
+    : DualOptionsWidget(QStringList{opt0, opt1}, parent) {}
+
+DualOptionsWidget::DualOptionsWidget(const QStringList& options, QWidget* parent)
     : QWidget(parent),
-      options_{opt0, opt1},
       // Defaults mirror the framework roles so the widget looks correct before
       // a stylesheet injects the qproperties.
       accent_color_(theme::surface(PJ::theme::Surface::Separation, frameworkTheme())),
@@ -53,16 +55,27 @@ DualOptionsWidget::DualOptionsWidget(const QString& opt0, const QString& opt1, Q
   setFocusPolicy(Qt::TabFocus);
   setAttribute(Qt::WA_Hover, true);
   setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
+  setOptions(options);
 }
 
-void DualOptionsWidget::setOptions(const QString& opt0, const QString& opt1) {
-  options_ = {opt0, opt1};
+void DualOptionsWidget::setOptions(const QStringList& options) {
+  if (options.size() < 2) {
+    return;
+  }
+  options_ = options;
+  if (selected_ >= optionCount()) {
+    setSelectedIndex(optionCount() - 1);
+  }
   updateGeometry();
   update();
 }
 
+void DualOptionsWidget::setOptions(const QString& opt0, const QString& opt1) {
+  setOptions(QStringList{opt0, opt1});
+}
+
 void DualOptionsWidget::setSelectedIndex(int index) {
-  if (index == selected_ || (index != 0 && index != 1)) {
+  if (index == selected_ || index < 0 || index >= optionCount()) {
     return;
   }
   selected_ = index;
@@ -111,10 +124,13 @@ void DualOptionsWidget::setTextColor(const QColor& color) {
 }
 
 QSize DualOptionsWidget::sizeHint() const {
-  const int w0 = fontMetrics().horizontalAdvance(options_[0]);
-  const int w1 = fontMetrics().horizontalAdvance(options_[1]);
-  const int half_w = std::max(w0, w1) + 2 * theme::space(kHPadding);
-  return {2 * half_w, theme::metric(theme::Metric::InputOuterHeight)};
+  const QFontMetrics fm = fontMetrics();
+  int max_w = 0;
+  for (const QString& option : options_) {
+    max_w = std::max(max_w, fm.horizontalAdvance(option));
+  }
+  const int segment_w = max_w + 2 * theme::space(kHPadding);
+  return {optionCount() * segment_w, theme::metric(theme::Metric::InputOuterHeight)};
 }
 
 QSize DualOptionsWidget::minimumSizeHint() const {
@@ -147,9 +163,7 @@ void DualOptionsWidget::paintEvent(QPaintEvent* /*event*/) {
 
   const QRectF box =
       QRectF(rect()).adjusted(border_width / 2.0, border_width / 2.0, -border_width / 2.0, -border_width / 2.0);
-  const qreal midX = box.left() + box.width() / 2.0;
-  const QRectF left_box(box.left(), box.top(), box.width() / 2.0, box.height());
-  const QRectF right_box(midX, box.top(), box.width() / 2.0, box.height());
+  const qreal segment_w = box.width() / optionCount();
 
   const QColor bg =
       isEnabled() ? base_fill_color_ : theme::interaction(theme::Variant::Neutral, theme::State::Disabled, fw_theme);
@@ -164,8 +178,8 @@ void DualOptionsWidget::paintEvent(QPaintEvent* /*event*/) {
   painter.setPen(QPen(base_border, border_width));
   painter.drawRoundedRect(box, corner_radius, corner_radius);
 
-  const qreal selected_left = left_box.left() + (right_box.left() - left_box.left()) * visual_selection_;
-  const QRectF selected_box(selected_left, box.top(), box.width() / 2.0, box.height());
+  const qreal selected_left = box.left() + segment_w * visual_selection_;
+  const QRectF selected_box(selected_left, box.top(), segment_w, box.height());
   painter.setBrush(sel_fill);
   painter.setPen(QPen(selected_border, border_width));
   painter.drawRoundedRect(selected_box, corner_radius, corner_radius);
@@ -173,13 +187,16 @@ void DualOptionsWidget::paintEvent(QPaintEvent* /*event*/) {
   const QColor label_color =
       isEnabled() ? text_color_ : theme::onSurface(theme::Surface::Backdrop, theme::Emphasis::Disabled, fw_theme);
   painter.setPen(label_color);
-  painter.drawText(QRectF(box.left(), box.top(), box.width() / 2.0, box.height()), Qt::AlignCenter, options_[0]);
-  painter.drawText(QRectF(midX, box.top(), box.width() / 2.0, box.height()), Qt::AlignCenter, options_[1]);
+  for (int i = 0; i < optionCount(); ++i) {
+    painter.drawText(
+        QRectF(box.left() + segment_w * i, box.top(), segment_w, box.height()), Qt::AlignCenter, options_[i]);
+  }
 }
 
 void DualOptionsWidget::mousePressEvent(QMouseEvent* event) {
   if (event->button() == Qt::LeftButton) {
-    setSelectedIndex((event->pos().x() < width() / 2) ? 0 : 1);
+    const int index = static_cast<int>(event->pos().x() * optionCount() / std::max(1, width()));
+    setSelectedIndex(std::clamp(index, 0, optionCount() - 1));
     event->accept();
     return;
   }
@@ -189,16 +206,17 @@ void DualOptionsWidget::mousePressEvent(QMouseEvent* event) {
 void DualOptionsWidget::keyPressEvent(QKeyEvent* event) {
   switch (event->key()) {
     case Qt::Key_Left:
-      setSelectedIndex(0);
+      setSelectedIndex(selected_ - 1);
       event->accept();
       break;
     case Qt::Key_Right:
-      setSelectedIndex(1);
+      setSelectedIndex(selected_ + 1);
       event->accept();
       break;
     case Qt::Key_Space:
     case Qt::Key_Return:
-      setSelectedIndex(1 - selected_);
+      // Cycles through the segments; for two options this is the classic toggle.
+      setSelectedIndex((selected_ + 1) % optionCount());
       event->accept();
       break;
     default:

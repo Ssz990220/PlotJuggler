@@ -251,7 +251,7 @@ TEST(WidgetBindingCombo, ChangedItemsRebuild) {
   EXPECT_EQ(combo->count(), 3);
 }
 
-TEST(WidgetBindingRadioPairAdapter, ConvertsSafePairAndPreservesRadioEvents) {
+TEST(WidgetBindingRadioGroupAdapter, ConvertsSafePairAndPreservesRadioEvents) {
   qapp();
   recorder()->clear();
 
@@ -271,7 +271,7 @@ TEST(WidgetBindingRadioPairAdapter, ConvertsSafePairAndPreservesRadioEvents) {
   row_layout->addWidget(arrow);
   root_layout->addWidget(row);
 
-  PJ::adaptRadioButtonPairs(&root);
+  PJ::adaptRadioGroups(&root);
 
   auto* dual = row->findChild<PJ::DualOptionsWidget*>();
   ASSERT_NE(dual, nullptr);
@@ -297,7 +297,7 @@ TEST(WidgetBindingRadioPairAdapter, ConvertsSafePairAndPreservesRadioEvents) {
   EXPECT_TRUE(saw_arrow_checked) << "the hidden original radio button must still drive plugin onToggled callbacks";
 }
 
-TEST(WidgetBindingRadioPairAdapter, WidgetDataSyncsVisibleDualOptionsWidget) {
+TEST(WidgetBindingRadioGroupAdapter, WidgetDataSyncsVisibleDualOptionsWidget) {
   qapp();
 
   QWidget root;
@@ -313,7 +313,7 @@ TEST(WidgetBindingRadioPairAdapter, WidgetDataSyncsVisibleDualOptionsWidget) {
   row_layout->addWidget(frame);
   row_layout->addWidget(arrow);
 
-  PJ::adaptRadioButtonPairs(&root);
+  PJ::adaptRadioGroups(&root);
   auto* dual = root.findChild<PJ::DualOptionsWidget*>();
   ASSERT_NE(dual, nullptr);
   ASSERT_EQ(dual->selectedIndex(), 0);
@@ -328,7 +328,7 @@ TEST(WidgetBindingRadioPairAdapter, WidgetDataSyncsVisibleDualOptionsWidget) {
   EXPECT_EQ(dual->selectedIndex(), 1);
 }
 
-TEST(WidgetBindingRadioPairAdapter, ConvertsAfterInitialWidgetDataSelectsRadio) {
+TEST(WidgetBindingRadioGroupAdapter, ConvertsAfterInitialWidgetDataSelectsRadio) {
   qapp();
 
   QWidget root;
@@ -343,7 +343,7 @@ TEST(WidgetBindingRadioPairAdapter, ConvertsAfterInitialWidgetDataSelectsRadio) 
   row_layout->addWidget(frame);
   row_layout->addWidget(arrow);
 
-  PJ::adaptRadioButtonPairs(&root);
+  PJ::adaptRadioGroups(&root);
   EXPECT_EQ(root.findChild<PJ::DualOptionsWidget*>(), nullptr)
       << "no-selection pairs stay untouched until plugin data chooses an option";
 
@@ -358,7 +358,7 @@ TEST(WidgetBindingRadioPairAdapter, ConvertsAfterInitialWidgetDataSelectsRadio) 
   EXPECT_EQ(dual->selectedIndex(), 1);
 }
 
-TEST(WidgetBindingRadioPairAdapter, ConvertsPairEmbeddedInMixedBoxRow) {
+TEST(WidgetBindingRadioGroupAdapter, ConvertsPairEmbeddedInMixedBoxRow) {
   qapp();
 
   QWidget root;
@@ -379,7 +379,7 @@ TEST(WidgetBindingRadioPairAdapter, ConvertsPairEmbeddedInMixedBoxRow) {
   row_layout->addStretch();
   row_layout->addWidget(header);
 
-  PJ::adaptRadioButtonPairs(&root);
+  PJ::adaptRadioGroups(&root);
 
   auto* dual = root.findChild<PJ::DualOptionsWidget*>();
   ASSERT_NE(dual, nullptr);
@@ -390,7 +390,7 @@ TEST(WidgetBindingRadioPairAdapter, ConvertsPairEmbeddedInMixedBoxRow) {
   EXPECT_EQ(dual->selectedIndex(), 0);
 }
 
-TEST(WidgetBindingRadioPairAdapter, LeavesUngroupedTwoRadioRowUntouched) {
+TEST(WidgetBindingRadioGroupAdapter, LeavesUngroupedTwoRadioRowUntouched) {
   qapp();
 
   QWidget root;
@@ -401,14 +401,14 @@ TEST(WidgetBindingRadioPairAdapter, LeavesUngroupedTwoRadioRowUntouched) {
   row_layout->addWidget(first);
   row_layout->addWidget(second);
 
-  PJ::adaptRadioButtonPairs(&root);
+  PJ::adaptRadioGroups(&root);
 
   EXPECT_EQ(root.findChild<PJ::DualOptionsWidget*>(), nullptr);
   EXPECT_FALSE(first->isHidden());
   EXPECT_FALSE(second->isHidden());
 }
 
-TEST(WidgetBindingRadioPairAdapter, ConvertsButtonGroupsInsideNestedLayouts) {
+TEST(WidgetBindingRadioGroupAdapter, ConvertsButtonGroupsInsideNestedLayouts) {
   qapp();
 
   QWidget root;
@@ -443,7 +443,7 @@ TEST(WidgetBindingRadioPairAdapter, ConvertsButtonGroupsInsideNestedLayouts) {
   timestamp_row->addWidget(new QCheckBox(u"Use timestamp inside message (header)"_s, &root));
   outer_layout->addLayout(timestamp_row);
 
-  PJ::adaptRadioButtonPairs(&root);
+  PJ::adaptRadioGroups(&root);
 
   const auto duals = root.findChildren<PJ::DualOptionsWidget*>();
   ASSERT_EQ(duals.size(), 2);
@@ -453,7 +453,7 @@ TEST(WidgetBindingRadioPairAdapter, ConvertsButtonGroupsInsideNestedLayouts) {
   EXPECT_TRUE(log->isHidden());
 }
 
-TEST(WidgetBindingRadioPairAdapter, ConvertsIndependentButtonGroupsSharingParent) {
+TEST(WidgetBindingRadioGroupAdapter, ConvertsIndependentButtonGroupsSharingParent) {
   qapp();
 
   QWidget root;
@@ -478,7 +478,7 @@ TEST(WidgetBindingRadioPairAdapter, ConvertsIndependentButtonGroupsSharingParent
   row_layout->addWidget(clamp);
   row_layout->addWidget(skip);
 
-  PJ::adaptRadioButtonPairs(&root);
+  PJ::adaptRadioGroups(&root);
 
   const auto duals = root.findChildren<PJ::DualOptionsWidget*>();
   ASSERT_EQ(duals.size(), 2);
@@ -488,7 +488,7 @@ TEST(WidgetBindingRadioPairAdapter, ConvertsIndependentButtonGroupsSharingParent
   EXPECT_TRUE(skip->isHidden());
 }
 
-TEST(WidgetBindingRadioPairAdapter, ConvertsGroupedPairInsideGridRow) {
+TEST(WidgetBindingRadioGroupAdapter, ConvertsGroupedPairInsideGridRow) {
   qapp();
 
   QWidget root;
@@ -511,7 +511,7 @@ TEST(WidgetBindingRadioPairAdapter, ConvertsGroupedPairInsideGridRow) {
   grid->addWidget(skip, 0, 4);
   grid->addWidget(new QCheckBox(u"Use timestamp inside message (header)"_s, &root), 1, 0, 1, 5);
 
-  PJ::adaptRadioButtonPairs(&root);
+  PJ::adaptRadioGroups(&root);
 
   auto* dual = root.findChild<PJ::DualOptionsWidget*>();
   ASSERT_NE(dual, nullptr);
@@ -520,7 +520,7 @@ TEST(WidgetBindingRadioPairAdapter, ConvertsGroupedPairInsideGridRow) {
   EXPECT_EQ(dual->selectedIndex(), 1);
 }
 
-TEST(WidgetBindingRadioPairAdapter, LeavesUngroupedLargerRadioSetUntouched) {
+TEST(WidgetBindingRadioGroupAdapter, LeavesUngroupedLargerRadioSetUntouched) {
   qapp();
 
   QWidget root;
@@ -535,13 +535,54 @@ TEST(WidgetBindingRadioPairAdapter, LeavesUngroupedLargerRadioSetUntouched) {
   row_layout->addWidget(c);
   row_layout->addWidget(d);
 
-  PJ::adaptRadioButtonPairs(&root);
+  PJ::adaptRadioGroups(&root);
 
   EXPECT_EQ(root.findChild<PJ::DualOptionsWidget*>(), nullptr);
   EXPECT_FALSE(a->isHidden());
   EXPECT_FALSE(b->isHidden());
   EXPECT_FALSE(c->isHidden());
   EXPECT_FALSE(d->isHidden());
+}
+
+TEST(WidgetBindingRadioGroupAdapter, ConvertsExplicitThreeButtonGroup) {
+  qapp();
+
+  QWidget root;
+  auto* row_layout = new QHBoxLayout(&root);
+  auto* contains = new QRadioButton(u"Contains"_s, &root);
+  contains->setObjectName("filterContains");
+  auto* wildcard = new QRadioButton(u"Wildcard"_s, &root);
+  wildcard->setObjectName("filterWildcard");
+  wildcard->setChecked(true);
+  auto* regexp = new QRadioButton(u"RegExp"_s, &root);
+  regexp->setObjectName("filterRegExp");
+  auto* group = new QButtonGroup(&root);
+  group->addButton(contains);
+  group->addButton(wildcard);
+  group->addButton(regexp);
+  row_layout->addWidget(contains);
+  row_layout->addWidget(wildcard);
+  row_layout->addWidget(regexp);
+
+  PJ::adaptRadioGroups(&root);
+
+  auto* dual = root.findChild<PJ::DualOptionsWidget*>();
+  ASSERT_NE(dual, nullptr);
+  EXPECT_EQ(dual->optionCount(), 3);
+  EXPECT_TRUE(contains->isHidden());
+  EXPECT_TRUE(wildcard->isHidden());
+  EXPECT_TRUE(regexp->isHidden());
+  EXPECT_EQ(dual->selectedIndex(), 1);
+
+  dual->setSelectedIndex(2);
+  EXPECT_TRUE(regexp->isChecked());
+  EXPECT_FALSE(wildcard->isChecked());
+
+  PJ::WidgetData wd;
+  wd.setChecked("filterContains", true);
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
+  EXPECT_EQ(dual->selectedIndex(), 0);
+  EXPECT_TRUE(contains->isHidden());
 }
 
 TEST(WidgetCheckBoxAdapter, ConvertsCheckBoxToLabeledToggleAndPreservesEvents) {

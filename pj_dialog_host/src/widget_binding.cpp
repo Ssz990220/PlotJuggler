@@ -536,7 +536,7 @@ static void applyToWidget(
   // widget_adapters), `enabled` is written straight to the hidden original and
   // reaches the replacement via syncStyledWidget below. `visible` is redirected
   // onto the original as a desired-visible the replacement derives from (e.g. a
-  // DualOptionsWidget's visibility is the OR of its two hidden radios), so it
+  // DualOptionsWidget's visibility is the OR of its hidden radios), so it
   // goes through redirectAdaptedVisibility; an un-adapted widget just sets its
   // own visibility.
   if (auto v = view.enabled(name)) {
@@ -727,7 +727,7 @@ static void applyToWidget(
     }
     // Keep any styled replacement in sync, and adapt the group now if it has
     // just become adaptable (e.g. data selected one option of a previously
-    // unselected pair). Both no-op for un-adapted/non-adaptable widgets.
+    // unselected group). Both no-op for un-adapted/non-adaptable widgets.
     syncStyledWidget(rb);
     tryAdaptStyledWidget(rb);
     return;

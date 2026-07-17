@@ -4,21 +4,24 @@
 
 #include <QColor>
 #include <QString>
+#include <QStringList>
 #include <QWidget>
-#include <array>
 
 class QVariantAnimation;
 
 namespace PJ {
 
-// Two-segment horizontal "segmented control" — a joined pair of pill halves
-// that replaces a pair of QRadioButtons in config panels. Clicking a half
-// selects it; the selected half renders as a raised neutral chip while the
-// other half shows the input background.
+// Horizontal "segmented control" — a joined row of pill segments that
+// replaces an exclusive group of QRadioButtons in config panels. Clicking a
+// segment selects it; the selected segment renders as a raised neutral chip
+// while the others show the input background. Despite the (historical) name
+// it supports any number of segments >= 2; the two-option constructors remain
+// as the common-case convenience.
 //
 // Usage:
 //   auto* w = new DualOptionsWidget("Frame", "Arrow");
-//   w->setSelectedIndex(0);                           // 0 = left, 1 = right
+//   auto* m = new DualOptionsWidget(QStringList{"Contains", "Wildcard", "RegExp"});
+//   w->setSelectedIndex(0);                           // 0 = leftmost
 //   connect(w, &DualOptionsWidget::selectionChanged, [](int i){ ... });
 //
 // Colors come from the QSS via Qt stylesheet qproperties:
@@ -41,10 +44,19 @@ class DualOptionsWidget : public QWidget {
  public:
   explicit DualOptionsWidget(QWidget* parent = nullptr);
   explicit DualOptionsWidget(const QString& opt0, const QString& opt1, QWidget* parent = nullptr);
+  // Applies `options` via setOptions, so a list with fewer than 2 entries
+  // leaves the "Option A"/"Option B" defaults in place.
+  explicit DualOptionsWidget(const QStringList& options, QWidget* parent = nullptr);
 
-  // Replace both labels at once; triggers a geometry update.
+  // Replace all labels at once; triggers a geometry update. Lists with fewer
+  // than 2 entries are ignored. If the current selection falls beyond the new
+  // list it clamps to the last segment (emitting selectionChanged).
+  void setOptions(const QStringList& options);
   void setOptions(const QString& opt0, const QString& opt1);
 
+  [[nodiscard]] int optionCount() const {
+    return static_cast<int>(options_.size());
+  }
   [[nodiscard]] int selectedIndex() const {
     return selected_;
   }
@@ -84,8 +96,9 @@ class DualOptionsWidget : public QWidget {
   [[nodiscard]] QSize minimumSizeHint() const override;
 
  public slots:
-  // Selects segment 0 (left) or 1 (right). No-op when already selected.
-  // Emits selectionChanged when the value actually changes.
+  // Selects the segment at index (0 = leftmost). Out-of-range indices are
+  // ignored; no-op when already selected. Emits selectionChanged when the
+  // value actually changes.
   void setSelectedIndex(int index);
 
  signals:
@@ -101,7 +114,7 @@ class DualOptionsWidget : public QWidget {
  private:
   void animateSelectedIndex(int index);
 
-  std::array<QString, 2> options_{"Option A", "Option B"};
+  QStringList options_{"Option A", "Option B"};
   int selected_ = 0;
   qreal visual_selection_ = 0.0;
   QVariantAnimation* selection_animation_ = nullptr;
