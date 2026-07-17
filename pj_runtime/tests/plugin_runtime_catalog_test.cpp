@@ -12,21 +12,15 @@
 #include <vector>
 
 #include "mock_data_source_vtable.h"
+#include "pj_marketplace/version_compare.hpp"
 #include "pj_plugins/host/plugin_catalog.hpp"
 #include "pj_runtime/PluginRuntimeCatalog.h"
+#include "plugin_test_utils.h"
 
 namespace PJ {
 namespace {
 
-std::string pluginFileName(const std::string& stem) {
-#if defined(_WIN32)
-  return stem + ".dll";
-#elif defined(__APPLE__)
-  return stem + ".dylib";
-#else
-  return stem + ".so";
-#endif
-}
+using test::pluginFileName;
 
 class PluginCatalogTest : public ::testing::Test {
  protected:
@@ -402,39 +396,40 @@ TEST_F(PluginCatalogTest, RuntimeCatalogStaticRegistrationRequiresManifestId) {
   EXPECT_FALSE(messages.empty());
 }
 
-// ─── compareSemver (version ordering used by the runtime catalog dedup) ──────────
+// ─── compareSemver (pj_marketplace/version_compare.hpp — the shared version
+//     ordering used by the catalog dedup, the seed, and the marketplace) ──────────
 
 TEST(CompareSemver, OrdersByNumericComponents) {
-  EXPECT_LT(detail::compareSemver("4.0.2", "4.1.0"), 0);
-  EXPECT_GT(detail::compareSemver("5.0.0", "4.9.9"), 0);
-  EXPECT_EQ(detail::compareSemver("4.1.0", "4.1.0"), 0);
+  EXPECT_LT(compareSemver("4.0.2", "4.1.0"), 0);
+  EXPECT_GT(compareSemver("5.0.0", "4.9.9"), 0);
+  EXPECT_EQ(compareSemver("4.1.0", "4.1.0"), 0);
 }
 
 TEST(CompareSemver, TreatsMissingTrailingComponentsAsZero) {
-  EXPECT_EQ(detail::compareSemver("4.1", "4.1.0"), 0);
-  EXPECT_EQ(detail::compareSemver("4", "4.0.0"), 0);
-  EXPECT_LT(detail::compareSemver("4.0", "4.0.1"), 0);
+  EXPECT_EQ(compareSemver("4.1", "4.1.0"), 0);
+  EXPECT_EQ(compareSemver("4", "4.0.0"), 0);
+  EXPECT_LT(compareSemver("4.0", "4.0.1"), 0);
 }
 
 TEST(CompareSemver, IgnoresLeadingZerosAndSuffixes) {
-  EXPECT_EQ(detail::compareSemver("4.01.0", "4.1.0"), 0);
-  EXPECT_EQ(detail::compareSemver("1.0.0-rc2", "1.0.0"), 0);  // pre-release suffix ignored
-  EXPECT_LT(detail::compareSemver("1.0.0", "2.0.0-beta"), 0);
+  EXPECT_EQ(compareSemver("4.01.0", "4.1.0"), 0);
+  EXPECT_EQ(compareSemver("1.0.0-rc2", "1.0.0"), 0);  // pre-release suffix ignored
+  EXPECT_LT(compareSemver("1.0.0", "2.0.0-beta"), 0);
 }
 
 TEST(CompareSemver, IgnoresDottedPreReleaseSuffix) {
   // The suffix is ignored in full even when it contains dots: the compare must not walk
   // past the '-' and read the suffix's own numeric parts (regression for a version that
   // stepped to the next '.' instead of stopping at the pre-release separator).
-  EXPECT_EQ(detail::compareSemver("1.0.0-rc.2", "1.0.0-rc.3"), 0);
-  EXPECT_EQ(detail::compareSemver("1.0-rc.2", "1.0.0"), 0);
-  EXPECT_LT(detail::compareSemver("1.0.0-rc.9", "1.0.1"), 0);
+  EXPECT_EQ(compareSemver("1.0.0-rc.2", "1.0.0-rc.3"), 0);
+  EXPECT_EQ(compareSemver("1.0-rc.2", "1.0.0"), 0);
+  EXPECT_LT(compareSemver("1.0.0-rc.9", "1.0.1"), 0);
 }
 
 TEST(CompareSemver, DoesNotOverflowOnHugeComponents) {
-  EXPECT_GT(detail::compareSemver("999999999999999999999.0.0", "4.0.0"), 0);
-  EXPECT_LT(detail::compareSemver("4.0.0", "1000000000000000000000.0.0"), 0);
-  EXPECT_EQ(detail::compareSemver("100000000000000000000.0", "100000000000000000000.0"), 0);
+  EXPECT_GT(compareSemver("999999999999999999999.0.0", "4.0.0"), 0);
+  EXPECT_LT(compareSemver("4.0.0", "1000000000000000000000.0.0"), 0);
+  EXPECT_EQ(compareSemver("100000000000000000000.0", "100000000000000000000.0"), 0);
 }
 
 }  // namespace

@@ -9,12 +9,10 @@
 #include <QEvent>
 #include <QFont>
 #include <QFontMetrics>
-#include <QFormLayout>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QLabel>
-#include <QLineEdit>
 #include <QMouseEvent>
 #include <QPlainTextEdit>
 #include <QPointer>
@@ -24,7 +22,6 @@
 #include <QStyle>
 #include <QTimer>
 #include <QVBoxLayout>
-#include <QVersionNumber>
 #include <QWindow>
 #include <algorithm>
 
@@ -32,9 +29,9 @@
 #include "pj_marketplace/extension_manager.hpp"
 #include "pj_marketplace/platform_utils.hpp"
 #include "pj_marketplace/registry_manager.hpp"
+#include "pj_marketplace/version_compare.hpp"
 #include "pj_widgets/ChromeMetrics.h"
 #include "pj_widgets/FrameworkTokens.h"
-#include "pj_widgets/MessageBox.h"
 #include "pj_widgets/Scrollbar.h"
 #include "pj_widgets/Search.h"
 #include "ui_extension_detail_dialog.h"
@@ -42,10 +39,6 @@
 using namespace Qt::StringLiterals;
 
 namespace PJ {
-
-static constexpr const char* kDefaultRegistryUrl =
-    "https://raw.githubusercontent.com/PlotJuggler/pj-plugin-registry"
-    "/refs/heads/development/registry.json";
 
 namespace {
 
@@ -75,31 +68,17 @@ MarketplaceWindow::MarketplaceWindow(const QUrl& registry_url, QWidget* parent)
   registry_mgr_ = new RegistryManager(this);
   ext_mgr_ = new ExtensionManager(
       download_mgr_, PlatformUtils::extensionsDir(), PlatformUtils::pendingDir(), /*sink*/ {}, this);
-  QSettings settings("PlotJuggler", "Marketplace");
-  const QString saved = settings.value("registry_url").toString();
-  registry_url_ = saved.isEmpty() ? registry_url : QUrl(saved);
-
-  setupUi();
-  setupSignals();
-  updateDiagnosticsButton();
-  showLatestDiagnostic();
+  registry_url_ = registry_url;
   // applyPendingUninstalls/applyPendingInstalls already ran in ExtensionManager::initComponents().
-  registry_mgr_->fetchRegistry(registry_url_);
+  finishConstruction(nullptr);
 }
 
 MarketplaceWindow::MarketplaceWindow(ExtensionManager* ext_mgr, const QUrl& registry_url, QWidget* parent)
     : Dialog(parent), ui_(new Ui::MarketplaceWindow) {
   registry_mgr_ = new RegistryManager(this);
   ext_mgr_ = ext_mgr;
-  QSettings settings("PlotJuggler", "Marketplace");
-  const QString saved = settings.value("registry_url").toString();
-  registry_url_ = saved.isEmpty() ? registry_url : QUrl(saved);
-
-  setupUi();
-  setupSignals();
-  updateDiagnosticsButton();
-  showLatestDiagnostic();
-  registry_mgr_->fetchRegistry(registry_url_);
+  registry_url_ = registry_url;
+  finishConstruction(nullptr);
 }
 
 MarketplaceWindow::MarketplaceWindow(
@@ -109,13 +88,16 @@ MarketplaceWindow::MarketplaceWindow(
   registry_mgr_ = new RegistryManager(this);
   ext_mgr_ = ext_mgr;
   initial_snapshot_provided_ = true;
-  QSettings settings("PlotJuggler", "Marketplace");
-  const QString saved = settings.value("registry_url").toString();
-  registry_url_ = saved.isEmpty() ? registry_url : QUrl(saved);
+  registry_url_ = registry_url;
+  finishConstruction(&installed);
+}
 
+void MarketplaceWindow::finishConstruction(const QMap<QString, InstalledExtension>* installed) {
   setupUi();
   setupSignals();
-  ext_mgr_->setInstalledExtensions(installed);
+  if (installed != nullptr) {
+    ext_mgr_->setInstalledExtensions(*installed);
+  }
   updateDiagnosticsButton();
   showLatestDiagnostic();
   registry_mgr_->fetchRegistry(registry_url_);
@@ -143,9 +125,6 @@ void MarketplaceWindow::setupUi() {
   // directly from the resource bundle.
   const bool dark_theme = QSettings().value(QStringLiteral("StyleSheet::theme"), QStringLiteral("light")).toString() !=
                           QStringLiteral("light");
-  ui_->settings_btn_->setIcon(QIcon(
-      dark_theme ? QStringLiteral(":/resources/svg/settings_cog_dark.svg")
-                 : QStringLiteral(":/resources/svg/settings_cog_light.svg")));
   ui_->refresh_btn_->setIcon(QIcon(
       dark_theme ? QStringLiteral(":/resources/svg/reload_dark.svg")
                  : QStringLiteral(":/resources/svg/reload_light.svg")));
@@ -168,7 +147,6 @@ void MarketplaceWindow::setupUi() {
       &MarketplaceWindow::onCategoryChanged);
   connect(ui_->refresh_btn_, &QPushButton::clicked, this, &MarketplaceWindow::onRefreshClicked);
   connect(ui_->update_all_btn_, &QPushButton::clicked, this, &MarketplaceWindow::onUpdateAllClicked);
-  connect(ui_->settings_btn_, &QPushButton::clicked, this, &MarketplaceWindow::onSettingsClicked);
   connect(ui_->diagnostics_btn_, &QPushButton::clicked, this, &MarketplaceWindow::onDiagnosticsClicked);
 
   // Master–detail split: the plugin list (left) is narrower than the detail
@@ -692,11 +670,10 @@ void MarketplaceWindow::showDetail(const QString& ext_id) {
       // Empty when not core; otherwise the version the app ships, used to lock
       // uninstall (installed == bundled) or offer downgrade-to-bundled.
       const QString bundled_version = ext_mgr_->bundledVersion(ext_id);
-      // For a core plugin, compare the installed version to the one it ships with.
+      // For a core plugin, compare the installed version to the one it ships
+      // with — via the same comparator the seed and the uninstall guard use.
       const int installed_vs_bundled =
-          is_bundled ? QVersionNumber::compare(
-                           QVersionNumber::fromString(installed_version), QVersionNumber::fromString(bundled_version))
-                     : 0;
+          is_bundled ? compareSemver(installed_version.toStdString(), bundled_version.toStdString()) : 0;
       if (is_bundled && installed_vs_bundled <= 0) {
         // Core extension at its bundled version: it ships with the app and can't be
         // removed. Shown but locked, so the user sees it exists yet cannot remove it.
@@ -872,70 +849,6 @@ void MarketplaceWindow::showEvent(QShowEvent* event) {
     showLatestDiagnostic();
   }
   Dialog::showEvent(event);
-}
-
-void MarketplaceWindow::onSettingsClicked() {
-  Dialog dlg(this);
-  dlg.setDialogTitle(tr("Marketplace Settings"));
-  dlg.setMinimumWidth(480);
-
-  auto* body = new QWidget;
-  auto* layout = new QFormLayout(body);
-
-  auto* url_edit = new QLineEdit(registry_url_.toString(), body);
-  url_edit->setPlaceholderText(kDefaultRegistryUrl);
-  layout->addRow(tr("Registry URL:"), url_edit);
-
-  auto* extensions_path = new QLineEdit(ext_mgr_->extensionsDir(), body);
-  extensions_path->setReadOnly(true);
-  // No inline stylesheet — the global QLineEdit QSS gives this the
-  // themed background. The previous `palette(window)` override pulled
-  // the Fusion window-role colour, which doesn't match the new
-  // dark_background-based dialog body.
-  layout->addRow(tr("Extensions path:"), extensions_path);
-
-  auto* button_layout = new QHBoxLayout;
-  button_layout->addStretch();
-  auto* cancel_button = new QPushButton(tr("Cancel"), body);
-  cancel_button->setProperty("destructive", true);
-  auto* ok_button = new QPushButton(tr("OK"), body);
-  button_layout->addWidget(cancel_button);
-  button_layout->addWidget(ok_button);
-  layout->addRow(button_layout);
-
-  connect(ok_button, &QPushButton::clicked, &dlg, &QDialog::accept);
-  connect(cancel_button, &QPushButton::clicked, &dlg, &QDialog::reject);
-
-  dlg.contentLayout()->addWidget(body);
-
-  // Size the dialog to its fully-populated content (the PJ::Dialog chrome does
-  // not drive height from the body, so without this it opens too short and
-  // clips the Cancel/OK row). setMinimumWidth above stays the floor.
-  dlg.adjustSize();
-
-  if (dlg.exec() != QDialog::Accepted) {
-    return;
-  }
-
-  const QString text = url_edit->text().trimmed();
-  const QUrl new_url(text);
-  if (text.isEmpty() || !new_url.isValid() ||
-      (new_url.scheme() != "http" && new_url.scheme() != "https" && new_url.scheme() != "file")) {
-    MessageBox::warning(
-        this, "Invalid registry URL",
-        QString("\"%1\" is not a valid http(s) or file URL. The registry URL was not changed.").arg(text));
-    return;
-  }
-  if (new_url == registry_url_) {
-    return;
-  }
-
-  clearStickyStatus();
-  registry_url_ = new_url;
-  QSettings("PlotJuggler", "Marketplace").setValue("registry_url", registry_url_.toString());
-
-  setStatus("Refreshing...");
-  registry_mgr_->fetchRegistry(registry_url_);
 }
 
 void MarketplaceWindow::onActionButtonClicked(const QString& ext_id) {

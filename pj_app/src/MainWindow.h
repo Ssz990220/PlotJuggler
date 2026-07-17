@@ -17,6 +17,7 @@
 #include <QString>
 #include <QStringList>
 #include <QTimer>
+#include <QUrl>
 #include <deque>
 #include <functional>
 #include <memory>
@@ -168,6 +169,21 @@ class MainWindow : public QMainWindow {
   [[nodiscard]] QStringList customPluginFolders() const;
   void setCustomPluginFolders(const QStringList& folders);
   [[nodiscard]] QStringList builtinPluginFolders() const;
+
+  // Marketplace registry URL — the single owner of the Marketplace/registryUrl
+  // settings key. registryUrlSetting() is the raw persisted value, "" when
+  // unset (the built-in default applies); the setter persists immediately (""
+  // clears the override); effectiveRegistryUrl() is the validated read the
+  // marketplace opens with (invalid stored values fall back to the default),
+  // and isValidRegistryUrl() is the one validation rule (http/https/file) the
+  // Preferences editor and the read path share.
+  [[nodiscard]] QString registryUrlSetting() const;
+  void setRegistryUrlSetting(const QString& url);
+  [[nodiscard]] QUrl effectiveRegistryUrl() const;
+  [[nodiscard]] static bool isValidRegistryUrl(const QString& url);
+
+  // The built-in registry URL — the Preferences editor's placeholder.
+  [[nodiscard]] static QString defaultRegistryUrl();
 
  public slots:
   // Apply-only: clamp, update chrome_metrics_, broadcast chromeMetricsChanged.

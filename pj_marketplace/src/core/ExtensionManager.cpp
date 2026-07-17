@@ -8,12 +8,12 @@
 #include <QRegularExpression>
 #include <QStorageInfo>
 #include <QUuid>
-#include <QVersionNumber>
 #include <filesystem>
 
 #include "pj_marketplace/download_manager.hpp"
 #include "pj_marketplace/extension_manager.hpp"
 #include "pj_marketplace/platform_utils.hpp"
+#include "pj_marketplace/version_compare.hpp"
 #include "pj_plugins/host/plugin_catalog.hpp"
 using namespace Qt::StringLiterals;
 
@@ -473,9 +473,8 @@ void ExtensionManager::uninstall(const QString& extension_id) {
   // "downgrade to bundled"): allow the uninstall here, and the seed restores the
   // bundled version on the next launch. This is the backend guard mirroring the UI.
   if (isBundled(extension_id)) {
-    const QVersionNumber installed_ver = QVersionNumber::fromString(installed_[extension_id].version);
-    const QVersionNumber bundled_ver = QVersionNumber::fromString(bundledVersion(extension_id));
-    if (QVersionNumber::compare(installed_ver, bundled_ver) <= 0) {
+    if (compareSemver(installed_[extension_id].version.toStdString(), bundledVersion(extension_id).toStdString()) <=
+        0) {
       emitUninstallFailure(
           extension_id,
           QString("Extension \"%1\" ships with the application and cannot be uninstalled").arg(extension_id));
@@ -517,9 +516,7 @@ void ExtensionManager::downgradeToBundled(const QString& extension_id) {
         extension_id, QString("Extension \"%1\" does not ship with the application").arg(extension_id));
     return;
   }
-  const QVersionNumber installed_ver = QVersionNumber::fromString(installed_[extension_id].version);
-  const QVersionNumber bundled_ver = QVersionNumber::fromString(bundledVersion(extension_id));
-  if (QVersionNumber::compare(installed_ver, bundled_ver) <= 0) {
+  if (compareSemver(installed_[extension_id].version.toStdString(), bundledVersion(extension_id).toStdString()) <= 0) {
     emitUninstallFailure(extension_id, QString("Extension \"%1\" is already at its bundled version").arg(extension_id));
     return;
   }
@@ -794,9 +791,7 @@ bool ExtensionManager::hasNewerInstalledVersion(const Extension& ext) const {
     return false;
   }
 
-  const QVersionNumber installed_ver = QVersionNumber::fromString(installed_[ext.id].version);
-  const QVersionNumber registry_ver = QVersionNumber::fromString(ext.version);
-  return QVersionNumber::compare(installed_ver, registry_ver) > 0;
+  return compareSemver(installed_[ext.id].version.toStdString(), ext.version.toStdString()) > 0;
 }
 
 bool ExtensionManager::hasUpdate(const Extension& ext) const {
@@ -804,9 +799,7 @@ bool ExtensionManager::hasUpdate(const Extension& ext) const {
     return false;
   }
 
-  const QVersionNumber installed_ver = QVersionNumber::fromString(installed_[ext.id].version);
-  const QVersionNumber latest = QVersionNumber::fromString(ext.version);
-  return QVersionNumber::compare(latest, installed_ver) > 0;
+  return compareSemver(ext.version.toStdString(), installed_[ext.id].version.toStdString()) > 0;
 }
 
 QMap<QString, InstalledExtension> ExtensionManager::installedExtensions() const {
@@ -924,9 +917,7 @@ void ExtensionManager::refreshInstalledFromDisk() {
       // a differently-named prior copy). Keep the HIGHEST version rather than
       // whichever the directory scan happened to hit first, so the resolution is
       // deterministic and an update never loses to a stale lower-version copy.
-      const QVersionNumber existing = QVersionNumber::fromString(discovered[item.record.id].version);
-      const QVersionNumber candidate = QVersionNumber::fromString(item.record.version);
-      if (QVersionNumber::compare(candidate, existing) <= 0) {
+      if (compareSemver(item.record.version.toStdString(), discovered[item.record.id].version.toStdString()) <= 0) {
         qWarning(
             "ExtensionManager: duplicate embedded id '%s' in '%s'; keeping higher version already found",
             qPrintable(item.record.id), qPrintable(root));

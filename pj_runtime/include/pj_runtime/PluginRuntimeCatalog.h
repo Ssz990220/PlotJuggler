@@ -26,15 +26,6 @@
 
 namespace PJ {
 
-namespace detail {
-// Compares two dotted numeric version strings ("4.1.0" vs "4.0.2"). Overflow-safe:
-// components are compared as decimals, never converted to an integer. Only leading
-// numeric components count; pre-release/build suffixes are ignored; a missing
-// component is 0. Exposed here so the version ordering can be unit-tested directly.
-// Returns <0, 0, or >0 like strcmp.
-int compareSemver(std::string_view lhs, std::string_view rhs);
-}  // namespace detail
-
 // Loaded DataSource plugin plus metadata used by host UIs and sessions.
 struct RuntimeDataSourcePlugin {
   DataSourceLibrary library;

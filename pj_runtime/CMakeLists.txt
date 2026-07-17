@@ -14,6 +14,7 @@ add_library(pj_runtime STATIC
     src/DataSourceRuntimeHost.cpp
     src/DiagnosticHistory.cpp
     src/ExtensionCatalogService.cpp
+    src/HttpGet.cpp
     src/PluginRuntimeCatalog.cpp
     src/PlaybackEngine.cpp
     src/QSettingsBackend.cpp
@@ -29,6 +30,7 @@ add_library(pj_runtime STATIC
     include/pj_runtime/DataSourceRuntimeHost.h
     include/pj_runtime/DiagnosticHistory.h
     include/pj_runtime/ExtensionCatalogService.h
+    include/pj_runtime/HttpGet.h
     include/pj_runtime/PluginRuntimeCatalog.h
     include/pj_runtime/IDataWidget.h
     include/pj_runtime/PlaybackEngine.h
@@ -365,4 +367,18 @@ if(PJ_BUILD_TESTS)
         mock_data_source_incompatible_plugin mock_data_source_incompatible_low_plugin
         mock_toolbox_plugin)
     add_test(NAME plugin_runtime_catalog_test COMMAND plugin_runtime_catalog_test)
+
+    # Bundled-plugin seeding (share -> marketplace sync) + scan-tier precedence.
+    add_executable(extension_catalog_seed_test tests/extension_catalog_seed_test.cpp)
+    target_compile_definitions(extension_catalog_seed_test PRIVATE
+        PJ_MOCK_DATA_SOURCE_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_plugin>"
+        PJ_MOCK_DATA_SOURCE_V2_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_v2_plugin>"
+    )
+    target_compile_options(extension_catalog_seed_test PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(extension_catalog_seed_test PRIVATE
+        pj_runtime
+        GTest::gtest_main
+    )
+    add_dependencies(extension_catalog_seed_test mock_data_source_plugin mock_data_source_v2_plugin)
+    add_test(NAME extension_catalog_seed_test COMMAND extension_catalog_seed_test)
 endif()

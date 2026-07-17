@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "hermetic_catalog.h"
 #include "pj_base/sdk/data_source_host_views.hpp"
 #include "pj_base/sdk/plugin_data_api.hpp"
 #include "pj_base/sdk/service_registry.hpp"
@@ -196,7 +197,8 @@ TEST_F(ToolboxRuntimeHostTest, NotifyDataChangedFlushesBufferedWritesBeforeCatal
 
 TEST_F(ToolboxRuntimeHostTest, ParserIngestDelegatesToCatalogParserAndRegistersObjectParser) {
   QFileInfo plugin_file{QString::fromUtf8(PJ_RUNTIME_HOST_OBJECT_PARSER_PATH)};
-  PJ::ExtensionCatalogService catalog(plugin_file.absolutePath());
+  PJ::test::HermeticCatalog catalog_box(plugin_file.absolutePath());
+  PJ::ExtensionCatalogService& catalog = catalog_box.service;
   ASSERT_NE(catalog.findParserByEncoding(u"runtime_host_object"_s), nullptr);
 
   std::vector<PJ::ObjectTopicId> registered_object_parsers;
@@ -263,7 +265,8 @@ TEST_F(ToolboxRuntimeHostTest, ParserIngestDelegatesToCatalogParserAndRegistersO
 // while plain write-API notifies keep reporting an empty list.
 TEST_F(ToolboxRuntimeHostTest, NotifyDataChangedReportsAndDrainsIngestedDatasets) {
   QFileInfo plugin_file{QString::fromUtf8(PJ_RUNTIME_HOST_OBJECT_PARSER_PATH)};
-  PJ::ExtensionCatalogService catalog(plugin_file.absolutePath());
+  PJ::test::HermeticCatalog catalog_box(plugin_file.absolutePath());
+  PJ::ExtensionCatalogService& catalog = catalog_box.service;
   PJ::ToolboxRuntimeHost::ParserIngestDeps deps;
   deps.catalog = &catalog;
 
@@ -322,7 +325,8 @@ TEST_F(ToolboxRuntimeHostTest, ParserIngestWithoutDepsFailsCleanly) {
 // so its rows aren't lost.
 TEST_F(ToolboxRuntimeHostTest, ParserIngestUnreleasedContextFlushedOnTeardown) {
   QFileInfo plugin_file{QString::fromUtf8(PJ_RUNTIME_HOST_OBJECT_PARSER_PATH)};
-  PJ::ExtensionCatalogService catalog(plugin_file.absolutePath());
+  PJ::test::HermeticCatalog catalog_box(plugin_file.absolutePath());
+  PJ::ExtensionCatalogService& catalog = catalog_box.service;
   PJ::ToolboxRuntimeHost::ParserIngestDeps deps;
   deps.catalog = &catalog;
   host_ = std::make_unique<PJ::ToolboxRuntimeHost>(
@@ -357,7 +361,8 @@ TEST_F(ToolboxRuntimeHostTest, ParserIngestUnreleasedContextFlushedOnTeardown) {
 // usable, and each dataset ends up with its own rows.
 TEST_F(ToolboxRuntimeHostTest, ParserIngestContextsArePerDataset) {
   QFileInfo plugin_file{QString::fromUtf8(PJ_RUNTIME_HOST_OBJECT_PARSER_PATH)};
-  PJ::ExtensionCatalogService catalog(plugin_file.absolutePath());
+  PJ::test::HermeticCatalog catalog_box(plugin_file.absolutePath());
+  PJ::ExtensionCatalogService& catalog = catalog_box.service;
   PJ::ToolboxRuntimeHost::ParserIngestDeps deps;
   deps.catalog = &catalog;
   host_ = std::make_unique<PJ::ToolboxRuntimeHost>(
@@ -408,7 +413,8 @@ TEST_F(ToolboxRuntimeHostTest, ParserIngestContextsArePerDataset) {
 
 TEST_F(ToolboxRuntimeHostTest, ParserIngestUnknownDataSourceFails) {
   QFileInfo plugin_file{QString::fromUtf8(PJ_RUNTIME_HOST_OBJECT_PARSER_PATH)};
-  PJ::ExtensionCatalogService catalog(plugin_file.absolutePath());
+  PJ::test::HermeticCatalog catalog_box(plugin_file.absolutePath());
+  PJ::ExtensionCatalogService& catalog = catalog_box.service;
   PJ::ToolboxRuntimeHost::ParserIngestDeps deps;
   deps.catalog = &catalog;
   host_ = std::make_unique<PJ::ToolboxRuntimeHost>(

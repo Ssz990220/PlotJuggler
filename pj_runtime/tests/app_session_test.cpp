@@ -58,12 +58,12 @@ TEST(AppSessionTest, BuiltinPluginFoldersOrderedWithPluginDirOverride) {
   PJ::AppSession session(dir.path());
 
   const QStringList builtins = session.extensionCatalog().builtinPluginFolders();
-  // Built-in scan order: install dir (= override) > marketplace dir >
-  // <prefix>/lib/plotjuggler/plugins (bundled, FHS-relative to the executable).
-  ASSERT_EQ(builtins.size(), 3);
+  // Built-in scanned folders: install dir (= override) first, then the
+  // marketplace dir. The bundled (share) dir is not listed — it is a seed
+  // source, not a scanned folder.
+  ASSERT_EQ(builtins.size(), 2);
   EXPECT_EQ(builtins.at(0), dir.path());
   EXPECT_NE(builtins.at(1), dir.path());  // marketplace location, distinct from the override
-  EXPECT_TRUE(builtins.at(2).endsWith(QStringLiteral("/lib/plotjuggler/plugins")));
 }
 
 TEST(AppSessionTest, InvalidExtensionDirectoryReportsDiagnostic) {

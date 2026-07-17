@@ -7,6 +7,13 @@ and installed-extension lifecycle management, plus the marketplace UI. Three
 library targets (`pj_marketplace` core, `pj_marketplace_ui`, `pj_plugin_catalog`)
 and a standalone `pj_marketplace_app` harness.
 
+**Core (bundled) extensions**: plugins shipped with the app are seeded into the
+extensions dir by the host (`pj_runtime`'s `ExtensionCatalogService` — the
+bundled dir is a seed source, never a load path); the marketplace receives the
+bundled id → version map (`setBundledVersions`), locks their uninstall in
+default sessions, and offers downgrade-to-bundled. See
+`docs/ARCHITECTURE.md` §4.4 and `docs/REQUIREMENTS.md` §4.4.
+
 ## Layout
 
 - `include/pj_marketplace/` — public headers (`marketplace.hpp`, `registry_manager.hpp`,

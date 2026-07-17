@@ -2119,10 +2119,17 @@ QFrame#extCard:hover {
     background: ${neutral_hovered};
 }
 
-/* Selected card in the master–detail view: its details fill the right panel. */
+/* Selected card in the master–detail view: its details fill the right panel.
+   One shade past hover, so the selected card stays distinguishable from a
+   transient hover without a border accent. */
 QFrame#extCard[selected="true"] {
-    background: ${neutral_hovered};
-    border-left: 3px solid ${status_info};
+    background: ${neutral_pressed};
+}
+
+/* Preferences registry-URL editor: red text while the entered URL is invalid
+   or unreachable (advisory edit-finish validation in PreferencesDialog). */
+QLineEdit#lineEditRegistryUrl[urlError="true"] {
+    color: ${status_error};
 }
 
 /* Card child labels — version readout, description — inherit the

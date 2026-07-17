@@ -4,9 +4,10 @@
 #
 # Replaces linuxdeploy's generated launcher purely to reproduce the library/Qt
 # environment the stock AppRun would set. It does NOT inject --plugin-dir: the
-# app auto-discovers the bundled plugins at <prefix>/lib/plotjuggler/plugins
-# (usr/bin/plotjuggler4 -> ../lib/plotjuggler/plugins), so --plugin-dir stays a
-# user-facing option — anything the user passes is forwarded verbatim via "$@".
+# app finds the bundled plugins at <prefix>/lib/plotjuggler/plugins
+# (usr/bin/plotjuggler4 -> ../lib/plotjuggler/plugins) and seeds them into the
+# user's extensions dir at startup, so --plugin-dir stays a user-facing
+# option — anything the user passes is forwarded verbatim via "$@".
 set -e
 
 # $APPDIR is set by the AppImage runtime when mounted; fall back to this

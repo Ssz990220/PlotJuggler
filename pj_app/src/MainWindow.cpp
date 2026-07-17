@@ -311,16 +311,6 @@ std::array<PanelToggle, 3> panelToggles(Ui::MainWindow* ui) {
   }};
 }
 
-QUrl registryUrlFromSettings() {
-  const QString raw = QSettings().value(kRegistryUrlSettingsKey, kDefaultRegistryUrl).toString();
-  const QUrl url(raw);
-  if (!url.isValid() || url.scheme().isEmpty()) {
-    qCWarning(lcMain) << "Invalid" << kRegistryUrlSettingsKey << "in QSettings:" << raw << "— falling back to default.";
-    return QUrl(QString::fromLatin1(kDefaultRegistryUrl));
-  }
-  return url;
-}
-
 // Curve-Width radio mapping. Hoisted from buildLocalToolbar so the
 // layout-save path can encode the float value (rebuild-stable) and the
 // layout-load path can map the stored value back to a button.
@@ -1577,7 +1567,7 @@ bool MainWindow::populateTestData() {
 
 void MainWindow::onOpenMarketplace() {
   auto& catalog = session_->extensionCatalog();
-  MarketplaceWindow dlg(&catalog.extensionManager(), registryUrlFromSettings(), this);
+  MarketplaceWindow dlg(&catalog.extensionManager(), effectiveRegistryUrl(), this);
   dlg.setChromeMetrics(chrome_metrics_);
   // Master–detail marketplace needs room for both panes (list + detail) and the
   // detail's button row; open wide enough that nothing is clipped at first show.
@@ -2110,6 +2100,41 @@ void MainWindow::setCustomPluginFolders(const QStringList& folders) {
 
 QStringList MainWindow::builtinPluginFolders() const {
   return session_->extensionCatalog().builtinPluginFolders();
+}
+
+QString MainWindow::registryUrlSetting() const {
+  return QSettings().value(QLatin1String(kRegistryUrlSettingsKey)).toString();
+}
+
+void MainWindow::setRegistryUrlSetting(const QString& url) {
+  QSettings settings;
+  if (url.isEmpty()) {
+    settings.remove(QLatin1String(kRegistryUrlSettingsKey));
+  } else {
+    settings.setValue(QLatin1String(kRegistryUrlSettingsKey), url);
+  }
+}
+
+QString MainWindow::defaultRegistryUrl() {
+  return QString::fromLatin1(kDefaultRegistryUrl);
+}
+
+bool MainWindow::isValidRegistryUrl(const QString& url) {
+  const QUrl parsed(url);
+  return parsed.isValid() &&
+         (parsed.scheme() == u"http"_s || parsed.scheme() == u"https"_s || parsed.scheme() == u"file"_s);
+}
+
+QUrl MainWindow::effectiveRegistryUrl() const {
+  const QString raw = registryUrlSetting();
+  if (raw.isEmpty()) {
+    return QUrl(defaultRegistryUrl());
+  }
+  if (!isValidRegistryUrl(raw)) {
+    qCWarning(lcMain) << "Invalid" << kRegistryUrlSettingsKey << "in QSettings:" << raw << "— falling back to default.";
+    return QUrl(defaultRegistryUrl());
+  }
+  return QUrl(raw);
 }
 
 void MainWindow::applyIcons(QString theme) {

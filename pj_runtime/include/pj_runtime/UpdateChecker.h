@@ -64,7 +64,8 @@ class UpdateChecker : public QObject {
   void checkFailed(const QString& reason);
 
  private:
-  void handleReply(QNetworkReply* reply);
+  // Reply lifetime is owned by httpGetWithTimeout (deleteLater after return).
+  void handleReply(QNetworkReply& reply);
 
   QNetworkAccessManager* network_ = nullptr;
   QNetworkReply* pending_reply_ = nullptr;

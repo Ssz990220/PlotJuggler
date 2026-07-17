@@ -62,9 +62,6 @@ class MarketplaceWindow : public Dialog {
   // Queues updates for every installed extension with a newer registry version.
   void onUpdateAllClicked();
 
-  // Opens the registry URL settings dialog.
-  void onSettingsClicked();
-
   // Opens a read-only view of recent marketplace diagnostics.
   void onDiagnosticsClicked();
 
@@ -75,6 +72,12 @@ class MarketplaceWindow : public Dialog {
   void onUninstallButtonClicked(const QString& ext_id);
 
  private:
+  // Shared constructor tail: UI + signals, optional installed-state snapshot,
+  // initial diagnostics, and the first registry fetch. The caller owns
+  // registry-URL policy (the PJ4 host resolves it from its Preferences-managed
+  // setting); the window never second-guesses registry_url_.
+  void finishConstruction(const QMap<QString, InstalledExtension>* installed);
+
   // Creates widgets from the .ui file and configures fixed UI affordances.
   void setupUi();
 

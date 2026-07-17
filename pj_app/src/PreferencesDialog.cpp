@@ -11,15 +11,22 @@
 #include <QFormLayout>
 #include <QIcon>
 #include <QImage>
+#include <QLineEdit>
 #include <QListWidget>
+#include <QNetworkAccessManager>
+#include <QNetworkInformation>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QPainter>
 #include <QPixmap>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSettings>
 #include <QStackedWidget>
+#include <QStyle>
 #include <QSvgRenderer>
 #include <QToolButton>
+#include <QUrl>
 #include <QVBoxLayout>
 
 #include "DebugMode.h"
@@ -27,6 +34,7 @@
 #include "PreferencesNavRow.h"
 #include "Splashscreen.h"
 #include "Theme.h"
+#include "pj_runtime/HttpGet.h"
 #include "pj_widgets/DualOptionsWidget.h"
 #include "pj_widgets/FileDialog.h"
 #include "pj_widgets/FrameworkTokens.h"
@@ -251,6 +259,36 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
       paint_missing(ui_->listDefaultPluginFolders);
     });
 
+    // Marketplace registry URL editor. An explicit default/custom mode switch:
+    // "default" shows the built-in URL read-only, "custom" enables the field.
+    // Validation runs when editing finishes and paints the text red while the
+    // URL is invalid or unreachable — advisory, never blocking (see
+    // onRegistryUrlEditingFinished).
+    ui_->registryUrlMode->setOptions(tr("default"), tr("custom"));
+    const QString stored_override = main_window->registryUrlSetting();
+    ui_->registryUrlMode->setSelectedIndex(stored_override.isEmpty() ? 0 : 1);
+    ui_->lineEditRegistryUrl->setText(stored_override.isEmpty() ? MainWindow::defaultRegistryUrl() : stored_override);
+    ui_->lineEditRegistryUrl->setEnabled(!stored_override.isEmpty());
+    connect(ui_->registryUrlMode, &DualOptionsWidget::selectionChanged, this, [this](int index) {
+      const bool custom = index == 1;
+      ui_->lineEditRegistryUrl->setEnabled(custom);
+      if (custom) {
+        ui_->lineEditRegistryUrl->setFocus();
+        ui_->lineEditRegistryUrl->selectAll();
+      } else {
+        ui_->lineEditRegistryUrl->setText(MainWindow::defaultRegistryUrl());
+        last_checked_registry_url_.clear();
+        setRegistryUrlError(false);
+      }
+    });
+    connect(
+        ui_->lineEditRegistryUrl, &QLineEdit::editingFinished, this, &PreferencesDialog::onRegistryUrlEditingFinished);
+    // A stored custom URL gets checked (and possibly painted red) right away,
+    // so a stale override is visible without touching the field.
+    if (!stored_override.isEmpty()) {
+      onRegistryUrlEditingFinished();
+    }
+
     // SvgButton re-tints itself on a theme change — no manual retint wiring.
     ui_->buttonAddPluginFolder->setIconPath(u":/resources/svg/add.svg"_s);
     ui_->buttonAddPluginFolder->setExtent(26, 24);
@@ -377,6 +415,18 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
         plugin_folders << ui_->listCustomPluginFolders->item(row)->text();
       }
       main_window->setCustomPluginFolders(plugin_folders);
+
+      // Registry URL: default mode (or a custom value equal to the default)
+      // stores "no override", so the user keeps following future defaults. A
+      // syntactically valid custom URL persists; reachability is advisory (red
+      // text), never a blocker — the URL may legitimately be offline right now.
+      const bool custom_registry = ui_->registryUrlMode->selectedIndex() == 1;
+      const QString registry_url = ui_->lineEditRegistryUrl->text().trimmed();
+      if (!custom_registry || registry_url == MainWindow::defaultRegistryUrl()) {
+        main_window->setRegistryUrlSetting({});
+      } else if (MainWindow::isValidRegistryUrl(registry_url)) {
+        main_window->setRegistryUrlSetting(registry_url);
+      }
     }
     QSettings settings;
     settings.setValue(u"Preferences::precision"_s, ui_->scrubberFloatPrecision->value());
@@ -396,6 +446,58 @@ PreferencesDialog::~PreferencesDialog() {
   QSettings settings;
   settings.setValue(u"Preferences::dialog_geometry"_s, saveGeometry());
   delete ui_;
+}
+
+void PreferencesDialog::onRegistryUrlEditingFinished() {
+  const QString url_text = ui_->lineEditRegistryUrl->text().trimmed();
+  if (url_text == last_checked_registry_url_) {
+    return;  // already checked (or being checked) — no duplicate probe
+  }
+  last_checked_registry_url_ = url_text;
+
+  if (url_text.isEmpty() || !MainWindow::isValidRegistryUrl(url_text)) {
+    setRegistryUrlError(true);
+    return;
+  }
+
+  const QUrl url(url_text);
+  if (url.isLocalFile()) {
+    setRegistryUrlError(!QFile::exists(url.toLocalFile()));
+    return;
+  }
+
+  // Reachability probe. When the system is not reported Online (offline, or no
+  // usable backend to tell), skip it and show the value as fine — a network
+  // outage must not paint a URL red that will work once connectivity returns.
+  [[maybe_unused]] static const bool backend_loaded = QNetworkInformation::loadDefaultBackend();
+  QNetworkInformation* network_info = QNetworkInformation::instance();
+  if (network_info == nullptr || network_info->reachability() != QNetworkInformation::Reachability::Online) {
+    setRegistryUrlError(false);
+    return;
+  }
+
+  if (network_ == nullptr) {
+    network_ = new QNetworkAccessManager(this);
+  }
+  httpGetWithTimeout(
+      *network_, QNetworkRequest(url), std::chrono::seconds(5), this, [this, url_text](QNetworkReply& reply) {
+        // The user may have edited again while this probe was in flight; a
+        // stale result must not repaint the newer text.
+        if (ui_->lineEditRegistryUrl->text().trimmed() != url_text) {
+          return;
+        }
+        setRegistryUrlError(reply.error() != QNetworkReply::NoError);
+      });
+}
+
+void PreferencesDialog::setRegistryUrlError(bool error) {
+  QLineEdit* edit = ui_->lineEditRegistryUrl;
+  if (edit->property("urlError").toBool() == error) {
+    return;
+  }
+  edit->setProperty("urlError", error);
+  edit->style()->unpolish(edit);
+  edit->style()->polish(edit);
 }
 
 }  // namespace PJ

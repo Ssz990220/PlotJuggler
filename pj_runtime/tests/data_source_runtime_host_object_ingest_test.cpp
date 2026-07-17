@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "hermetic_catalog.h"
 #include "pj_base/sdk/data_source_host_views.hpp"
 #include "pj_base/sdk/service_registry.hpp"
 #include "pj_base/sdk/service_traits.hpp"
@@ -89,7 +90,8 @@ class DataSourceRuntimeHostObjectIngestTest : public ::testing::Test {
   }
 
   QFileInfo plugin_file_{QString::fromUtf8(PJ_RUNTIME_HOST_OBJECT_PARSER_PATH)};
-  PJ::ExtensionCatalogService catalog_{plugin_file_.absolutePath()};
+  PJ::test::HermeticCatalog catalog_box_{plugin_file_.absolutePath()};
+  PJ::ExtensionCatalogService& catalog_{catalog_box_.service};
   PJ::DataEngine engine_;
   PJ::ObjectStore object_store_;
   PJ::DatasetId dataset_id_{0};

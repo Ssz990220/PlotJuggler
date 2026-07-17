@@ -28,19 +28,40 @@ using LoadedToolbox = RuntimeToolboxPlugin;
 // pj_marketplace or pj_plugins directly — it asks this service.
 //
 // The service owns an ExtensionManager rooted on `extensions_dir_` (by default
-// PlatformUtils::extensionsDir(), shared with pj_marketplace). At construction it applies
-// any pending Windows staging actions and then scans the directory. Call
+// PlatformUtils::extensionsDir(), shared with pj_marketplace). Construction runs
+// three steps in order: the ExtensionManager applies any pending staged
+// install/uninstall actions, seedBundledPlugins() syncs the bundled (share)
+// plugins into the default marketplace dir, then the scan hierarchy loads. The
+// bundled dir is a seed source only — never scanned as a load path. Call
 // reload() after a marketplace install/uninstall to hot-load new plugins.
 class ExtensionCatalogService : public QObject {
   Q_OBJECT
  public:
   using Ptr = std::shared_ptr<ExtensionCatalogService>;
 
+  // Directory roots, resolved at construction. Production uses the QString
+  // constructors below (everything defaulted); tests inject temp dirs here so
+  // seeding and scanning never touch the real user profile or executable path.
+  struct Paths {
+    // The dir the ExtensionManager manages and the top scan tier: the
+    // --plugin-dir override. Empty = default mode (the marketplace dir).
+    QString install_dir;
+    // Seed destination and lowest (managed) scan tier. Empty =
+    // PlatformUtils::extensionsDir().
+    QString marketplace_dir;
+    // Seed source (share). Empty = <prefix>/lib/plotjuggler/plugins resolved
+    // relative to the executable.
+    QString bundled_dir;
+  };
+
   // Creates a service using the default extension directory unless overridden.
   explicit ExtensionCatalogService(QString extensions_dir = {}, QObject* parent = nullptr);
 
   // Creates a service with an optional app-level diagnostic sink.
   ExtensionCatalogService(QString extensions_dir, DiagnosticSink sink, QObject* parent = nullptr);
+
+  // Creates a service with every directory root injectable (test seam).
+  ExtensionCatalogService(Paths paths, DiagnosticSink sink, QObject* parent = nullptr);
 
   // Releases marketplace and loaded plugin resources.
   ~ExtensionCatalogService() override;
@@ -106,17 +127,18 @@ class ExtensionCatalogService : public QObject {
   // Builds a QFileDialog-compatible filter string from all file-import sources.
   QString buildFileFilter() const;
 
-  // User-managed extra plugin folders, highest scan priority, persisted in
-  // QSettings (Preferences::plugin_folders). Changes apply on next launch (no
+  // User-managed extra plugin folders, persisted in QSettings
+  // (Preferences::plugin_folders). Authoritative scan tier below a --plugin-dir
+  // override and above the marketplace dir. Changes apply on next launch (no
   // hot reload), so the setter only writes the key — it does not re-scan.
   [[nodiscard]] QStringList customPluginFolders() const;
   void setCustomPluginFolders(const QStringList& folders);
 
-  // Built-in plugin folders in scan-priority order: the install dir (the
-  // --plugin-dir override or the marketplace location), the marketplace
-  // location (only when the override made it distinct), then the relocatable
-  // bundled-plugin path <prefix>/lib/plotjuggler/plugins resolved from the
-  // executable. Read-only — shown to the user for reference.
+  // Built-in *scanned* folders in scan-priority order: the install dir (the
+  // --plugin-dir override, or the marketplace dir in default mode) and, when
+  // the override made it distinct, the marketplace dir. The bundled (share)
+  // dir is not listed — it is a seed source, not a scanned folder. Read-only —
+  // shown to the user for reference.
   [[nodiscard]] QStringList builtinPluginFolders() const;
 
  signals:
@@ -127,32 +149,47 @@ class ExtensionCatalogService : public QObject {
   // Emits one diagnostic through the optional app-level sink.
   void reportDiagnostic(DiagnosticLevel level, const QString& message, const QString& id = {}) const;
 
-  // Assembles the ordered scan list: custom folders first, then the built-in
-  // folders, skipping folders missing on disk. The user-explicit tiers — the
-  // custom folders and, when extensions_dir_is_explicit, the --plugin-dir
-  // override — are marked authoritative (a hard override in the catalog's
-  // duplicate-id resolution); marketplace/bundled folders stay managed.
-  // `include_bundled` is false once bundled plugins have been seeded into the
-  // marketplace dir (default mode): the bundled dir is then a one-time source, not
-  // a live scan tier, so the marketplace dir is the single source of truth and a
-  // seeded plugin never reads as "loaded but not installed".
-  [[nodiscard]] std::vector<PluginDirEntry> buildScanHierarchy(
-      bool extensions_dir_is_explicit, bool include_bundled) const;
+  // Assembles the ordered scan list — highest priority first: the --plugin-dir
+  // override (when extensions_dir_is_explicit), the custom Preferences folders,
+  // then the marketplace dir. The first two tiers are user-explicit and marked
+  // authoritative (a hard override in the catalog's duplicate-id resolution,
+  // version-blind); the marketplace dir stays managed. The bundled (share) dir
+  // is never scanned — bundled plugins reach the scan through
+  // seedBundledPlugins(). Folders missing on disk are skipped: an absent
+  // optional folder must not report a kError per launch and mask real
+  // plugin-load errors.
+  [[nodiscard]] std::vector<PluginDirEntry> buildScanHierarchy(bool extensions_dir_is_explicit) const;
 
-  // One-time migration: copy each bundled plugin (from <prefix>/lib/plotjuggler/
-  // plugins) into the marketplace extensions dir, and hand the full bundled
-  // id -> version map to the ExtensionManager (setBundledVersions) so it locks
-  // uninstall of those "core" plugins by id — no per-folder marker, so the lock
-  // survives updates — and can offer "downgrade to bundled" for updated ones.
-  // Runs at construction BEFORE the plugin scan and AFTER the ExtensionManager
-  // applies pending staged installs, so a staged upgrade is promoted first and the
-  // seed never clobbers it. The extensions dir itself is the copy record: an id
-  // already present there is left untouched (not re-copied). Best-effort: a copy
-  // failure is logged and retried next launch. Only meaningful for the default
-  // marketplace dir (a --plugin-dir override is user-managed).
+  // Syncs the bundled (share) plugins into the default marketplace dir — the
+  // only path by which bundled plugins become loadable. Runs in EVERY mode
+  // (--plugin-dir sessions included; the override dir is never a seed source or
+  // destination), AFTER the ExtensionManager applied pending staged installs,
+  // so a staged upgrade is promoted before the version comparison sees it. Per
+  // bundled id: absent or unreadable in the marketplace dir -> copy; installed
+  // version older than bundled -> refresh (staged copy + rename swap, so a
+  // failed refresh keeps the working old copy); installed same-or-newer ->
+  // untouched (equal version never refreshes — ship a change by bumping the
+  // version). In the steady state a size+mtime signature match against the
+  // bundled DSO (the seed stamps copies with the bundled mtime) skips the
+  // installed-side manifest read. Best-effort: failures are logged and retried
+  // next launch. The bundled id -> version map is handed to the
+  // ExtensionManager (setBundledVersions: uninstall lock +
+  // downgrade-to-bundled) only in default mode — in a --plugin-dir session the
+  // manager governs the override dir, and locking user-owned copies there by
+  // id would be wrong.
   void seedBundledPlugins();
 
   QString extensions_dir_;
+  // Default marketplace dir: seed destination + lowest scan tier. Equals
+  // extensions_dir_ in default mode.
+  QString marketplace_dir_;
+  // Bundled (share) dir: seed source, never scanned.
+  QString bundled_dir_;
+  // True when no --plugin-dir override was given (the ExtensionManager is
+  // rooted on the marketplace dir). Captured at construction and used to scope
+  // the core-plugin lock — never re-derived by comparing paths, which could
+  // misclassify a Paths caller that made the two dirs textually equal.
+  bool default_mode_ = false;
   DiagnosticSink sink_;
 
   std::unique_ptr<ExtensionManager> extension_manager_;

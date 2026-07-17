@@ -59,14 +59,16 @@ installed by the user, not baked in); `toolbox-colormap`,
 
 Bundled plugins go under `usr/lib/plotjuggler/plugins/<id>/` — the FHS-correct
 bucket for arch-dependent `.so` code, and the exact path the installed
-`plotjuggler4` auto-discovers relative to itself (`usr/bin/plotjuggler4` →
-`../lib/plotjuggler/plugins`). Kept out of `usr/plugins/` so the recursive plugin
-scanner does not collide with Qt's own platform plugins that
-`linuxdeploy-plugin-qt` deploys there. `AppRun.sh` therefore does **not** pass
-`--plugin-dir`; that flag stays a user-facing option, forwarded verbatim if the
-user supplies one. Marketplace installs land in the writable per-user extensions
-dir, which the app also scans — so installing from within the AppImage works,
-separately from the read-only bundle.
+`plotjuggler4` resolves relative to itself (`usr/bin/plotjuggler4` →
+`../lib/plotjuggler/plugins`). The app never loads plugins from there directly:
+at startup it **seeds** that dir into the writable per-user extensions dir
+(copying new ids, refreshing ids whose bundled version is newer) and loads
+everything from the extensions dir — so marketplace install/uninstall works
+normally and the read-only bundle stays a seed source. Kept out of
+`usr/plugins/` so the seed's recursive plugin scan does not collide with Qt's
+own platform plugins that `linuxdeploy-plugin-qt` deploys there. `AppRun.sh`
+does **not** pass `--plugin-dir`; that flag stays a user-facing option,
+forwarded verbatim if the user supplies one.
 
 ## Build & verify in Docker
 

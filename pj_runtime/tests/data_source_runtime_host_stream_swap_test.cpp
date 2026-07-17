@@ -48,6 +48,7 @@
 #include <string>
 #include <vector>
 
+#include "hermetic_catalog.h"
 #include "pj_base/sdk/data_source_host_views.hpp"
 #include "pj_base/sdk/plugin_data_api.hpp"
 #include "pj_base/sdk/service_registry.hpp"
@@ -248,7 +249,8 @@ class StreamParserSwapTest : public ::testing::Test {
 
   QFileInfo plugin_file_{QString::fromUtf8(PJ_STREAMING_CACHING_PARSER_PATH)};
   QString plugin_dir_{plugin_file_.absolutePath()};
-  PJ::ExtensionCatalogService catalog_{plugin_dir_};
+  PJ::test::HermeticCatalog catalog_box_{plugin_dir_};
+  PJ::ExtensionCatalogService& catalog_{catalog_box_.service};
   PJ::DataEngine primary_engine_;
   PJ::DataEngine secondary_engine_;
   PJ::ObjectStore primary_object_store_;

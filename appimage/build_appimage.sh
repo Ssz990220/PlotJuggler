@@ -25,10 +25,11 @@
 #                                                    #   from the plugin registry,
 #                                                    #   verify checksums, unpack
 #
-# Bundled plugins land at usr/lib/plotjuggler/plugins, which the app auto-discovers
-# as a built-in search path (no --plugin-dir needed). Marketplace installs go to
-# the writable per-user extensions dir, which the app also scans — so installing
-# from within the AppImage works and is kept separate from the read-only bundle.
+# Bundled plugins land at usr/lib/plotjuggler/plugins. The app never scans that
+# dir directly — at startup it seeds its contents into the writable per-user
+# extensions dir (copying new ids, refreshing ones whose bundled version is
+# newer) and loads everything from there, so marketplace installs/uninstalls
+# work normally and the read-only bundle stays a seed source.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -44,11 +45,11 @@ QT_DIR="${ROOT}/.qt/${QT_VERSION}/gcc_64"
 APPDIR="${BUILD}/AppDir"
 VERSION="${PJ_VERSION:-${PJ_APP_VERSION}}"
 
-# Bundled plugins go where the installed app looks by default: <prefix>/lib/
-# plotjuggler/plugins, which plotjuggler4 resolves relative to itself (usr/bin ->
-# ../lib/plotjuggler/plugins). Kept OUT of usr/plugins on purpose —
+# Bundled plugins go where the installed app expects its seed source: <prefix>/
+# lib/plotjuggler/plugins, which plotjuggler4 resolves relative to itself
+# (usr/bin -> ../lib/plotjuggler/plugins). Kept OUT of usr/plugins on purpose —
 # linuxdeploy-plugin-qt deploys Qt's own platform/imageformat plugins there, and
-# the app's plugin scanner must never try to dlopen those as PlotJuggler plugins.
+# the seed's plugin scan must never try to dlopen those as PlotJuggler plugins.
 PJ_PLUGINS_REL="usr/lib/plotjuggler/plugins"
 
 # The plugin registry to resolve --plugins-registry against. Tracks main (latest

@@ -388,6 +388,40 @@ stop
 ```
 </details>
 
+### 4.4 Bundled (Core) Extensions
+
+Plugins shipped inside an installed build or AppImage live in the **bundled
+dir** (`<prefix>/lib/plotjuggler/plugins`, resolved relative to the
+executable). That dir is a **seed source only** — it is never scanned as a load
+path. The split of responsibilities:
+
+- **Host side** (`pj_runtime`'s `ExtensionCatalogService`, at every startup, in
+  every mode): syncs the bundled dir into the default extensions dir *before*
+  the plugin scan and *after* `ExtensionManager` applied pending staged
+  actions. Per bundled id — absent/unreadable → copy; installed older than
+  bundled → refresh (staged copy in an `extensions.seed_stage/` **sibling** of
+  the extensions dir — outside the scanned tree — then a rename swap, so a
+  failed refresh keeps the working copy); installed same-or-newer → untouched.
+  Comparison is version-only (`PJ::compareSemver` from
+  `pj_marketplace/version_compare.hpp` — the same rule the uninstall lock,
+  downgrade, and update badges use), never content; in the steady state a
+  size+mtime signature match against the bundled DSO (copies are stamped with
+  the bundled mtime) skips the installed-side manifest read entirely.
+- **Marketplace side**: the host hands the bundled id → version map to
+  `ExtensionManager::setBundledVersions()`. Membership makes an id **core**:
+  `isBundled()` locks uninstall, and `downgradeToBundled()` stages a revert to
+  the shipped version when the installed one is ahead (applied on restart, like
+  any staged action). No per-folder marker — the lock is by id, so it survives
+  updates.
+- **Mode scoping**: the map is handed over only when the `ExtensionManager` is
+  rooted on the default extensions dir. In a `--plugin-dir` session the manager
+  governs the override folder, where a same-id copy is user-owned — nothing is
+  core there, while the seed still targets the default dir.
+
+Folder precedence at load time is host policy (`PluginRuntimeCatalog`):
+`--plugin-dir` override → custom Preferences folders → extensions dir; the
+user-explicit tiers win duplicate ids version-blind.
+
 ---
 
 ## 5. Directory Structure
@@ -398,12 +432,15 @@ The root is `QStandardPaths::AppDataLocation` (the `PlotJuggler/PlotJuggler4` or
 
 ```
 <config-root>/
-├── extensions/                      # Active plugins
-│   ├── ros2-streaming/
+├── extensions/                      # Active plugins (marketplace installs and
+│   ├── ros2-streaming/              # seeded core extensions alike)
 │   │   ├── libros2_streaming.so
 │   │   └── ros2_streaming.ui
 │   └── csv-loader/
 │       └── libcsv_loader.so
+├── extensions.seed_stage/           # Transient: bundled-refresh staging,
+│                                    # sibling of extensions/ so the scan
+│                                    # never sees a half-written payload
 ├── .extension_staging/      # Staging area: updates land here and are promoted
 │   │                                # on the next startup; a fresh install uses it
 │   │                                # only as the post-promotion validation gate

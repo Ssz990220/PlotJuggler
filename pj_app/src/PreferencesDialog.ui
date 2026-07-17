@@ -648,12 +648,53 @@
          <item>
           <widget class="QLabel" name="label_5">
            <property name="text">
-            <string>List of default folders:</string>
+            <string>List of default folders (in order of precedence):</string>
            </property>
           </widget>
          </item>
          <item>
           <widget class="QListWidget" name="listDefaultPluginFolders"/>
+         </item>
+         <item>
+          <layout class="QHBoxLayout" name="registryUrlHeader">
+           <item>
+            <widget class="QLabel" name="labelRegistryUrl">
+             <property name="text">
+              <string>Marketplace registry URL:</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <spacer name="registryUrlSpacer">
+             <property name="orientation">
+              <enum>Qt::Orientation::Horizontal</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>16</width>
+               <height>20</height>
+              </size>
+             </property>
+            </spacer>
+           </item>
+           <item>
+            <widget class="PJ::DualOptionsWidget" name="registryUrlMode" native="true">
+             <property name="sizePolicy">
+              <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+               <horstretch>0</horstretch>
+               <verstretch>0</verstretch>
+              </sizepolicy>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="lineEditRegistryUrl">
+           <property name="clearButtonEnabled">
+            <bool>true</bool>
+           </property>
+          </widget>
          </item>
          <item>
           <spacer name="verticalSpacer">

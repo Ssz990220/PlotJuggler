@@ -9,7 +9,10 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <chrono>
+#include <utility>
 
+#include "pj_runtime/HttpGet.h"
 #include "pj_runtime/UpdateVersion.h"
 using namespace Qt::StringLiterals;
 
@@ -53,41 +56,31 @@ void UpdateChecker::checkLatestRelease() {
   // api.github.com rejects requests without a User-Agent (HTTP 403).
   request.setHeader(QNetworkRequest::UserAgentHeader, u"PlotJuggler"_s);
   request.setRawHeader("Accept", "application/vnd.github+json");
-  request.setTransferTimeout(kTransferTimeoutMs);
 
-  QNetworkReply* reply = network_->get(request);
-  pending_reply_ = reply;
-  connect(reply, &QNetworkReply::finished, this, [this, reply]() {
-    if (pending_reply_ == reply) {
-      pending_reply_ = nullptr;
-    }
-    handleReply(reply);
-  });
+  pending_reply_ = httpGetWithTimeout(
+      *network_, std::move(request), std::chrono::milliseconds(kTransferTimeoutMs), this, [this](QNetworkReply& reply) {
+        if (pending_reply_ == &reply) {
+          pending_reply_ = nullptr;
+        }
+        handleReply(reply);
+      });
 }
 
-void UpdateChecker::handleReply(QNetworkReply* reply) {
-  if (!reply) {
-    emit checkFailed(u"no reply"_s);
-    return;
-  }
-
+void UpdateChecker::handleReply(QNetworkReply& reply) {
   // A self-inflicted abort (a newer check superseded this one) is not a
   // user-facing failure — drop it without emitting any outcome.
-  if (reply->error() == QNetworkReply::OperationCanceledError) {
-    reply->deleteLater();
+  if (reply.error() == QNetworkReply::OperationCanceledError) {
     return;
   }
 
   // A 404 (no release published yet) surfaces here as ContentNotFoundError —
   // treated like any other failure, i.e. silently on the startup path.
-  if (reply->error() != QNetworkReply::NoError) {
-    emit checkFailed(reply->errorString());
-    reply->deleteLater();
+  if (reply.error() != QNetworkReply::NoError) {
+    emit checkFailed(reply.errorString());
     return;
   }
 
-  const QByteArray data = reply->readAll();
-  reply->deleteLater();
+  const QByteArray data = reply.readAll();
 
   QJsonParseError parse_error;
   const QJsonDocument doc = QJsonDocument::fromJson(data, &parse_error);
