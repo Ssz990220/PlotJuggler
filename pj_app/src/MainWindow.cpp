@@ -1579,7 +1579,9 @@ void MainWindow::onOpenMarketplace() {
   auto& catalog = session_->extensionCatalog();
   MarketplaceWindow dlg(&catalog.extensionManager(), registryUrlFromSettings(), this);
   dlg.setChromeMetrics(chrome_metrics_);
-  dlg.resize(900, 600);
+  // Master–detail marketplace needs room for both panes (list + detail) and the
+  // detail's button row; open wide enough that nothing is clipped at first show.
+  dlg.resize(1100, 640);
   dlg.exec();
   if (dlg.installationsChanged()) {
     catalog.reload();

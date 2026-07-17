@@ -53,8 +53,12 @@
     </layout>
    </item>
 
-   <!-- Cards scroll area -->
+   <!-- Plugin list (left) + detail panel (right). Only this middle band is split;
+        the toolbar and status bar stay full width. -->
    <item>
+    <layout class="QHBoxLayout" name="content_split_">
+     <property name="spacing"><number>8</number></property>
+     <item>
     <widget class="QScrollArea" name="scroll_area_">
      <property name="widgetResizable"><bool>true</bool></property>
      <property name="frameShape"><enum>QFrame::NoFrame</enum></property>
@@ -79,6 +83,15 @@
       </layout>
      </widget>
     </widget>
+     </item>
+     <item>
+      <widget class="QScrollArea" name="detail_scroll_">
+       <property name="widgetResizable"><bool>true</bool></property>
+       <property name="frameShape"><enum>QFrame::NoFrame</enum></property>
+       <widget class="QWidget" name="detail_container_"/>
+      </widget>
+     </item>
+    </layout>
    </item>
 
    <!-- Status bar -->

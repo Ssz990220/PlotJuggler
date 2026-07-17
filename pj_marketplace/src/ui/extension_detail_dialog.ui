@@ -88,22 +88,6 @@
    <item>
     <layout class="QHBoxLayout" name="btn_layout">
      <property name="spacing"><number>8</number></property>
-     <item>
-      <widget class="QPushButton" name="github_btn">
-       <property name="text"><string>Visit Website</string></property>
-       <property name="styleSheet">
-        <string notr="true">QPushButton { border: 1px solid palette(mid); padding: 4px 14px; }
-QPushButton:hover { background: palette(mid); }
-QPushButton:disabled { color: palette(mid); }</string>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <spacer name="btn_stretch">
-       <property name="orientation"><enum>Qt::Horizontal</enum></property>
-       <property name="sizeHint" stdset="0"><size><width>16</width><height>20</height></size></property>
-      </spacer>
-     </item>
      <!-- action_btn: text/style/visibility set in C++ based on install state -->
      <item>
       <widget class="QPushButton" name="action_btn">
@@ -129,6 +113,22 @@ QPushButton:hover { background: palette(mid); }</string>
        <property name="styleSheet">
         <string notr="true">QPushButton { border: 1px solid palette(mid); padding: 4px 14px; }
 QPushButton:hover { background: palette(mid); }</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="btn_stretch">
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>16</width><height>20</height></size></property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="github_btn">
+       <property name="text"><string>Visit Website</string></property>
+       <property name="styleSheet">
+        <string notr="true">QPushButton { border: 1px solid palette(mid); padding: 4px 14px; }
+QPushButton:hover { background: palette(mid); }
+QPushButton:disabled { color: palette(mid); }</string>
        </property>
       </widget>
      </item>

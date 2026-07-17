@@ -103,8 +103,13 @@ class MarketplaceWindow : public Dialog {
   // Shows or hides the diagnostics button based on diagnostic history.
   void updateDiagnosticsButton();
 
-  // Opens the detail dialog for one registry extension.
-  void openDetail(const QString& ext_id);
+  // Rebuilds the right-hand detail panel for the given registry extension (the
+  // currently selected card). Replaces the former modal detail dialog.
+  void showDetail(const QString& ext_id);
+
+  // Applies the "selected" highlight to the card matching selected_ext_id_ and
+  // clears it from the others.
+  void updateCardSelection();
 
   // Processes one pending bulk-update item at a time.
   void processInstallQueue();
@@ -145,6 +150,9 @@ class MarketplaceWindow : public Dialog {
   // idle — the UI-side guard uses this to decide whether to enqueue a click
   // instead of dispatching it straight to ExtensionManager::install().
   QString active_install_id_;
+  // Registry id of the card currently selected (shown in the detail panel). One
+  // is always selected while the list is non-empty, so the panel is never empty.
+  QString selected_ext_id_;
   bool installations_changed_ = false;
   bool status_error_sticky_ = false;
   bool initial_snapshot_provided_ = false;

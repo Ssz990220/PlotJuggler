@@ -4,8 +4,11 @@
 #include "pj_marketplace/marketplace_window.hpp"
 
 #include <QComboBox>
+#include <QDesktopServices>
 #include <QDialog>
 #include <QEvent>
+#include <QFont>
+#include <QFontMetrics>
 #include <QFormLayout>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -14,6 +17,7 @@
 #include <QLineEdit>
 #include <QMouseEvent>
 #include <QPlainTextEdit>
+#include <QPointer>
 #include <QPushButton>
 #include <QScrollBar>
 #include <QSettings>
@@ -24,7 +28,6 @@
 #include <algorithm>
 
 #include "pj_marketplace/download_manager.hpp"
-#include "pj_marketplace/extension_detail_dialog.hpp"
 #include "pj_marketplace/extension_manager.hpp"
 #include "pj_marketplace/platform_utils.hpp"
 #include "pj_marketplace/registry_manager.hpp"
@@ -33,6 +36,7 @@
 #include "pj_widgets/MessageBox.h"
 #include "pj_widgets/Scrollbar.h"
 #include "pj_widgets/Search.h"
+#include "ui_extension_detail_dialog.h"
 #include "ui_marketplace_window.h"
 using namespace Qt::StringLiterals;
 
@@ -165,6 +169,26 @@ void MarketplaceWindow::setupUi() {
   connect(ui_->update_all_btn_, &QPushButton::clicked, this, &MarketplaceWindow::onUpdateAllClicked);
   connect(ui_->settings_btn_, &QPushButton::clicked, this, &MarketplaceWindow::onSettingsClicked);
   connect(ui_->diagnostics_btn_, &QPushButton::clicked, this, &MarketplaceWindow::onDiagnosticsClicked);
+
+  // Master–detail split: the plugin list (left) is narrower than the detail
+  // panel (right), but wide enough that a card's action button fits fully; the
+  // right keeps enough room that its button row (ending in "Visit Website") is
+  // never clipped by the window edge. Only this middle band is split.
+  ui_->scroll_area_->setMinimumWidth(410);
+  ui_->detail_scroll_->setMinimumWidth(520);
+  ui_->content_split_->setStretch(0, 2);
+  ui_->content_split_->setStretch(1, 3);
+
+  // Hard floor on the window size so it can never be shrunk to where the two
+  // panes overlap or buttons get hidden: left(360) + right(520) minimum pane
+  // widths + the split spacing, dialog margins and chrome. Below this Qt simply
+  // refuses to shrink further, keeping everything visible.
+  setMinimumSize(1080, 580);
+
+  // Open a touch larger than the floor so both panes and every button (card
+  // action on the left, action/uninstall/website on the right) are comfortably
+  // visible without the user having to resize.
+  resize(1100, 640);
 
   // Canonical overlay pill scrollbars for the extension list / detail scroll
   // areas just built (their ranges update live as the registry loads).
@@ -328,6 +352,14 @@ void MarketplaceWindow::populateCards(bool preserve_scroll) {
     delete ui_->cards_layout_->takeAt(0)->widget();
   }
 
+  // Keep a valid selection so the detail panel is never empty: if the current
+  // selection is filtered out (or unset), fall back to the first visible card.
+  const bool selection_visible =
+      std::any_of(filtered_.begin(), filtered_.end(), [&](const Extension& e) { return e.id == selected_ext_id_; });
+  if (!selection_visible) {
+    selected_ext_id_ = filtered_.isEmpty() ? QString{} : filtered_.first().id;
+  }
+
   const auto installed = ext_mgr_->installedExtensions();
   for (const Extension& ext : filtered_) {
     const QString ext_id = ext.id;
@@ -335,6 +367,8 @@ void MarketplaceWindow::populateCards(bool preserve_scroll) {
     auto* card = new QFrame(ui_->cards_container);
     card->setFrameShape(QFrame::NoFrame);
     card->setProperty("ext_id", ext_id);
+    // Highlight the selected card (styled via QFrame#extCard[selected="true"]).
+    card->setProperty("selected", ext_id == selected_ext_id_);
     card->setToolTip(ext.description);
     card->setCursor(Qt::PointingHandCursor);
     card->setObjectName("extCard");
@@ -428,11 +462,20 @@ void MarketplaceWindow::populateCards(bool preserve_scroll) {
     auto* bottom_row = new QHBoxLayout();
     auto* desc_lbl = new QLabel(ext.description, card);
     desc_lbl->setObjectName("extCardDescription");
-    // Show the full description, wrapped to multiple lines, using the width left
-    // by the action button — never truncate it with an ellipsis. The stretch
-    // factor lets it take the available horizontal space (and grow taller as it
-    // wraps); the button keeps its fixed width on the right.
+    // Wrap the description, but cap the card at exactly TWO visible lines (the
+    // full text lives in the right-hand detail panel). The height is measured
+    // after the widget is polished — deferred to the next event-loop turn —
+    // because the #extCardDescription QSS font (11px) is not yet applied at
+    // construction, and measuring the pre-polish font left room for a clipped
+    // third line.
     desc_lbl->setWordWrap(true);
+    desc_lbl->setContentsMargins(0, 0, 0, 0);
+    QPointer<QLabel> desc_ptr = desc_lbl;
+    QTimer::singleShot(0, desc_lbl, [desc_ptr]() {
+      if (desc_ptr) {
+        desc_ptr->setMaximumHeight(desc_ptr->fontMetrics().lineSpacing() * 2);
+      }
+    });
     bottom_row->addWidget(desc_lbl, /*stretch=*/1);
     bottom_row->addLayout(btn_box);
     // Keep the button pinned to the top of a now-possibly-multiline row.
@@ -456,58 +499,203 @@ void MarketplaceWindow::populateCards(bool preserve_scroll) {
   }
   ui_->update_all_btn_->setEnabled(any_updatable && update_queue_.isEmpty());
 
+  // Refresh the right-hand detail panel for the (possibly updated) selection.
+  showDetail(selected_ext_id_);
+
   if (preserve_scroll) {
     QTimer::singleShot(
         0, this, [this, saved_scroll]() { ui_->scroll_area_->verticalScrollBar()->setValue(saved_scroll); });
   }
 }
 
-// ─── Event Filter (double-click on card) ─────────────────────────────────────
+// ─── Event Filter (select a card on click) ───────────────────────────────────
 
 bool MarketplaceWindow::eventFilter(QObject* obj, QEvent* event) {
-  // Open the detail dialog on a double-click of a card. Consume ONLY when the
-  // event is on a card (it carries an "ext_id"): the base PJ::Dialog installs
-  // this object as an app-wide event filter (for resize-edge cursors), so this
-  // override sees every widget's events — returning true unconditionally would
-  // swallow the card's double-click at the window level before it propagates
-  // down to the card, and no detail dialog would ever open.
-  if (event->type() == QEvent::MouseButtonDblClick) {
-    const QString ext_id = obj->property("ext_id").toString();
-    if (!ext_id.isEmpty()) {
-      openDetail(ext_id);
-      return true;
+  // Select the clicked card so the right-hand detail panel shows it. The base
+  // PJ::Dialog installs this object as an app-wide event filter (for resize-edge
+  // cursors), so this override sees every widget's events; find the owning card
+  // by walking up from the clicked widget to the first ancestor carrying an
+  // "ext_id" (so a click anywhere on the card — label, empty area — selects it).
+  // Never consume the event: the action button inside the card must still fire.
+  if (event->type() == QEvent::MouseButtonPress) {
+    for (QObject* o = obj; o != nullptr; o = o->parent()) {
+      const QString ext_id = o->property("ext_id").toString();
+      if (!ext_id.isEmpty()) {
+        if (ext_id != selected_ext_id_) {
+          selected_ext_id_ = ext_id;
+          updateCardSelection();
+          showDetail(ext_id);
+        }
+        break;
+      }
     }
   }
   return Dialog::eventFilter(obj, event);
 }
 
-void MarketplaceWindow::openDetail(const QString& ext_id) {
-  for (const auto& ext : filtered_) {
-    if (ext.id != ext_id) {
+void MarketplaceWindow::updateCardSelection() {
+  for (int i = 0; i < ui_->cards_layout_->count(); ++i) {
+    QWidget* w = ui_->cards_layout_->itemAt(i)->widget();
+    if (w == nullptr) {
+      continue;  // the trailing vertical stretch has no widget
+    }
+    const QString ext_id = w->property("ext_id").toString();
+    if (ext_id.isEmpty()) {
       continue;
     }
-    const auto installed = ext_mgr_->installedExtensions();
-    const QString installed_version = installed.contains(ext_id) ? installed[ext_id].version : QString{};
-    // Mirror the card's pending state so the dialog can't offer an action on an
-    // install/update or uninstall that is already staged for the next restart.
-    const bool needs_restart = ext_mgr_->hasPendingInstall(ext_id) || ext_mgr_->hasPendingUninstall(ext_id);
-    // Also mirror the card's in-flight/queued state: the active install, an
-    // explicit click awaiting its turn, or an Update All entry. Without this the
-    // detail dialog offers a clickable Update for a queued extension, which
-    // re-enqueues it and later surfaces a spurious "already staged" failure.
-    const bool in_update_queue =
-        std::any_of(update_queue_.begin(), update_queue_.end(), [&](const Extension& e) { return e.id == ext_id; });
-    const bool installing = ext_id == active_install_id_ || pending_clicks_.contains(ext_id) || in_update_queue;
-    // Core (bundled) extensions ship with the app and can't be uninstalled — the
-    // dialog shows the Uninstall action locked.
-    const bool is_bundled = ext_mgr_->isBundled(ext_id);
-    ExtensionDetailDialog dlg(ext, installed_version, needs_restart, installing, is_bundled, this);
-    connect(&dlg, &ExtensionDetailDialog::installRequested, this, [this, ext_id]() { onActionButtonClicked(ext_id); });
-    connect(
-        &dlg, &ExtensionDetailDialog::uninstallRequested, this, [this, ext_id]() { onUninstallButtonClicked(ext_id); });
-    dlg.exec();
+    const bool sel = ext_id == selected_ext_id_;
+    if (w->property("selected").toBool() != sel) {
+      w->setProperty("selected", sel);
+      w->style()->unpolish(w);
+      w->style()->polish(w);
+    }
+  }
+}
+
+void MarketplaceWindow::showDetail(const QString& ext_id) {
+  // Tear down the previous panel content (widgets + layout).
+  if (QLayout* old = ui_->detail_container_->layout()) {
+    QLayoutItem* item = nullptr;
+    while ((item = old->takeAt(0)) != nullptr) {
+      delete item->widget();
+      delete item;
+    }
+    delete old;
+  }
+
+  const Extension* ext = nullptr;
+  for (const Extension& e : extensions_) {
+    if (e.id == ext_id) {
+      ext = &e;
+      break;
+    }
+  }
+
+  auto* outer = new QVBoxLayout(ui_->detail_container_);
+  outer->setContentsMargins(0, 0, 0, 0);
+
+  if (ext == nullptr) {
+    outer->addStretch();  // no selection (empty list) — leave the panel blank
     return;
   }
+
+  // Build the SAME form the modal detail dialog used, so the layout and button
+  // disposition are identical — just embedded in the right panel. The Ui struct
+  // is local: it only creates the widgets (owned by `body`) and gives us named
+  // handles to configure them here.
+  auto* body = new QWidget(ui_->detail_container_);
+  Ui::ExtensionDetailDialog form;
+  form.setupUi(body);
+  outer->addWidget(body);
+  // No "Close" button: this is an embedded panel, not a modal subdialog.
+  form.close_btn->hide();
+
+  const auto installed = ext_mgr_->installedExtensions();
+  const QString installed_version = installed.contains(ext_id) ? installed[ext_id].version : QString{};
+  const bool is_installed = installed.contains(ext_id);
+  const bool has_update = ext_mgr_->hasUpdate(*ext);
+  const bool has_newer_local = ext_mgr_->hasNewerInstalledVersion(*ext);
+  const bool needs_restart = ext_mgr_->hasPendingInstall(ext_id) || ext_mgr_->hasPendingUninstall(ext_id);
+  const bool in_update_queue =
+      std::any_of(update_queue_.begin(), update_queue_.end(), [&](const Extension& e) { return e.id == ext_id; });
+  const bool installing = ext_id == active_install_id_ || pending_clicks_.contains(ext_id) || in_update_queue;
+  // Core (bundled) extensions ship with the app and can't be uninstalled — the
+  // panel shows the Uninstall action locked (mirrors the modal detail dialog).
+  const bool is_bundled = ext_mgr_->isBundled(ext_id);
+
+  // Title.
+  form.title_lbl->setText(ext->name + "  v" + ext->version);
+  // Force the size via stylesheet: a QSS font-size rule from the app theme wins
+  // over QFont::setPointSize(), so setFont() alone left the title unchanged.
+  form.title_lbl->setStyleSheet("font-size: 20px; font-weight: 700;");
+
+  // Metadata row.
+  QStringList meta;
+  if (!ext->publisher.isEmpty()) {
+    meta << ext->publisher;
+  }
+  if (!ext->category.isEmpty()) {
+    meta << ext->category;
+  }
+  if (!ext->license.isEmpty()) {
+    meta << ext->license;
+  }
+  if (!ext->min_plotjuggler_version.isEmpty()) {
+    meta << "requires PJ " + ext->min_plotjuggler_version + "+";
+  }
+  if (is_installed) {
+    meta << "installed: v" + installed_version;
+  }
+  form.meta_lbl->setText(meta.join("  •  "));
+
+  // Tag chips.
+  for (int i = 0; i < ext->tags.size(); ++i) {
+    auto* chip = new QLabel(ext->tags[i], form.tags_container);
+    chip->setObjectName("extTagChip");
+    form.tags_layout->insertWidget(i, chip);
+  }
+
+  // Full description, wrapped.
+  form.desc_lbl->setText(ext->description);
+  form.desc_lbl->setWordWrap(true);
+
+  // GitHub / website link.
+  form.github_btn->setEnabled(!ext->website.isEmpty());
+  const QString website = ext->website;
+  connect(form.github_btn, &QPushButton::clicked, this, [website]() {
+    if (!website.isEmpty()) {
+      QDesktopServices::openUrl(QUrl(website));
+    }
+  });
+
+  // Exactly ONE action button, chosen by state (never all of them). action_btn
+  // and uninstall_btn default hidden in the .ui, so untouched states stay off.
+  if (installing) {
+    form.action_btn->setText("Installing");
+    form.action_btn->setObjectName("extBadgeInstalling");
+    form.action_btn->setEnabled(false);
+    form.action_btn->setVisible(true);
+  } else if (needs_restart) {
+    form.action_btn->setText("Needs Restart");
+    form.action_btn->setObjectName("extBadgeNeedsRestart");
+    form.action_btn->setEnabled(false);
+    form.action_btn->setVisible(true);
+  } else {
+    if (!is_installed || has_update) {
+      form.action_btn->setText(has_update ? "Update ⬆" : "Install");
+      form.action_btn->setObjectName(has_update ? "extButtonUpdate" : "extButtonInstall");
+      form.action_btn->setVisible(true);
+      connect(form.action_btn, &QPushButton::clicked, this, [this, ext_id]() { onActionButtonClicked(ext_id); });
+    } else if (has_newer_local) {
+      form.action_btn->setText("Local newer");
+      form.action_btn->setObjectName("extBadgeLocalNewer");
+      form.action_btn->setEnabled(false);
+      form.action_btn->setVisible(true);
+    } else {
+      form.action_btn->setText("Installed");
+      form.action_btn->setObjectName("extBadgeInstalled");
+      form.action_btn->setEnabled(false);
+      form.action_btn->setVisible(true);
+    }
+    // Uninstall, shown for an installed extension (between the action and Close),
+    // exactly as the old subdialog did.
+    if (is_installed) {
+      form.uninstall_btn->setVisible(true);
+      if (is_bundled) {
+        // Core extension shipped with the application: shown but locked, so the
+        // user sees it exists yet cannot remove it.
+        form.uninstall_btn->setEnabled(false);
+        form.uninstall_btn->setToolTip(tr("This extension ships with the application and cannot be uninstalled"));
+      } else {
+        connect(
+            form.uninstall_btn, &QPushButton::clicked, this, [this, ext_id]() { onUninstallButtonClicked(ext_id); });
+      }
+    }
+  }
+
+  // Same fixed width as the left-hand card buttons so the action reads identically
+  // on both sides.
+  form.action_btn->setFixedWidth(90);
 }
 
 // ─── Filtering ────────────────────────────────────────────────────────────────

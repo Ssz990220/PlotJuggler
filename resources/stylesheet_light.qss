@@ -2119,6 +2119,12 @@ QFrame#extCard:hover {
     background: ${neutral_hovered};
 }
 
+/* Selected card in the master–detail view: its details fill the right panel. */
+QFrame#extCard[selected="true"] {
+    background: ${neutral_hovered};
+    border-left: 3px solid ${status_info};
+}
+
 /* Card child labels — version readout, description — inherit the
    card's text colour rather than going through palette(text). */
 QFrame#extCard QLabel {
