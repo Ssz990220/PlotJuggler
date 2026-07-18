@@ -51,14 +51,21 @@
 #include <QVBoxLayout>
 #include <QVariant>
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <optional>
+#include <pj_base/types.hpp>
 #include <pj_plugins/host/widget_event_builder.hpp>
 #include <pj_plugins/host_qt/chart_preview_widget.hpp>
 #include <pj_plugins/host_qt/widget_adapters.hpp>
 #include <pj_plugins/host_qt/widget_binding.hpp>
 #include <set>
+#include <type_traits>
+#include <utility>
+#include <variant>
+#include <vector>
 
 #include "chart_placeholder_overlay.hpp"
 #include "lua_syntax_highlighter.hpp"
@@ -139,6 +146,154 @@ std::int64_t sliderToNs(int pos, int slider_max, std::int64_t min_ns, std::int64
 // share identical text.
 constexpr int kPluginRowRole = Qt::UserRole + 1;
 
+namespace {
+
+// True for the variant's float/double alternatives.
+bool isFloatingValue(const NumericValue& v) {
+  return std::holds_alternative<float>(v) || std::holds_alternative<double>(v);
+}
+
+bool isNanValue(const NumericValue& v) {
+  if (const auto* f = std::get_if<float>(&v)) {
+    return std::isnan(*f);
+  }
+  if (const auto* d = std::get_if<double>(&v)) {
+    return std::isnan(*d);
+  }
+  return false;
+}
+
+// Order two values of the SAME comparison class (both integral or both floating);
+// columnValuesComparable() is what guarantees a column never mixes the two.
+// Integers compare exactly across signedness — coercing them to double would tie
+// distinct values above 2^53 (int64 ns timestamps live there).
+bool numericLess(const NumericValue& a, const NumericValue& b) {
+  return std::visit(
+      [](auto lhs, auto rhs) -> bool {
+        if constexpr (std::is_floating_point_v<decltype(lhs)> || std::is_floating_point_v<decltype(rhs)>) {
+          return static_cast<double>(lhs) < static_cast<double>(rhs);
+        } else {
+          return std::cmp_less(lhs, rhs);
+        }
+      },
+      a, b);
+}
+
+}  // namespace
+
+// A table cell that carries the plugin's original numeric value beside its display
+// text, so a column orders on the value rather than on its rendering ("720" must
+// not land before "65").
+//
+// The ordering is a strict weak ordering, which is a correctness requirement and
+// not a preference: QTableModel::sort feeds this to std::stable_sort, where an
+// inconsistent comparator is undefined behaviour (a crash), not a wrong order. It
+// is therefore derived from a per-item RANK — a property of one item, never of the
+// pair — so no comparison triangle can cycle:
+//
+//   0. a real number  — ordered by value
+//   1. NaN            — compares false against every number in both directions, so
+//                       it gets its own rank at one end instead of being mutually
+//                       incomparable with everything (the classic SWO violation)
+//   2. no value       — ordered by text, after every valued cell
+//
+// Rank 2 never text-compares against rank 0/1. Deciding that per pair is what
+// cycles: with values 5 and 100 and a key-less cell showing "20", text says
+// 100 < "20" < 5 while numbers say 5 < 100. Grouping the key-less cells at one end
+// is also what the ulog Value column wants, where "N/A" cells carry no key.
+class TypedTableItem : public QTableWidgetItem {
+ public:
+  // Reported by type(); lets applyTableRows spot a plain cell without a dynamic_cast.
+  static constexpr int kType = QTableWidgetItem::UserType + 1;
+
+  explicit TypedTableItem(const QString& text) : QTableWidgetItem(text, kType) {}
+
+  [[nodiscard]] const std::optional<NumericValue>& sortValue() const {
+    return value_;
+  }
+  void setSortValue(std::optional<NumericValue> value) {
+    value_ = std::move(value);
+  }
+
+  [[nodiscard]] QTableWidgetItem* clone() const override {
+    auto* copy = new TypedTableItem(QString{});
+    // QTableWidgetItem's copy ctor resets the item type; its operator= copies every
+    // role + the flags while leaving the (already correct) type alone.
+    *static_cast<QTableWidgetItem*>(copy) = *this;
+    copy->value_ = value_;
+    return copy;
+  }
+
+  bool operator<(const QTableWidgetItem& other) const override {
+    // Qt picks the comparator from the LEFT operand's dynamic type, so a column that
+    // mixed plain and typed cells could answer one way as `plain < typed` (text) and
+    // the other as `typed < plain` (rank) — asymmetric, hence UB. applyTableRows
+    // keeps every column it writes homogeneous; text-comparing here is the matching
+    // answer if some other path ever leaves a plain cell alongside a typed one.
+    if (other.type() != kType) {
+      return QTableWidgetItem::operator<(other);
+    }
+    const auto& rhs = static_cast<const TypedTableItem&>(other).value_;
+    const int lhs_rank = rank(value_);
+    const int rhs_rank = rank(rhs);
+    if (lhs_rank != rhs_rank) {
+      return lhs_rank < rhs_rank;
+    }
+    switch (lhs_rank) {
+      case kRankNumber:
+        return numericLess(*value_, *rhs);
+      case kRankNan:
+        return false;  // every NaN is equivalent to every other
+      default:
+        return QTableWidgetItem::operator<(other);
+    }
+  }
+
+ private:
+  static constexpr int kRankNumber = 0;
+  static constexpr int kRankNan = 1;
+  static constexpr int kRankText = 2;
+
+  static int rank(const std::optional<NumericValue>& v) {
+    if (!v.has_value()) {
+      return kRankText;
+    }
+    return isNanValue(*v) ? kRankNan : kRankNumber;
+  }
+
+  std::optional<NumericValue> value_;
+};
+
+namespace {
+
+// Whether a column's values can all be ordered against each other exactly.
+//
+// A column that mixes integers and floats is rejected wholesale (→ text ordering):
+// there is no exact order across uint64 and double — uint64 exceeds int64's range
+// and uint64→double loses precision above 2^53 — and ordering only SOME pairs of a
+// column numerically breaks the strict weak ordering std::stable_sort demands.
+// Rejecting per column rather than per pair is what keeps that decision consistent.
+// JSON keeps integers and floats distinct, so no real column trips this; a column
+// of mixed-sign integers (int64 + uint64 off the wire) is NOT mixed for this
+// purpose — numericLess compares those exactly.
+bool columnValuesComparable(const std::vector<std::optional<NumericValue>>& values) {
+  std::optional<bool> floating;
+  for (const auto& v : values) {
+    if (!v.has_value()) {
+      continue;
+    }
+    const bool is_float = isFloatingValue(*v);
+    if (!floating.has_value()) {
+      floating = is_float;
+    } else if (*floating != is_float) {
+      return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
 // Push `rows` into the table with minimal churn. All table aspects
 // (rows/selection/visibility) share one widget-data key, so every selection
 // change and every streamed per-row detail update re-delivers the whole rows
@@ -148,7 +303,11 @@ constexpr int kPluginRowRole = Qt::UserRole + 1;
 // ResizeToContents re-measure a full rebuild triggers, and lets streamed detail
 // fill in cell-by-cell instead of snapping in all at once. Only a row/column
 // count change forces a full rebuild.
-static void applyTableRows(QTableWidget* tw, const std::vector<std::vector<std::string>>& rows) {
+// `column_values` holds the sparse per-column sort keys (column → one entry per
+// row); a column absent from it, or a nullopt entry, orders by cell text.
+static void applyTableRows(
+    QTableWidget* tw, const std::vector<std::vector<std::string>>& rows,
+    const std::map<int, std::vector<std::optional<NumericValue>>>& column_values) {
   // Rows arrive in the plugin's own order and are written by model-row index. With
   // sorting enabled QTableWidget physically re-sorts the model on every setItem/
   // setText, so a mid-loop re-sort remaps the indices and the remaining writes land
@@ -167,23 +326,75 @@ static void applyTableRows(QTableWidget* tw, const std::vector<std::vector<std::
     }
   };
 
+  // Resolve the usable sort-key columns once, up front: a column is keyed only if
+  // it indexes a real column, states a value for every row, and is exactly ordered
+  // (see columnValuesComparable). Everything else falls through to text ordering.
+  // Width comes from the WIDEST row, not the first: the SDK keys columns up to the
+  // max row width, and a ragged delivery whose first row is short (a spanning
+  // "Totals" row) must not silently drop the keys of every later column.
+  std::size_t col_count = 0;
+  for (const auto& row : rows) {
+    col_count = std::max(col_count, row.size());
+  }
+  std::vector<const std::vector<std::optional<NumericValue>>*> col_keys(col_count, nullptr);
+  for (const auto& [col, values] : column_values) {
+    if (col >= 0 && static_cast<std::size_t>(col) < col_count && values.size() == rows.size() &&
+        columnValuesComparable(values)) {
+      col_keys[static_cast<std::size_t>(col)] = &values;
+    }
+  }
+  auto key_at = [&col_keys](std::size_t r, std::size_t c) -> std::optional<NumericValue> {
+    if (c >= col_keys.size() || col_keys[c] == nullptr) {
+      return std::nullopt;
+    }
+    return (*col_keys[c])[r];
+  };
+
   const bool same_shape = static_cast<std::size_t>(tw->rowCount()) == rows.size() &&
                           (rows.empty() || static_cast<std::size_t>(tw->columnCount()) == rows.front().size());
   if (same_shape) {
     for (std::size_t r = 0; r < rows.size(); ++r) {
       const auto& row = rows[r];
-      for (std::size_t c = 0; c < row.size(); ++c) {
-        const QString text = QString::fromStdString(row[c]);
+      // Iterate the TABLE's columns, not just the delivered row's: a ragged row
+      // (shorter than the first row) must still blank/upgrade the cells it
+      // omits, or a .ui-declared plain item survives next to typed neighbours —
+      // and a column mixing plain and typed items orders some pairs by text and
+      // others by value, which is not a strict weak ordering (UB in the sort).
+      // A coordinate that has no item AND no delivered cell stays itemless.
+      for (std::size_t c = 0; c < static_cast<std::size_t>(tw->columnCount()); ++c) {
+        const bool delivered = c < row.size();
+        const QString text = delivered ? QString::fromStdString(row[c]) : QString();
+        std::optional<NumericValue> value = delivered ? key_at(r, c) : std::nullopt;
         QTableWidgetItem* item = tw->item(static_cast<int>(r), static_cast<int>(c));
+        if (item == nullptr && !delivered) {
+          continue;  // no item to sanitize and nothing to show — don't materialize one
+        }
+        auto* typed =
+            (item != nullptr && item->type() == TypedTableItem::kType) ? static_cast<TypedTableItem*>(item) : nullptr;
         if (item == nullptr) {
           suspend_sorting();
-          item = new QTableWidgetItem(text);
-          tw->setItem(static_cast<int>(r), static_cast<int>(c), item);
-        } else if (item->text() != text) {
+          typed = new TypedTableItem(text);
+          typed->setSortValue(std::move(value));
+          tw->setItem(static_cast<int>(r), static_cast<int>(c), typed);
+        } else if (typed == nullptr) {
+          // A cell the .ui declared. Upgrade it — unconditionally, even with no key
+          // to stamp: TypedTableItem::operator< is only sound on a column whose
+          // cells are all typed (see its comment), and a key-less typed cell orders
+          // by text exactly as the plain one did.
           suspend_sorting();
-          item->setText(text);
+          typed = new TypedTableItem(text);
+          *static_cast<QTableWidgetItem*>(typed) = *item;  // keep the roles/flags it already carried
+          typed->setText(text);
+          typed->setSortValue(std::move(value));
+          tw->setItem(static_cast<int>(r), static_cast<int>(c), typed);  // deletes the plain item
+        } else if (typed->text() != text || typed->sortValue() != value) {
+          // A key that moved with unchanged text still re-orders the column, so it
+          // has to go through the same suspend/restore as a text edit.
+          suspend_sorting();
+          typed->setText(text);
+          typed->setSortValue(std::move(value));
         }
-        item->setData(kPluginRowRole, static_cast<int>(r));
+        typed->setData(kPluginRowRole, static_cast<int>(r));
       }
     }
   } else {
@@ -191,12 +402,28 @@ static void applyTableRows(QTableWidget* tw, const std::vector<std::vector<std::
     const bool updates = tw->updatesEnabled();
     tw->setUpdatesEnabled(false);
     tw->setRowCount(static_cast<int>(rows.size()));
+    const std::size_t table_cols = static_cast<std::size_t>(tw->columnCount());
     for (std::size_t r = 0; r < rows.size(); ++r) {
       const auto& row = rows[r];
-      for (std::size_t c = 0; c < row.size(); ++c) {
-        auto* item = new QTableWidgetItem(QString::fromStdString(row[c]));
+      // Clamp to the table's width: QTableWidget::setItem does NOT range-check
+      // the column — an out-of-range write lands in the NEXT row via the
+      // flattened index (overwriting its first cell and its plugin-row tag) and
+      // a past-the-end write leaks the item. A row wider than the headers is a
+      // plugin bug; dropping its overflow cells is the safe rendering of it.
+      for (std::size_t c = 0; c < row.size() && c < table_cols; ++c) {
+        auto* item = new TypedTableItem(QString::fromStdString(row[c]));
+        item->setSortValue(key_at(r, c));
         item->setData(kPluginRowRole, static_cast<int>(r));
         tw->setItem(static_cast<int>(r), static_cast<int>(c), item);
+      }
+      // setRowCount is a no-op when only the width changed, so cells this
+      // delivery does not cover can still hold items from the previous shape —
+      // stale text, stale sort keys, and above all a stale kPluginRowRole that
+      // can duplicate another row's tag and corrupt the view<->plugin row
+      // mapping (selection, visibility, radio, double-click). Drop them; cell
+      // WIDGETS (e.g. lazily wired radios) are left for their own aspect.
+      for (int c = static_cast<int>(row.size()); c < tw->columnCount(); ++c) {
+        delete tw->takeItem(static_cast<int>(r), c);
       }
     }
     tw->setUpdatesEnabled(updates);
@@ -527,6 +754,33 @@ static void installTreeLikeHeader(QTableWidget* tw) {
   }
 }
 
+// Write a delta-provided cell's text/value into (row, col): update in place if
+// it's already typed, upgrade a plain .ui-declared item (keeping its roles/
+// flags), or create a new typed cell if none exists yet. Always leaves a
+// homogeneous typed cell behind — never a plain QTableWidgetItem — so a
+// delta-only workflow can't leave a column mixing plain and typed items (see
+// TypedTableItem's own comment on why that is unsound to sort).
+static void upsertDeltaCell(
+    QTableWidget* tw, int row, int col, const QString& text, std::optional<NumericValue> value, int plugin_row) {
+  QTableWidgetItem* item = tw->item(row, col);
+  if (item == nullptr) {
+    auto* created = new TypedTableItem(text);
+    created->setSortValue(std::move(value));
+    created->setData(kPluginRowRole, plugin_row);
+    tw->setItem(row, col, created);
+  } else if (item->type() == TypedTableItem::kType) {
+    auto* typed = static_cast<TypedTableItem*>(item);
+    typed->setText(text);
+    typed->setSortValue(std::move(value));
+  } else {
+    auto* typed = new TypedTableItem(text);
+    *static_cast<QTableWidgetItem*>(typed) = *item;  // keep the roles/flags it already carried
+    typed->setText(text);
+    typed->setSortValue(std::move(value));
+    tw->setItem(row, col, typed);  // deletes the plain item
+  }
+}
+
 // Apply one batch table delta (already seq-gated by the caller). Protocol
 // order: update_cells, then remove_rows, then append — all indexes in the
 // pre-delta plugin row space. Works under user sorting by translating plugin
@@ -559,19 +813,15 @@ static void applyTableDelta(QTableWidget* tw, const PJ::WidgetDataView::TableDel
                : -1;
   };
 
+  // An update replaces the WHOLE cell (see TableDeltaView::CellUpdate::value's
+  // doc-comment) — text and sort key must move together, or a typed column
+  // desyncs its displayed order from what's on screen.
   for (const auto& cell : delta.update_cells) {
     const int row = model_row_of(cell.row);
     if (row < 0 || cell.col >= tw->columnCount()) {
       continue;
     }
-    const QString text = QString::fromStdString(cell.text);
-    if (QTableWidgetItem* item = tw->item(row, cell.col)) {
-      item->setText(text);
-    } else {
-      auto* created = new QTableWidgetItem(text);
-      created->setData(kPluginRowRole, cell.row);
-      tw->setItem(row, cell.col, created);
-    }
+    upsertDeltaCell(tw, row, cell.col, QString::fromStdString(cell.text), cell.value, cell.row);
   }
 
   // Translate every plugin index up front — removing re-indexes the model —
@@ -610,23 +860,36 @@ static void applyTableDelta(QTableWidget* tw, const PJ::WidgetDataView::TableDel
     }
   }
 
+  // Resolve append_values by column once, up front — same sparse-map-to-flat
+  // idea as applyTableRows' col_keys/key_at — instead of a map lookup per cell.
+  std::vector<const std::vector<std::optional<NumericValue>>*> append_col_keys(
+      static_cast<std::size_t>(tw->columnCount()), nullptr);
+  for (const auto& [col, values] : delta.append_values) {
+    if (col >= 0 && static_cast<std::size_t>(col) < append_col_keys.size()) {
+      append_col_keys[static_cast<std::size_t>(col)] = &values;
+    }
+  }
+
   // Appends take the next plugin indexes; roles are contiguous 0..rowCount-1
   // after the renumbering above, so rowCount is the next free index.
   int next_plugin_row = tw->rowCount();
+  std::size_t append_row_idx = 0;
   for (const auto& row_cells : delta.append) {
     const int row = tw->rowCount();
     tw->insertRow(row);
     // Create an item for EVERY column (empty text for missing cells): a row
     // without items has no plugin-row tag, and a later re-sort would desync
     // the row-identity mapping.
-    for (int c = 0; c < tw->columnCount(); ++c) {
-      const bool has_cell = static_cast<std::size_t>(c) < row_cells.size();
-      auto* item =
-          new QTableWidgetItem(has_cell ? QString::fromStdString(row_cells[static_cast<std::size_t>(c)]) : QString());
-      item->setData(kPluginRowRole, next_plugin_row);
-      tw->setItem(row, c, item);
+    for (std::size_t c = 0; c < append_col_keys.size(); ++c) {
+      const bool has_cell = c < row_cells.size();
+      const QString text = has_cell ? QString::fromStdString(row_cells[c]) : QString();
+      std::optional<NumericValue> value = append_col_keys[c] != nullptr && append_row_idx < append_col_keys[c]->size()
+                                              ? (*append_col_keys[c])[append_row_idx]
+                                              : std::nullopt;
+      upsertDeltaCell(tw, row, static_cast<int>(c), text, std::move(value), next_plugin_row);
     }
     ++next_plugin_row;
+    ++append_row_idx;
   }
 
   tw->setSortingEnabled(was_sorting);
@@ -947,7 +1210,7 @@ static void applyToWidget(
     const std::optional<int> radio_col = view.tableRadioColumn(name);
     bool rows_replaced = false;
     if (auto v = view.tableRows(name)) {
-      applyTableRows(tw, *v);
+      applyTableRows(tw, *v, view.tableColumnValues(name));
       recordPluginKeyColumn(tw, radio_col.value_or(-1));
       rows_replaced = true;
     }
@@ -965,6 +1228,32 @@ static void applyToWidget(
           tw->setProperty("_pj_table_delta_seq", QVariant::fromValue<qulonglong>(*delta_seq));
           applyTableDelta(tw, *delta);
         }
+      }
+    }
+    // Sort arrow for a table the PLUGIN sorts (it re-emits rows already ordered and
+    // leaves Qt's own sortingEnabled off, so Qt would never paint an arrow itself).
+    // Cosmetic only: the header's sortIndicatorChanged is what a sorting-enabled
+    // QTableView turns into a real sortByColumn, so it stays blocked here — the
+    // plugin's row order is the truth and must never be re-sorted out from under it.
+    if (const auto indicator = view.tableSortIndicator(name)) {
+      auto* header = tw->horizontalHeader();
+      const Qt::SortOrder order = indicator->second ? Qt::AscendingOrder : Qt::DescendingOrder;
+      // The delivered state is remembered on the header: Qt's own click handling
+      // flips the visible arrow BEFORE emitting sectionClicked, so the
+      // header-click wiring re-asserts these after a click the plugin ignored
+      // (see connectWidgetSignals) — without them the arrow would lie until the
+      // next re-delivery.
+      header->setProperty("pjSortIndicatorCol", indicator->first);
+      header->setProperty("pjSortIndicatorAsc", indicator->second);
+      // Skip-if-unchanged, like every other header aspect: the indicator rides
+      // along in EVERY widget-data delivery (streamed ticks included), and Qt
+      // repaints — with ResizeToContents, re-measures — the section even when
+      // nothing moved.
+      if (!header->isSortIndicatorShown() || header->sortIndicatorSection() != indicator->first ||
+          header->sortIndicatorOrder() != order) {
+        const QSignalBlocker header_blocker(header);
+        header->setSortIndicatorShown(true);
+        header->setSortIndicator(indicator->first, order);
       }
     }
     // Every index-keyed aspect below arrives in plugin row order; translate it
@@ -1682,6 +1971,32 @@ void connectWidgetSignals(QWidget* root, WidgetEventCallback callback) {
       // translated from the (possibly user-sorted) view position.
       QObject::connect(tw, &QTableWidget::cellDoubleClicked, tw, [callback, name, tw](int row, int /*col*/) {
         callback(name, WidgetEventBuilder::itemDoubleClicked(viewRowToPluginRow(tw, row)));
+      });
+      // Header click -> headerClicked(section), letting a plugin own its column
+      // sorting (it re-orders its row model and re-emits, so index-based selection
+      // and visibility stay consistent). A plugin that doesn't override
+      // onHeaderClicked returns false from the dispatch, the host then skips the
+      // re-read, and the click is a no-op — so wiring this unconditionally is safe.
+      QObject::connect(tw->horizontalHeader(), &QHeaderView::sectionClicked, tw, [callback, name, tw](int section) {
+        callback(name, WidgetEventBuilder::headerClicked(section));
+        // Qt flipped the visible arrow to the clicked section BEFORE this signal
+        // fired — even with sorting off. For a plugin-owned indicator the
+        // delivered state is the truth: if the callback re-delivered widget
+        // data, applyToWidget just refreshed the properties; if the plugin
+        // ignored the click (or the re-delivery was diffed away as unchanged),
+        // they still hold the last delivered state. Either way, re-asserting
+        // them keeps an ignored click from leaving the header lying about the
+        // sort. Qt-sorted tables (sortingEnabled) own their arrow — skip.
+        if (!tw->isSortingEnabled()) {
+          auto* header = tw->horizontalHeader();
+          const QVariant col = header->property("pjSortIndicatorCol");
+          const QVariant asc = header->property("pjSortIndicatorAsc");
+          if (col.isValid() && asc.isValid()) {
+            const QSignalBlocker header_blocker(header);
+            header->setSortIndicatorShown(true);
+            header->setSortIndicator(col.toInt(), asc.toBool() ? Qt::AscendingOrder : Qt::DescendingOrder);
+          }
+        }
       });
       // Stash the event callback so applyTableRadioColumn can wire radio cells
       // (created lazily as rows arrive) back to the dialog event stream. The
