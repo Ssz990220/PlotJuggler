@@ -527,6 +527,111 @@ static void installTreeLikeHeader(QTableWidget* tw) {
   }
 }
 
+// Apply one batch table delta (already seq-gated by the caller). Protocol
+// order: update_cells, then remove_rows, then append — all indexes in the
+// pre-delta plugin row space. Works under user sorting by translating plugin
+// rows through kPluginRowRole; sorting is suspended so mid-loop re-sorts
+// cannot remap indexes, and the roles are renumbered afterwards (removals
+// shift the plugin space down; appends take the next indexes).
+static void applyTableDelta(QTableWidget* tw, const PJ::WidgetDataView::TableDeltaView& delta) {
+  if (delta.update_cells.empty() && delta.remove_rows.empty() && delta.append.empty()) {
+    return;
+  }
+  const bool was_sorting = tw->isSortingEnabled();
+  tw->setSortingEnabled(false);
+
+  // A table seeded by a predefined .ui (never via applyTableRows) carries no
+  // plugin-row tags; stamp the identity mapping first so the machinery below
+  // can rely on tags existing (renumbering reads them directly).
+  for (int r = 0; r < tw->rowCount(); ++r) {
+    for (int c = 0; c < tw->columnCount(); ++c) {
+      if (QTableWidgetItem* item = tw->item(r, c); item != nullptr && !item->data(kPluginRowRole).isValid()) {
+        item->setData(kPluginRowRole, r);
+      }
+    }
+  }
+
+  const std::vector<int> view_to_plugin = viewToPluginRowMap(tw);
+  const std::vector<int> plugin_to_view = invertRowMap(view_to_plugin);
+  const auto model_row_of = [&plugin_to_view](int plugin_row) -> int {
+    return plugin_row >= 0 && static_cast<std::size_t>(plugin_row) < plugin_to_view.size()
+               ? plugin_to_view[static_cast<std::size_t>(plugin_row)]
+               : -1;
+  };
+
+  for (const auto& cell : delta.update_cells) {
+    const int row = model_row_of(cell.row);
+    if (row < 0 || cell.col >= tw->columnCount()) {
+      continue;
+    }
+    const QString text = QString::fromStdString(cell.text);
+    if (QTableWidgetItem* item = tw->item(row, cell.col)) {
+      item->setText(text);
+    } else {
+      auto* created = new QTableWidgetItem(text);
+      created->setData(kPluginRowRole, cell.row);
+      tw->setItem(row, cell.col, created);
+    }
+  }
+
+  // Translate every plugin index up front — removing re-indexes the model —
+  // then delete in descending model order.
+  std::vector<int> doomed_model_rows;
+  doomed_model_rows.reserve(delta.remove_rows.size());
+  for (int plugin_row : delta.remove_rows) {
+    if (const int row = model_row_of(plugin_row); row >= 0) {
+      doomed_model_rows.push_back(row);
+    }
+  }
+  std::sort(doomed_model_rows.begin(), doomed_model_rows.end(), std::greater<>());
+  for (int row : doomed_model_rows) {
+    tw->removeRow(row);
+  }
+
+  // Close the gaps in the plugin space: each surviving index drops by the
+  // number of removed indexes below it. remove_rows arrives descending, so an
+  // ascending copy turns that count into one binary search per row (all cells
+  // of a row share the same plugin index).
+  if (!delta.remove_rows.empty()) {
+    const std::vector<int> removed_asc(delta.remove_rows.rbegin(), delta.remove_rows.rend());
+    for (int r = 0; r < tw->rowCount(); ++r) {
+      int new_plugin = -1;
+      for (int c = 0; c < tw->columnCount(); ++c) {
+        if (QTableWidgetItem* item = tw->item(r, c)) {
+          if (new_plugin < 0) {
+            const int old_plugin = item->data(kPluginRowRole).toInt();
+            const auto shift =
+                std::lower_bound(removed_asc.begin(), removed_asc.end(), old_plugin) - removed_asc.begin();
+            new_plugin = old_plugin - static_cast<int>(shift);
+          }
+          item->setData(kPluginRowRole, new_plugin);
+        }
+      }
+    }
+  }
+
+  // Appends take the next plugin indexes; roles are contiguous 0..rowCount-1
+  // after the renumbering above, so rowCount is the next free index.
+  int next_plugin_row = tw->rowCount();
+  for (const auto& row_cells : delta.append) {
+    const int row = tw->rowCount();
+    tw->insertRow(row);
+    // Create an item for EVERY column (empty text for missing cells): a row
+    // without items has no plugin-row tag, and a later re-sort would desync
+    // the row-identity mapping.
+    for (int c = 0; c < tw->columnCount(); ++c) {
+      const bool has_cell = static_cast<std::size_t>(c) < row_cells.size();
+      auto* item =
+          new QTableWidgetItem(has_cell ? QString::fromStdString(row_cells[static_cast<std::size_t>(c)]) : QString());
+      item->setData(kPluginRowRole, next_plugin_row);
+      tw->setItem(row, c, item);
+    }
+    ++next_plugin_row;
+  }
+
+  tw->setSortingEnabled(was_sorting);
+}
+
 static void applyToWidget(
     QWidget* w, std::string_view name, const PJ::WidgetDataView& view, PJ::AppSession* session = nullptr,
     PJ::CatalogModel* catalog = nullptr) {
@@ -840,9 +945,27 @@ static void applyToWidget(
     // The radio column is read up front: recordPluginKeyColumn needs to know
     // which column carries radio widgets (no item text) to pick the key column.
     const std::optional<int> radio_col = view.tableRadioColumn(name);
+    bool rows_replaced = false;
     if (auto v = view.tableRows(name)) {
       applyTableRows(tw, *v);
       recordPluginKeyColumn(tw, radio_col.value_or(-1));
+      rows_replaced = true;
+    }
+    // Batch deltas, seq-gated per widget: apply only when the seq differs from
+    // the last one applied here; a delivery that also carried a full `rows`
+    // replace consumes the delta without applying it (rows wins). A malformed
+    // delta consumes nothing, so a corrected retransmission of the same seq
+    // still applies.
+    if (auto delta_seq = view.tableDeltaSeq(name)) {
+      const QVariant last_seq = tw->property("_pj_table_delta_seq");
+      if (!last_seq.isValid() || last_seq.toULongLong() != *delta_seq) {
+        if (rows_replaced) {
+          tw->setProperty("_pj_table_delta_seq", QVariant::fromValue<qulonglong>(*delta_seq));
+        } else if (auto delta = view.tableDelta(name)) {
+          tw->setProperty("_pj_table_delta_seq", QVariant::fromValue<qulonglong>(*delta_seq));
+          applyTableDelta(tw, *delta);
+        }
+      }
     }
     // Every index-keyed aspect below arrives in plugin row order; translate it
     // to the current (possibly user-sorted) view order. The maps reflect the

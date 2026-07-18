@@ -32,6 +32,7 @@
 #include <QSpinBox>
 #include <QTabBar>
 #include <QTabWidget>
+#include <QTableWidget>
 #include <QTest>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -932,3 +933,115 @@ TEST(WidgetBindingDateTime, MillisecondEditorEmitsFractionalSeconds) {
 }
 
 }  // namespace
+
+// --- Batch table deltas (SDK table_delta): seq-gated append/update/remove ---
+
+TEST(WidgetBindingTableDelta, AppliesUpdateRemoveAppendOncePerSeq) {
+  qapp();
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  PJ::WidgetData seed;
+  seed.setTableHeaders("tbl", {"a", "b"});
+  seed.setTableRows("tbl", {{"r0a", "r0b"}, {"r1a", "r1b"}, {"r2a", "r2b"}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(seed.toJson()));
+  ASSERT_EQ(tw->rowCount(), 3);
+
+  PJ::WidgetData wd;
+  wd.updateTableCells("tbl", 1, {{0, 1, "UPD"}});
+  wd.removeTableRows("tbl", 1, {1});
+  wd.appendTableRows("tbl", 1, {{"r3a", "r3b"}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
+
+  ASSERT_EQ(tw->rowCount(), 3);  // 3 - 1 + 1
+  EXPECT_EQ(tw->item(0, 1)->text(), u"UPD"_s);
+  EXPECT_EQ(tw->item(1, 0)->text(), u"r2a"_s);  // row 1 removed, r2 shifted up
+  EXPECT_EQ(tw->item(2, 0)->text(), u"r3a"_s);  // appended
+
+  // Re-delivering the same seq (full-state rebuild still carrying it): no-op.
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
+  EXPECT_EQ(tw->rowCount(), 3);
+  EXPECT_EQ(tw->item(0, 1)->text(), u"UPD"_s);
+
+  // A different seq applies again, and plugin row space stayed consistent:
+  // selecting plugin row 2 lands on the appended row.
+  PJ::WidgetData wd2;
+  wd2.appendTableRows("tbl", 2, {{"r4a", "r4b"}});
+  wd2.setSelectedRows("tbl", {2});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd2.toJson()));
+  ASSERT_EQ(tw->rowCount(), 4);
+  EXPECT_EQ(tw->item(3, 0)->text(), u"r4a"_s);
+  ASSERT_NE(tw->item(2, 0), nullptr);
+  EXPECT_TRUE(tw->item(2, 0)->isSelected());
+}
+
+TEST(WidgetBindingTableDelta, RowsInSameRefreshWinsAndConsumesSeq) {
+  qapp();
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  PJ::WidgetData seed;
+  seed.setTableHeaders("tbl", {"a", "b"});
+  seed.setTableRows("tbl", {{"r0a", "r0b"}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(seed.toJson()));
+
+  PJ::WidgetData wd;
+  wd.setTableRows("tbl", {{"x", "y"}});
+  wd.appendTableRows("tbl", 5, {{"z", "w"}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
+  EXPECT_EQ(tw->rowCount(), 1);  // full replace won; delta consumed
+
+  // The consumed seq must not fire later without rows.
+  PJ::WidgetData wd2;
+  wd2.appendTableRows("tbl", 5, {{"z", "w"}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd2.toJson()));
+  EXPECT_EQ(tw->rowCount(), 1);
+}
+
+TEST(WidgetBindingTableDelta, EmptyAppendedRowStillCreatesTaggedItems) {
+  qapp();
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  PJ::WidgetData seed;
+  seed.setTableHeaders("tbl", {"a", "b"});
+  seed.setTableRows("tbl", {{"r0a", "r0b"}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(seed.toJson()));
+
+  PJ::WidgetData wd;
+  wd.appendTableRows("tbl", 1, {{}, {"r2a", "r2b"}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
+
+  ASSERT_EQ(tw->rowCount(), 3);
+  // The empty row must still carry items (empty text) so the plugin-row tag
+  // exists and sorting cannot desync the row-identity mapping.
+  ASSERT_NE(tw->item(1, 0), nullptr);
+  EXPECT_TRUE(tw->item(1, 0)->text().isEmpty());
+  EXPECT_EQ(tw->item(2, 0)->text(), u"r2a"_s);
+}
+
+TEST(WidgetBindingTableDelta, MalformedDeltaDoesNotConsumeSeq) {
+  qapp();
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  PJ::WidgetData seed;
+  seed.setTableHeaders("tbl", {"a", "b"});
+  seed.setTableRows("tbl", {{"r0a", "r0b"}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(seed.toJson()));
+
+  // Malformed op (negative index) with a fresh seq: rejected whole, and the
+  // seq must NOT be recorded as consumed.
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(R"({"tbl": {"table_delta": {"seq": 9, "remove_rows": [-1]}}})"));
+  EXPECT_EQ(tw->rowCount(), 1);
+
+  // A corrected retransmission with the SAME seq must apply.
+  PJ::WidgetData retry;
+  retry.appendTableRows("tbl", 9, {{"r1a", "r1b"}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(retry.toJson()));
+  EXPECT_EQ(tw->rowCount(), 2);
+}
