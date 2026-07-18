@@ -1,28 +1,25 @@
-name: Release AppImage (embedded plugins)
+name: Release AppImage
 
-# Builds the release-quality PlotJuggler 4 AppImage — the app + curated plugins
-# EMBEDDED BY COMPILATION (not downloaded from the registry). The Linux sibling
-# of windows-release.yml (which does the Windows installer).
+# Builds the release-quality PlotJuggler 4 AppImage — the app compiled here,
+# plus the curated plugin set DOWNLOADED from pj-plugin-registry: the same
+# published, checksum-verified marketplace artifacts the Windows installer
+# bundles. The Linux sibling of windows-release.yml.
 #
 # Architecture (2026-07 redesign, docs/plans/2026-07-16-appimage-ci-redesign.md):
-#   * ros2-bundle job: host runner (needs the Docker daemon) builds the ROS 2
-#     multi-distro bundle via data_stream_ros2/docker/run-local.sh --bundle.
 #   * appimage job: runs INSIDE ghcr.io/plotjuggler/pj4-appimage-builder
 #     (Ubuntu 22.04 / glibc 2.35 — hosted 22.04 runners retire 2027-04,
 #     actions/runner-images#14254, so the floor lives in the container, not the
 #     runner label). Third-party Conan binaries restore from the actions/cache
 #     closure (seeded by linux-ci), with ConanCenter source builds as fallback;
-#     Qt / ccache use actions/cache too. This replaces the former fat-Docker flow (image-baked Qt +
-#     Conan closure persisted as multi-GB tarballs inside the 10 GB per-repo
-#     Actions cache quota, where they evicted linux-ci's caches).
+#     Qt / ccache use actions/cache too.
+#   * Plugins (including the multi-distro ros2-topic-subscriber bundle) are
+#     resolved by appimage/build_appimage.sh --plugins-registry: every curated
+#     id (BUNDLE_IDS) must resolve, download, and pass its checksum or the
+#     release fails — nothing is compiled locally or skipped best-effort.
 #
 # Triggers:
 #   - workflow_dispatch  -> build from any branch (artifact only, no Release upload)
 #   - push of a `v*` tag -> build + attach the AppImage to that tag's Release
-#
-# Complements the pre-existing release.yml, which builds a lighter registry-driven
-# AppImage. Kept as a separate file so a dispatched release build never races the
-# registry-download variant on the same trigger.
 
 on:
   workflow_dispatch:
@@ -39,100 +36,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  ros2-bundle:
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    steps:
-      - name: Use HTTPS for github.com submodules
-        run: git config --global url."https://github.com/".insteadOf "git@github.com:"
-
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          submodules: recursive
-
-      - name: Fetch pj-official-plugins into plotjuggler_sdk/pj_ported_plugins
-        # run-local.sh lives in pj-official-plugins, which is not a submodule of
-        # plotjuggler_sdk in this repo; clone the tip of main explicitly so the
-        # released AppImage embeds the latest curated plugin set.
-        shell: bash
-        run: |
-          set -euo pipefail
-          target="plotjuggler_sdk/pj_ported_plugins"
-          if [[ -d "$target/.git" || -f "$target/build.sh" ]]; then
-            echo "$target already populated — skipping clone."
-            exit 0
-          fi
-          rm -rf "$target"
-          git clone --depth 1 --recurse-submodules --shallow-submodules \
-            https://github.com/PlotJuggler/pj-official-plugins.git "$target"
-
-      - name: Compute ros2 bundle cache key
-        # The bundle is a pure function of the plugins repo tip (the ros2
-        # sources + run-local.sh) and the SDK submodule (conan-exported as
-        # /core into every distro container).
-        id: ros2key
-        shell: bash
-        run: |
-          set -euo pipefail
-          plugins_sha="$(git -C plotjuggler_sdk/pj_ported_plugins rev-parse HEAD)"
-          sdk_sha="$(git -C plotjuggler_sdk rev-parse HEAD)"
-          echo "key=ros2-bundle-v1-${plugins_sha}-${sdk_sha}" >> "$GITHUB_OUTPUT"
-
-      - name: Restore ros2 bundle cache
-        id: ros2cache
-        uses: actions/cache/restore@v5
-        with:
-          path: plotjuggler_sdk/pj_ported_plugins/dist_ros2
-          key: ${{ steps.ros2key.outputs.key }}
-
-      - name: Free up disk space on the runner
-        # This job runs on a GitHub-hosted runner (~14 GB free), and a bundle
-        # rebuild pulls one Docker image per supported ROS 2 distro — more than
-        # the default free space holds. Reclaim the preinstalled toolchains.
-        if: steps.ros2cache.outputs.cache-hit != 'true'
-        shell: bash
-        run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
-            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/lib/node_modules
-          sudo docker image prune --all --force >/dev/null 2>&1 || true
-          df -h /
-
-      - name: Build ros2 proxy + all distros
-        if: steps.ros2cache.outputs.cache-hit != 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          # --core must be ABSOLUTE: run-local.sh bind-mounts it as /core, and
-          # docker treats a relative -v source as a named volume (empty dir).
-          plotjuggler_sdk/pj_ported_plugins/data_stream_ros2/docker/run-local.sh \
-            --bundle --core "${PWD}/plotjuggler_sdk"
-
-      - name: Save ros2 bundle cache
-        # Not on tag refs: nothing can restore another tag's caches, so those
-        # saves are write-only quota waste (dispatch runs on main keep the
-        # main-scoped entry warm, which tag runs CAN restore).
-        if: github.ref_type != 'tag' && steps.ros2cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
-        with:
-          path: plotjuggler_sdk/pj_ported_plugins/dist_ros2
-          key: ${{ steps.ros2key.outputs.key }}
-
-      - name: Upload ros2 bundle
-        uses: actions/upload-artifact@v4
-        with:
-          name: ros2-bundle
-          # run-local.sh writes the bundle tree to the PLUGINS-REPO root
-          # (pj_ported_plugins/dist_ros2) — NOT under data_stream_ros2/, which
-          # is where build_release_appimage.sh reads it. The appimage job's
-          # download step bridges that drift by placing the artifact at the
-          # reader's path.
-          path: plotjuggler_sdk/pj_ported_plugins/dist_ros2
-          if-no-files-found: error
-
   appimage:
     runs-on: depot-ubuntu-22.04-4
-    needs: ros2-bundle
     timeout-minutes: 240
     container:
       # Digest-pinned by appimage-builder-image.yml (it updates the repo
@@ -144,9 +49,9 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
       # Bind-mount the host's fat preinstalled-toolchain dirs so the first step
       # can empty them: a container job cannot run the usual host-side
-      # `sudo rm -rf`, and the RelWithDebInfo app + plugins build needs the
-      # space (linux-ci hit "ld: No space left on device" without the
-      # equivalent cleanup).
+      # `sudo rm -rf`, and the RelWithDebInfo app build needs the space
+      # (linux-ci hit "ld: No space left on device" without the equivalent
+      # cleanup).
       options: >-
         -v /usr/local:/host/usr/local
         -v /usr/share/dotnet:/host/dotnet
@@ -169,20 +74,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           submodules: recursive
-
-      - name: Fetch pj-official-plugins into plotjuggler_sdk/pj_ported_plugins
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config --global --add safe.directory '*'
-          target="plotjuggler_sdk/pj_ported_plugins"
-          if [[ -d "$target/.git" || -f "$target/build.sh" ]]; then
-            echo "$target already populated — skipping clone."
-            exit 0
-          fi
-          rm -rf "$target"
-          git clone --depth 1 --recurse-submodules --shallow-submodules \
-            https://github.com/PlotJuggler/pj-official-plugins.git "$target"
 
       - name: Read versions.env
         shell: bash
@@ -221,15 +112,13 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ~/.conan2
-          # SDK_VERSION comes from the pj-official-plugins clone above (it is
-          # not a PJ4 file), which is why the clone precedes this restore.
-          key: conan-appimage-v1-${{ hashFiles('conanfile.txt', 'plotjuggler_sdk/pj_ported_plugins/SDK_VERSION') }}
+          key: conan-appimage-v2-${{ hashFiles('conanfile.txt', 'conan.lock') }}
           # Prefix fallbacks: an older appimage closure first, else seed from
           # linux-ci's saved closure — same ubuntu-22.04 / gcc-11 /
           # RelWithDebInfo / cppstd=20 profile, so its packages are directly
           # reusable here (ConanCenter source builds cover any residual miss).
           restore-keys: |
-            conan-appimage-v1-
+            conan-appimage-
             conan-linux-gcc-relwithdebinfo-v2-
 
       - name: Restore ccache
@@ -288,8 +177,8 @@ jobs:
       - name: Conan install (app graph)
         # Resolve/build the app dependency graph up front so it can be
         # published immediately — a later compile failure must not discard an
-        # otherwise reusable closure. build_release_appimage.sh's inner
-        # ./build.sh re-resolves the same graph, which is then a fast no-op.
+        # otherwise reusable closure. The ./build.sh below re-resolves the
+        # same graph, which is then a fast no-op.
         id: conan_install
         shell: bash
         run: |
@@ -298,12 +187,6 @@ jobs:
           conan install . --output-folder=build --build=missing -r=conancenter \
             --lockfile=conan.lock --lockfile-partial \
             -s build_type=RelWithDebInfo -s compiler.cppstd=20
-
-      - name: Download ros2 bundle
-        uses: actions/download-artifact@v4
-        with:
-          name: ros2-bundle
-          path: plotjuggler_sdk/pj_ported_plugins/data_stream_ros2/dist_ros2
 
       - name: Link pinned linuxdeploy/appimagetool into appimage/
         # build_appimage.sh uses a pre-existing appimage/<tool>.AppImage instead
@@ -316,10 +199,10 @@ jobs:
                     "appimage/${tool}-${PJ_APPIMAGE_ARCH}.AppImage"
           done
 
-      - name: Build app + plugins and package the AppImage
-        # --host-build: "host" here IS the jammy container (glibc 2.35 floor).
-        # --skip-ros2: the bundle was downloaded above into the exact path the
-        # script checks (data_stream_ros2/dist_ros2).
+      - name: Build app and package the AppImage (registry plugins)
+        # The app compiles in the jammy container (glibc 2.35 floor); the
+        # curated plugin set is downloaded from pj-plugin-registry and
+        # checksum-verified by build_appimage.sh --plugins-registry.
         # Tests and demos never ship and no release flow runs ctest; skipping
         # them drops ~271 uncacheable test links and ~17 GB of build tree.
         env:
@@ -328,7 +211,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bash appimage/build_release_appimage.sh --host-build --skip-ros2
+          ./build.sh
+          bash appimage/build_appimage.sh --plugins-registry
           appimage_path="$(ls -1 appimage/PlotJuggler-*.AppImage | head -n 1)"
           if [[ -z "$appimage_path" ]]; then
             echo "::error::AppImage not produced under appimage/" >&2
@@ -349,7 +233,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ~/.conan2
-          key: conan-appimage-v1-${{ hashFiles('conanfile.txt', 'plotjuggler_sdk/pj_ported_plugins/SDK_VERSION') }}
+          key: conan-appimage-v2-${{ hashFiles('conanfile.txt', 'conan.lock') }}
 
       - name: Save ccache
         # always(): keep the objects even when a late step fails. Skipped only

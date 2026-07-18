@@ -37,23 +37,27 @@ There are two ways to bundle them (and a no-plugin default):
 - **`--plugins-registry [url]`** — download the curated set (`BUNDLE_IDS` in
   `build_appimage.sh`) from the plugin registry, verify each `sha256` checksum,
   and unpack into `usr/lib/plotjuggler/plugins/<id>/`. Defaults to the registry's
-  `main`; pass a URL to pin a specific ref. This is what CI uses.
+  `development` branch (its default branch — the same ref the Windows installer
+  uses); pass a URL to pin a specific ref. This is what the release CI uses.
 - **(no flag)** — app-only AppImage. Users add plugins later via the in-app
   marketplace or `--plugin-dir`.
 
 ### Curated set (`--plugins-registry`)
 
 The registry lists every official extension; the AppImage bundles this subset
-(`BUNDLE_IDS`):
+(`BUNDLE_IDS` — same set as the Windows installer's `$PluginIds`, plus the
+Linux-only `ros2-topic-subscriber`):
 
-`csv-loader`, `mcap-loader`, `parquet-loader`, `dummy-streamer`,
-`foxglove-bridge`, `plotjuggler-bridge`, `ros-parser`, `protobuf-parser`,
-`json-parser`, `toolbox-quaternion`.
+`csv-loader`, `mcap-loader`, `parquet-loader`, `ulog-loader`, `mp4-loader`,
+`pointcloud-3d-loader`, `dummy-streamer`, `foxglove-bridge`,
+`plotjuggler-bridge`, `webrtc-client`, `ros-parser`, `protobuf-parser`,
+`json-parser`, `data-tamer-parser`, `toolbox-quaternion`,
+`toolbox-transform-editor`, `toolbox-mosaico`, `ros2-topic-subscriber`.
 
-Not bundled: `ros2-stream`, `toolbox-mosaico`, `toolbox-transform-editor` (not
-published to the registry — ROS 2 streaming needs a host ROS install, so it is
-installed by the user, not baked in); `toolbox-colormap`,
-`toolbox-reactive-scripts-editor` (excluded by request).
+Not bundled: `toolbox-colormap`, `toolbox-reactive-scripts-editor` (excluded by
+request); `toolbox-fft`, `mqtt-subscriber`, `udp-server`, `zmq-subscriber`,
+`lerobot-loader` (published, but not curated — installable via the in-app
+marketplace).
 
 ### Where plugins live, and why
 
@@ -92,44 +96,29 @@ the GUI is forwarded to the host display via `xhost`.
 
 ## CI
 
-`.github/workflows/release.yml` builds the AppImage with `--plugins-registry` and,
-on a `v*` tag, attaches it to the GitHub Release (`workflow_dispatch` builds an
-artifact only). It reuses the Qt/Conan/ccache caching from `linux-ci.yml`.
+`.github/workflows/linux-appimage-release.yml` (the release build) compiles the
+app inside the `pj4-appimage-builder` container (glibc 2.35 floor), bundles the
+curated plugin set with `--plugins-registry`, audits the result's glibc needs,
+and — on a `v*` tag — attaches the AppImage to the GitHub Release
+(`workflow_dispatch` builds an artifact only).
 
-## Follow-up: multi-distro ROS 2
+## Multi-distro ROS 2
 
-The goal is for a **single AppImage to support multiple ROS 2 distros**
-(humble / iron / jazzy / rolling). `pj-official-plugins` already builds this as
-one `linux-x86_64` zip: a distro-agnostic **proxy** (`libros2_stream_plugin.so`,
-links no ROS) plus per-distro inner libraries under `dist/<distro>/`. At runtime
-the proxy detects the user's distro (`$ROS_DISTRO` → `/opt/ros/<distro>` →
+A **single AppImage supports multiple ROS 2 distros** (humble / iron / jazzy /
+rolling) through the `ros2-topic-subscriber` extension. `pj-official-plugins`
+builds it as one `linux-x86_64` zip: a distro-agnostic **proxy** (links no ROS,
+self-describing so plugin discovery works on machines with no ROS installed)
+plus per-distro inner libraries under `dist/<distro>/`. At runtime the proxy
+detects the user's distro (`$ROS_DISTRO` → `/opt/ros/<distro>` →
 `$CONDA_PREFIX/share/<distro>`) and `dlopen`s the matching inner, which binds to
 the user's **sourced system ROS** (the inners are intentionally *not*
 self-contained — they must speak to the live ROS graph).
 
-The AppImage needs **no special handling** for this: registry-mode already
-unpacks any zip into `usr/lib/plotjuggler/plugins/<id>/` verbatim, preserving the
-`dist/<distro>/` layout the proxy resolves relative to itself. The blockers are
-in other repos.
-
-**To enable it (other repos, not this one):**
-
-0. **`pj-official-plugins` — proxy must be self-describing for discovery**
-   ([PR #169](https://github.com/PlotJuggler/pj-official-plugins/pull/169)). The
-   proxy now returns a *static* vtable carrying its embedded manifest, so the
-   host plugin scanner can discover and catalog the extension on a machine with
-   **no ROS installed** (the per-distro inner is `dlopen`-ed lazily, only when a
-   source is instantiated). Without this, installing/bundling the plugin on a
-   non-ROS machine fails discovery ("not a valid plugin"). Prerequisite for
-   marketplace/registry/AppImage distribution.
-1. **`pj-official-plugins`** — in `ci-ros2.yml`, attach `ros2_subscriber-linux-x86_64.zip`
-   to a GitHub Release on tag (as `build-release.yml` does for the other
-   extensions), so it has a stable `releases/download/...` URL.
-2. **`pj-plugin-registry`** — add a `ros2-stream` extension entry whose
-   `platforms.linux-x86_64.url` + `checksum` point at that release asset.
-
-Then, here: uncomment `ros2-stream` in `BUNDLE_IDS` (see `build_appimage.sh`).
-No other change — the proxy+inners flow through registry-mode unchanged.
+The AppImage needs no special handling for this: registry-mode unpacks the zip
+into `usr/lib/plotjuggler/plugins/<id>/` verbatim, preserving the
+`dist/<distro>/` layout the proxy resolves relative to itself. The release CI's
+glibc audit exempts the per-distro inners (they are built in each distro's own
+container and only ever `dlopen`-ed on machines running that distro).
 
 ## How it differs from PlotJuggler 3
 

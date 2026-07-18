@@ -15,15 +15,15 @@
 #                          orchestrator then extracts the produced AppImage,
 #                          drops non-MUST .so from the plugins dir, and repacks
 #                          so the released AppImage carries exactly the curated
-#                          13 (matching --host-build).
+#                          17 (matching --host-build).
 #                          With --host-build: ./build.sh + pj_ported_plugins/
-#                          build.sh on the host, curated 13-plugin filter, then
+#                          build.sh on the host, curated 17-plugin filter, then
 #                          appimage/build_appimage.sh --plugins-dir.
 #
 # DEFAULT = docker (portable). The AppImage inherits the container's glibc 2.35
 # floor and runs on any distro with glibc >= 2.35 (Ubuntu 22.04 and newer, and
 # equivalents on other families). Ros2 is ALWAYS Docker-per-distro either way.
-# Both modes produce the same curated 13-plugin bundle.
+# Both modes produce the same curated 17-plugin bundle.
 #
 # --host-build (opt-in) = host build (fast, this machine). The resulting AppImage
 # inherits the HOST glibc floor (e.g. Ubuntu 24.04 => glibc 2.38), so it only
@@ -36,7 +36,7 @@
 #                             [--ros2-distros "humble iron jazzy rolling"]
 #
 #   --host-build                            opt into the legacy host-build flow
-#                                           (curated 13 plugins, non-portable).
+#                                           (curated 17 plugins, non-portable).
 #   --fresh                                 (docker mode only) drop the
 #                                           persistent Conan + ccache Docker
 #                                           volumes so app+plugins compile from
@@ -115,22 +115,28 @@ fi
 # an unpublished aggregate root with no `name` and would fail `conan export`.
 SDK_LOCAL="${PJ4_ROOT}/plotjuggler_sdk"
 
-# The release MUST-set, by built .so basename. Anything the aggregate build
-# produces that is NOT in this list (ulog, mqtt, zmq, data_tamer, colormap,
-# reactive_script, ...) is deliberately left out of the released bundle in
-# BOTH modes (docker mode filters the packaged AppImage post-build; host mode
-# stages only these files before invoking build_appimage.sh).
+# The release MUST-set, by built .so basename. Keep in lockstep with
+# BUNDLE_IDS in appimage/build_appimage.sh (the registry-mode equivalent).
+# Anything the aggregate build produces that is NOT in this list (mqtt, zmq,
+# udp, lerobot, fft, colormap, reactive_script, ...) is deliberately left out
+# of the released bundle in BOTH modes (docker mode filters the packaged
+# AppImage post-build; host mode stages only these files before invoking
+# build_appimage.sh).
 RELEASE_FLAT_SOS=(
   libcsv_source_plugin.so
   libmcap_source_plugin.so
   libparquet_source_plugin.so
   libulog_source_plugin.so
+  libmp4_source_plugin.so
+  libdata_load_3d_plugin.so
   libdummy_stream_plugin.so
   libfoxglove_source_plugin.so
   libpj_bridge_source_plugin.so
+  libwebrtc_source_plugin.so
   libparser_ros_plugin.so
   libparser_protobuf_plugin.so
   libparser_json_plugin.so
+  libparser_data_tamer_plugin.so
   libtoolbox_quaternion_plugin.so
   libtoolbox_transform_editor_plugin.so
 )

@@ -90,8 +90,9 @@ param(
   [string]$PluginRegistryUrl = "https://raw.githubusercontent.com/PlotJuggler/pj-plugin-registry/refs/heads/development/registry.json",
   [string[]]$PluginIds = @(
     "mcap-loader", "csv-loader", "parquet-loader", "ulog-loader",
-    "dummy-streamer", "foxglove-bridge", "plotjuggler-bridge",
-    "ros-parser", "protobuf-parser", "json-parser",
+    "mp4-loader", "pointcloud-3d-loader",
+    "dummy-streamer", "foxglove-bridge", "plotjuggler-bridge", "webrtc-client",
+    "ros-parser", "protobuf-parser", "json-parser", "data-tamer-parser",
     "toolbox-quaternion", "toolbox-transform-editor", "toolbox-mosaico"
   ),
   [string]$PluginPlatform = "windows-x86_64",

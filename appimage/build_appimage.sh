@@ -52,33 +52,40 @@ VERSION="${PJ_VERSION:-${PJ_APP_VERSION}}"
 # the seed's plugin scan must never try to dlopen those as PlotJuggler plugins.
 PJ_PLUGINS_REL="usr/lib/plotjuggler/plugins"
 
-# The plugin registry to resolve --plugins-registry against. Tracks main (latest
-# published plugin versions); override with the optional --plugins-registry <url>
-# argument to pin a specific ref.
-REGISTRY_URL="https://raw.githubusercontent.com/PlotJuggler/pj-plugin-registry/main/registry.json"
+# The plugin registry to resolve --plugins-registry against. `development` is
+# the registry repo's default (and only long-lived) branch — the same ref the
+# Windows installer resolves against; override with the optional
+# --plugins-registry <url> argument to pin a specific ref.
+REGISTRY_URL="https://raw.githubusercontent.com/PlotJuggler/pj-plugin-registry/refs/heads/development/registry.json"
 
 # Curated set of registry extension ids bundled by --plugins-registry. The
 # registry lists every official extension; this is the subset that ships in the
-# AppImage. Excluded by request: toolbox-colormap, toolbox-reactive-scripts-editor.
-# Not yet bundle-able (absent from the registry): toolbox-mosaico,
-# toolbox-transform-editor.
+# AppImage. Keep in lockstep with $PluginIds in
+# installer/build_windows_installer.ps1 (same set, plus the Linux-only
+# ros2-topic-subscriber). Excluded by request: toolbox-colormap,
+# toolbox-reactive-scripts-editor.
 BUNDLE_IDS=(
   csv-loader
   mcap-loader
   parquet-loader
+  ulog-loader
+  mp4-loader
+  pointcloud-3d-loader
   dummy-streamer
   foxglove-bridge
   plotjuggler-bridge
+  webrtc-client
   ros-parser
   protobuf-parser
   json-parser
+  data-tamer-parser
   toolbox-quaternion
-  # ros2-stream  # <-- multi-distro ROS 2 subscriber. Uncomment once it is
-  #                 published to a release + indexed in pj-plugin-registry (see
-  #                 "Follow-up: multi-distro ROS 2" in README.md). The single
-  #                 linux-x86_64 zip carries the distro-agnostic proxy + per-distro
-  #                 inners under dist/<distro>/; registry-mode unpacks it verbatim,
-  #                 so no special handling is needed here once the entry exists.
+  toolbox-transform-editor
+  toolbox-mosaico
+  # Multi-distro ROS 2 subscriber: the single linux-x86_64 zip carries the
+  # distro-agnostic proxy + per-distro inners under dist/<distro>/;
+  # registry-mode unpacks it verbatim, no special handling needed.
+  ros2-topic-subscriber
 )
 
 PLUGINS_MODE="none"        # none | local | registry
@@ -196,8 +203,19 @@ PY
 
     dest="${APPDIR}/${PJ_PLUGINS_REL}/${id}"
     mkdir -p "${dest}"
-    unzip -oq "${zip}" -d "${dest}"
-    rm -f "${zip}"
+    unpack="$(mktemp -d)"
+    unzip -oq "${zip}" -d "${unpack}"
+    # Official archives carry one top-level <id>/ directory. Normalize it away
+    # (same as the Windows installer) so the bundled layout is always
+    # plugins/<id>/{manifest.json,...} — the layout the release CI's glibc
+    # audit expects when it exempts ros2-topic-subscriber/dist/<distro>/.
+    payload="${unpack}"
+    entries=( "${unpack}"/* )
+    if [[ ${#entries[@]} -eq 1 && -d "${entries[0]}" ]]; then
+      payload="${entries[0]}"
+    fi
+    cp -a "${payload}/." "${dest}/"
+    rm -rf "${unpack}" "${zip}"
   done
   rm -f "${registry_json}"
   echo "Plugins: bundled ${#BUNDLE_IDS[@]} extension(s) from the registry for ${PLATFORM}"

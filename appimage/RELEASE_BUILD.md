@@ -1,25 +1,25 @@
-# Release AppImage — all plugins embedded (compiled)
+# Release AppImage — embedded (compiled) plugin flavor
 
-`build_appimage.sh --plugins-registry` (the CI default, see [`README.md`](./README.md))
-bundles only the plugins that are published to `pj-plugin-registry`. Three release
-plugins are **not** in that set and so are absent from a registry build:
+The **release CI** (`.github/workflows/linux-appimage-release.yml`, see
+[`README.md`](./README.md)) bundles the curated plugin set by **downloading the
+published marketplace zips** from `pj-plugin-registry`
+(`build_appimage.sh --plugins-registry`) — the same artifacts the Windows
+installer ships.
 
-- `ros2-stream` — ROS 2 topic subscriber (a distro-agnostic proxy + per-distro binaries)
-- `toolbox-mosaico`
-- `toolbox-transform-editor`
+This document covers the **local alternative**: compiling the same curated set
+from `pj-official-plugins` source and embedding it.
+[`build_release_appimage.sh`](./build_release_appimage.sh) orchestrates that
+full build. Use it when the registry is not an option — offline builds, testing
+unpublished plugin changes, or building against a not-yet-released SDK.
 
-To ship a release AppImage with the **complete** curated plugin set, those three are
-built **from source** and embedded alongside the registry-style ones.
-[`build_release_appimage.sh`](./build_release_appimage.sh) orchestrates that full build.
-
-## The full bundled set (13)
+## The full bundled set (17 + ROS 2)
 
 | Loaders | Parsers | Streams | Toolboxes |
 |---|---|---|---|
-| csv, mcap, parquet | ros, protobuf, json | dummy-streamer, foxglove-bridge, plotjuggler-bridge, **ros2-stream** | quaternion, **transform-editor**, **mosaico** |
+| csv, mcap, parquet, ulog, mp4, pointcloud-3d | ros, protobuf, json, data-tamer | dummy-streamer, foxglove-bridge, plotjuggler-bridge, webrtc-client, ros2-topic-subscriber | quaternion, transform-editor, mosaico |
 
-(In **bold**: the three that the registry build cannot supply and that this flow
-compiles. Excluded by request: `toolbox-colormap`, `toolbox-reactive-scripts-editor`.)
+(Excluded by request: `toolbox-colormap`, `toolbox-reactive-scripts-editor`.
+The set matches `BUNDLE_IDS` in `build_appimage.sh`; keep the two in lockstep.)
 
 ## Two build flows, tied together
 
@@ -32,9 +32,9 @@ compiles. Excluded by request: `toolbox-colormap`, `toolbox-reactive-scripts-edi
    --plugins-dir <sdk>/pj_ported_plugins`, which compiles both the app and the aggregate
    plugin set in the Ubuntu 22.04 builder image (glibc 2.35), picks up the ROS 2 bundle
    from step 1, and packages the AppImage. `build_release_appimage.sh` then extracts the
-   result, drops any `.so` outside the curated 13 (the aggregate build produces more),
-   and repacks — so the released AppImage is portable **and** carries exactly the 13.
-   With `--host-build` the same 13-plugin filter runs but the app + plugins are built on
+   result, drops any `.so` outside the curated 17 (the aggregate build produces more),
+   and repacks — so the released AppImage is portable **and** carries exactly the 17.
+   With `--host-build` the same 17-plugin filter runs but the app + plugins are built on
    the host (`./build.sh` and `pj_ported_plugins/build.sh`), producing a faster iteration
    but non-portable AppImage tied to the host's glibc.
 
@@ -48,12 +48,12 @@ appimage/build_release_appimage.sh --fresh               # (docker) wipe the Con
 
 ## Runtime requirement for ROS 2
 
-The `ros2-stream` proxy links **no** ROS libraries; it `dlopen`s the per-distro binary at
-load time, and that binary links `rclcpp` & friends. So the ROS 2 topic subscriber only
-appears (and works) when a supported ROS 2 distribution is installed and its environment
-is on the process — i.e. `source /opt/ros/<distro>/setup.bash` before launching
-PlotJuggler. With no ROS 2 present the plugin stays silent (this is expected, not an
-error); every other bundled plugin works regardless.
+The `ros2-topic-subscriber` proxy links **no** ROS libraries; it `dlopen`s the per-distro
+binary at load time, and that binary links `rclcpp` & friends. So the ROS 2 topic
+subscriber only appears (and works) when a supported ROS 2 distribution is installed and
+its environment is on the process — i.e. `source /opt/ros/<distro>/setup.bash` before
+launching PlotJuggler. With no ROS 2 present the plugin stays silent (this is expected,
+not an error); every other bundled plugin works regardless.
 
 ## glibc floor / portability
 
@@ -65,32 +65,11 @@ that PlotJuggler loads is built in Ubuntu 22.04, matching the app's glibc floor.
 `--host-build` to compile on the host instead — faster for local iteration, but the
 resulting AppImage inherits the host's glibc floor (e.g. Ubuntu 24.04 → glibc 2.38).
 
-## CI: how `linux-appimage-release.yml` builds this
-
-The release workflow (design: `docs/plans/2026-07-16-appimage-ci-redesign.md`) does
-**not** use the fat local builder. It splits the two flows into two jobs:
-
-1. **`ros2-bundle`** — a plain host runner (the ROS 2 build needs the Docker daemon:
-   one image per distro). Produces `dist_ros2/` and uploads it as an artifact.
-2. **`appimage`** — runs inside `ghcr.io/plotjuggler/pj4-appimage-builder`, the **thin**
-   `ci-base` target of [`Dockerfile.build`](./Dockerfile.build) (Ubuntu 22.04 toolchain +
-   pinned linuxdeploy/appimagetool, no Qt/Conan baked in). The container — not the runner
-   label — provides the glibc 2.35 floor, which matters because hosted `ubuntu-22.04`
-   runners are retired in April 2027 (actions/runner-images#14254). The job provisions
-   per-run: Qt via `actions/cache` + `install_qt6.sh`, third-party Conan binaries from
-   the `plotjuggler-conan` JFrog remote (published back on trusted runs) with an
-   `actions/cache`d `~/.conan2`, and ccache for our own objects. It then downloads the
-   ros2 artifact and runs `build_release_appimage.sh --host-build --skip-ros2` — inside
-   the container, "host" *is* jammy, so the result is portable. A final audit step
-   extracts the AppImage and fails if any bundled ELF requires `GLIBC_ > 2.35`.
-
-The thin image is published by `.github/workflows/appimage-builder-image.yml`
-(auto-rebuilds when `Dockerfile.build` changes on `main`; `workflow_dispatch` to force).
-
 ## Status
 
-`build_release_appimage.sh` is a convenience wrapper over the two flows above — each of
-which is the supported way to build its own piece, locally (Docker available: both the
-ROS 2 step and the default app+plugins step run in Docker) or in CI (see above). The
-registry path (`build_appimage.sh --plugins-registry`) remains the lighter option for an
-AppImage that omits the three compile-only plugins.
+`build_release_appimage.sh` is a convenience wrapper over the two flows above, kept for
+local/offline embedded builds. The release CI does not use it: it compiles only the app
+(inside `ghcr.io/plotjuggler/pj4-appimage-builder`, the thin `ci-base` target of
+[`Dockerfile.build`](./Dockerfile.build), published by
+`.github/workflows/appimage-builder-image.yml`) and takes every plugin from the
+registry.
