@@ -1609,6 +1609,66 @@ TEST(WidgetBindingTableDelta, MalformedDeltaDoesNotConsumeSeq) {
   EXPECT_EQ(tw->rowCount(), 2);
 }
 
+TEST(WidgetBindingTableDelta, UnresolvableOpRejectsWholeDeltaAndKeepsSeq) {
+  qapp();
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  PJ::WidgetData seed;
+  seed.setTableHeaders("tbl", {"a", "b"});
+  seed.setTableRows("tbl", std::vector<std::vector<std::string>>{{"r0a", "r0b"}, {"r1a", "r1b"}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(seed.toJson()));
+
+  // Decode-valid delta whose remove targets a row the table does not have:
+  // rejected whole — the valid update in the same delta must NOT land either.
+  PJ::WidgetData wd;
+  wd.updateTableCells("tbl", 7, {{0, 0, "UPD"}});
+  wd.removeTableRows("tbl", 7, {5});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
+  EXPECT_EQ(tw->rowCount(), 2);
+  EXPECT_EQ(tw->item(0, 0)->text(), u"r0a"_s);
+
+  // The rejected seq was not consumed: a corrected retransmission of the SAME
+  // seq must apply.
+  PJ::WidgetData retry;
+  retry.updateTableCells("tbl", 7, {{0, 0, "UPD"}});
+  retry.removeTableRows("tbl", 7, {1});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(retry.toJson()));
+  EXPECT_EQ(tw->rowCount(), 1);
+  EXPECT_EQ(tw->item(0, 0)->text(), u"UPD"_s);
+}
+
+TEST(WidgetBindingTableDelta, RowsResyncResetsSeqGate) {
+  qapp();
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  PJ::WidgetData seed;
+  seed.setTableHeaders("tbl", {"a", "b"});
+  seed.setTableRows("tbl", std::vector<std::vector<std::string>>{{"r0a", "r0b"}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(seed.toJson()));
+
+  PJ::WidgetData wd;
+  wd.appendTableRows("tbl", 1, std::vector<std::vector<std::string>>{{"r1a", "r1b"}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
+  ASSERT_EQ(tw->rowCount(), 2);
+
+  // Full-rows resync (producer restarted), then its first delta reuses an
+  // already-seen seq value: the resync must have reset the gate.
+  PJ::WidgetData resync;
+  resync.setTableRows("tbl", std::vector<std::vector<std::string>>{{"s0a", "s0b"}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(resync.toJson()));
+  ASSERT_EQ(tw->rowCount(), 1);
+
+  PJ::WidgetData restarted;
+  restarted.appendTableRows("tbl", 1, std::vector<std::vector<std::string>>{{"n1a", "n1b"}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(restarted.toJson()));
+  EXPECT_EQ(tw->rowCount(), 2);
+  EXPECT_EQ(tw->item(1, 0)->text(), u"n1a"_s);
+}
+
 // A row appended via the delta path into an already-typed column must carry
 // its own sort key, not become a plain (keyless) cell — the reported values
 // (65 first, 7 appended) deliberately disagree with text order ("65" < "7"

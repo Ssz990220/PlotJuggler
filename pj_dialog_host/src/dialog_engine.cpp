@@ -466,26 +466,9 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
     connectWidgetSignals(parser_dialog_widget, [&](const std::string& name, const std::string& event_json) {
       stats_.event_count++;
       if (parser_dialog_handle && parser_dialog_handle->sendEvent(name, event_json)) {
-        // Re-apply parser widget data (same byte-identical skip as applyAndDiff)
-        std::string raw = parser_dialog_handle->widget_data();
-        if (raw == parser_memo.raw) {
-          ++stats_.skipped_identical_count;
-        } else if (nlohmann::json new_data = nlohmann::json::parse(raw, nullptr, false); !new_data.is_discarded()) {
-          parser_memo.raw = raw;
-          new_data.erase("__request_accept");
-          new_data.erase("__request_sub_dialog");
-          if (config_.enable_diff) {
-            nlohmann::json diff = computeDiff(parser_memo.data, new_data);
-            if (!diff.empty()) {
-              PJ::WidgetDataView view(diff.dump());
-              applyWidgetData(parser_dialog_widget, view);
-            }
-          } else {
-            PJ::WidgetDataView view(raw);
-            applyWidgetData(parser_dialog_widget, view);
-          }
-          parser_memo.data = std::move(new_data);
-        }
+        // Parser dialogs have no accept/sub-dialog tail: the one-shot commands
+        // applyAndDiff extracts are deliberately ignored here.
+        (void)applyAndDiff(parser_dialog_widget, *parser_dialog_handle, parser_memo, config_, stats_);
       }
 
       // Handle file/folder pickers in parser dialog
@@ -637,9 +620,7 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
       // The tick path shares the same tail: the skip guard consumes a
       // payload's first delivery, so a command missed here would have no
       // identical-bytes retry via a later event to fall back on.
-      if (handle_apply_result(applyAndDiff(binding_root, handle_, memo, config_, stats_))) {
-        return;
-      }
+      handle_apply_result(applyAndDiff(binding_root, handle_, memo, config_, stats_));
     }
   });
   tick_timer.start();

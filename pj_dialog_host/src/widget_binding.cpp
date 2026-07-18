@@ -294,6 +294,39 @@ bool columnValuesComparable(const std::vector<std::optional<NumericValue>>& valu
 
 }  // namespace
 
+// Lazily suspends QTableWidget sorting for a batch of row/cell writes. Rows
+// arrive in the plugin's own order and are written by model-row index; with
+// sorting enabled QTableWidget physically re-sorts the model on every setItem/
+// setText, so a mid-loop re-sort remaps the indices and the remaining writes
+// land on the wrong rows (blank cells, name↔value pairs scrambled, duplicated
+// rows). Call beforeWrite() ahead of every mutating call: sorting is suspended
+// on the first one and restored once on destruction, so Qt applies a single
+// clean sort — and a call that ends up writing nothing never toggles sorting
+// and never pays a re-sort.
+class ScopedSortSuspender {
+ public:
+  explicit ScopedSortSuspender(QTableWidget* tw) : tw_(tw), was_sorting_(tw->isSortingEnabled()) {}
+  ~ScopedSortSuspender() {
+    if (suspended_) {
+      tw_->setSortingEnabled(true);
+    }
+  }
+  ScopedSortSuspender(const ScopedSortSuspender&) = delete;
+  ScopedSortSuspender& operator=(const ScopedSortSuspender&) = delete;
+
+  void beforeWrite() {
+    if (was_sorting_ && !suspended_) {
+      tw_->setSortingEnabled(false);
+      suspended_ = true;
+    }
+  }
+
+ private:
+  QTableWidget* tw_;
+  bool was_sorting_;
+  bool suspended_ = false;
+};
+
 // Push `rows` into the table with minimal churn. All table aspects
 // (rows/selection/visibility) share one widget-data key, so every selection
 // change and every streamed per-row detail update re-delivers the whole rows
@@ -302,29 +335,14 @@ bool columnValuesComparable(const std::vector<std::optional<NumericValue>>& valu
 // the existing QTableWidgetItems (so selection + scroll survive), avoids the
 // ResizeToContents re-measure a full rebuild triggers, and lets streamed detail
 // fill in cell-by-cell instead of snapping in all at once. Only a row/column
-// count change forces a full rebuild.
+// count change forces a full rebuild. Text-keyed selection restore
+// (selected_items) runs later, once the sort has settled, and still matches rows.
 // `column_values` holds the sparse per-column sort keys (column → one entry per
 // row); a column absent from it, or a nullopt entry, orders by cell text.
 static void applyTableRows(
     QTableWidget* tw, const std::vector<std::vector<std::string>>& rows,
     const std::map<int, std::vector<std::optional<NumericValue>>>& column_values) {
-  // Rows arrive in the plugin's own order and are written by model-row index. With
-  // sorting enabled QTableWidget physically re-sorts the model on every setItem/
-  // setText, so a mid-loop re-sort remaps the indices and the remaining writes land
-  // on the wrong rows (blank cells, name↔value pairs scrambled, duplicated rows).
-  // Suspend sorting before the first cell write and restore it once at the end, so
-  // Qt applies a single clean sort. Suspending lazily means a streaming re-delivery
-  // that changes no cell never toggles sorting and pays no re-sort — preserving the
-  // same-shape path's minimal-churn intent. Text-keyed selection restore
-  // (selected_items) runs later, once the sort has settled, and still matches rows.
-  const bool was_sorting = tw->isSortingEnabled();
-  bool suspended = false;
-  auto suspend_sorting = [&] {
-    if (was_sorting && !suspended) {
-      tw->setSortingEnabled(false);
-      suspended = true;
-    }
-  };
+  ScopedSortSuspender sort_guard(tw);
 
   // Resolve the usable sort-key columns once, up front: a column is keyed only if
   // it indexes a real column, states a value for every row, and is exactly ordered
@@ -372,7 +390,7 @@ static void applyTableRows(
         auto* typed =
             (item != nullptr && item->type() == TypedTableItem::kType) ? static_cast<TypedTableItem*>(item) : nullptr;
         if (item == nullptr) {
-          suspend_sorting();
+          sort_guard.beforeWrite();
           typed = new TypedTableItem(text);
           typed->setSortValue(std::move(value));
           tw->setItem(static_cast<int>(r), static_cast<int>(c), typed);
@@ -381,7 +399,7 @@ static void applyTableRows(
           // to stamp: TypedTableItem::operator< is only sound on a column whose
           // cells are all typed (see its comment), and a key-less typed cell orders
           // by text exactly as the plain one did.
-          suspend_sorting();
+          sort_guard.beforeWrite();
           typed = new TypedTableItem(text);
           *static_cast<QTableWidgetItem*>(typed) = *item;  // keep the roles/flags it already carried
           typed->setText(text);
@@ -390,7 +408,7 @@ static void applyTableRows(
         } else if (typed->text() != text || typed->sortValue() != value) {
           // A key that moved with unchanged text still re-orders the column, so it
           // has to go through the same suspend/restore as a text edit.
-          suspend_sorting();
+          sort_guard.beforeWrite();
           typed->setText(text);
           typed->setSortValue(std::move(value));
         }
@@ -398,7 +416,7 @@ static void applyTableRows(
       }
     }
   } else {
-    suspend_sorting();
+    sort_guard.beforeWrite();
     const bool updates = tw->updatesEnabled();
     tw->setUpdatesEnabled(false);
     tw->setRowCount(static_cast<int>(rows.size()));
@@ -427,10 +445,6 @@ static void applyTableRows(
       }
     }
     tw->setUpdatesEnabled(updates);
-  }
-
-  if (suspended) {
-    tw->setSortingEnabled(true);
   }
 }
 
@@ -787,40 +801,66 @@ static void upsertDeltaCell(
 // rows through kPluginRowRole; sorting is suspended so mid-loop re-sorts
 // cannot remap indexes, and the roles are renumbered afterwards (removals
 // shift the plugin space down; appends take the next indexes).
-static void applyTableDelta(QTableWidget* tw, const PJ::WidgetDataView::TableDeltaView& delta) {
+// Returns false — applying nothing — when any update/remove op fails to
+// resolve against the current table: the protocol's whole-delta rejection, so
+// the caller leaves the seq unconsumed and a corrected retransmission of the
+// same seq still applies.
+static bool applyTableDelta(QTableWidget* tw, const PJ::WidgetDataView::TableDeltaView& delta) {
   if (delta.update_cells.empty() && delta.remove_rows.empty() && delta.append.empty()) {
-    return;
+    return true;
   }
-  const bool was_sorting = tw->isSortingEnabled();
-  tw->setSortingEnabled(false);
+  ScopedSortSuspender sort_guard(tw);
 
   // A table seeded by a predefined .ui (never via applyTableRows) carries no
   // plugin-row tags; stamp the identity mapping first so the machinery below
-  // can rely on tags existing (renumbering reads them directly).
-  for (int r = 0; r < tw->rowCount(); ++r) {
-    for (int c = 0; c < tw->columnCount(); ++c) {
-      if (QTableWidgetItem* item = tw->item(r, c); item != nullptr && !item->data(kPluginRowRole).isValid()) {
-        item->setData(kPluginRowRole, r);
+  // can rely on tags existing (renumbering reads them directly). Every item
+  // created after this pass is born tagged, so one pass suffices — the
+  // property keeps the O(rows×cols) rescan off the per-tick delta path.
+  if (!tw->property("_pj_row_tags_seeded").toBool()) {
+    for (int r = 0; r < tw->rowCount(); ++r) {
+      for (int c = 0; c < tw->columnCount(); ++c) {
+        if (QTableWidgetItem* item = tw->item(r, c); item != nullptr && !item->data(kPluginRowRole).isValid()) {
+          sort_guard.beforeWrite();
+          item->setData(kPluginRowRole, r);
+        }
       }
     }
+    tw->setProperty("_pj_row_tags_seeded", true);
   }
 
-  const std::vector<int> view_to_plugin = viewToPluginRowMap(tw);
-  const std::vector<int> plugin_to_view = invertRowMap(view_to_plugin);
+  // Row-index translation is read only by update_cells / remove_rows;
+  // append-only deltas (the common streaming shape) skip the O(rows) map build.
+  std::vector<int> plugin_to_view;
+  if (!delta.update_cells.empty() || !delta.remove_rows.empty()) {
+    plugin_to_view = invertRowMap(viewToPluginRowMap(tw));
+  }
   const auto model_row_of = [&plugin_to_view](int plugin_row) -> int {
     return plugin_row >= 0 && static_cast<std::size_t>(plugin_row) < plugin_to_view.size()
                ? plugin_to_view[static_cast<std::size_t>(plugin_row)]
                : -1;
   };
 
+  // Validate every targeted op BEFORE the first content write: one
+  // unresolvable target rejects the delta whole (never partially applied),
+  // mirroring the decoder's strictness — a partially-applied delta would leave
+  // the table diverged from the plugin's model with no way to repair it.
+  for (const auto& cell : delta.update_cells) {
+    if (model_row_of(cell.row) < 0 || cell.col >= tw->columnCount()) {
+      return false;
+    }
+  }
+  for (int plugin_row : delta.remove_rows) {
+    if (model_row_of(plugin_row) < 0) {
+      return false;
+    }
+  }
+
   // An update replaces the WHOLE cell (see TableDeltaView::CellUpdate::value's
   // doc-comment) — text and sort key must move together, or a typed column
   // desyncs its displayed order from what's on screen.
   for (const auto& cell : delta.update_cells) {
     const int row = model_row_of(cell.row);
-    if (row < 0 || cell.col >= tw->columnCount()) {
-      continue;
-    }
+    sort_guard.beforeWrite();
     upsertDeltaCell(tw, row, cell.col, QString::fromStdString(cell.text), cell.value, cell.row);
   }
 
@@ -829,12 +869,11 @@ static void applyTableDelta(QTableWidget* tw, const PJ::WidgetDataView::TableDel
   std::vector<int> doomed_model_rows;
   doomed_model_rows.reserve(delta.remove_rows.size());
   for (int plugin_row : delta.remove_rows) {
-    if (const int row = model_row_of(plugin_row); row >= 0) {
-      doomed_model_rows.push_back(row);
-    }
+    doomed_model_rows.push_back(model_row_of(plugin_row));
   }
   std::sort(doomed_model_rows.begin(), doomed_model_rows.end(), std::greater<>());
   for (int row : doomed_model_rows) {
+    sort_guard.beforeWrite();
     tw->removeRow(row);
   }
 
@@ -843,6 +882,7 @@ static void applyTableDelta(QTableWidget* tw, const PJ::WidgetDataView::TableDel
   // ascending copy turns that count into one binary search per row (all cells
   // of a row share the same plugin index).
   if (!delta.remove_rows.empty()) {
+    sort_guard.beforeWrite();
     const std::vector<int> removed_asc(delta.remove_rows.rbegin(), delta.remove_rows.rend());
     for (int r = 0; r < tw->rowCount(); ++r) {
       int new_plugin = -1;
@@ -875,6 +915,7 @@ static void applyTableDelta(QTableWidget* tw, const PJ::WidgetDataView::TableDel
   int next_plugin_row = tw->rowCount();
   std::size_t append_row_idx = 0;
   for (const auto& row_cells : delta.append) {
+    sort_guard.beforeWrite();
     const int row = tw->rowCount();
     tw->insertRow(row);
     // Create an item for EVERY column (empty text for missing cells): a row
@@ -891,8 +932,7 @@ static void applyTableDelta(QTableWidget* tw, const PJ::WidgetDataView::TableDel
     ++next_plugin_row;
     ++append_row_idx;
   }
-
-  tw->setSortingEnabled(was_sorting);
+  return true;
 }
 
 static void applyToWidget(
@@ -1212,21 +1252,26 @@ static void applyToWidget(
     if (auto v = view.tableRows(name)) {
       applyTableRows(tw, *v, view.tableColumnValues(name));
       recordPluginKeyColumn(tw, radio_col.value_or(-1));
+      // A full-rows resync resets the delta gate: a producer whose seq counter
+      // restarted must not have its first post-resync delta swallowed by a
+      // stale recorded seq.
+      tw->setProperty("_pj_table_delta_seq", QVariant());
       rows_replaced = true;
     }
     // Batch deltas, seq-gated per widget: apply only when the seq differs from
     // the last one applied here; a delivery that also carried a full `rows`
-    // replace consumes the delta without applying it (rows wins). A malformed
-    // delta consumes nothing, so a corrected retransmission of the same seq
-    // still applies.
+    // replace consumes the delta without applying it (rows wins). A delta that
+    // fails to decode or to resolve against the table consumes nothing, so a
+    // corrected retransmission of the same seq still applies.
     if (auto delta_seq = view.tableDeltaSeq(name)) {
       const QVariant last_seq = tw->property("_pj_table_delta_seq");
       if (!last_seq.isValid() || last_seq.toULongLong() != *delta_seq) {
         if (rows_replaced) {
           tw->setProperty("_pj_table_delta_seq", QVariant::fromValue<qulonglong>(*delta_seq));
         } else if (auto delta = view.tableDelta(name)) {
-          tw->setProperty("_pj_table_delta_seq", QVariant::fromValue<qulonglong>(*delta_seq));
-          applyTableDelta(tw, *delta);
+          if (applyTableDelta(tw, *delta)) {
+            tw->setProperty("_pj_table_delta_seq", QVariant::fromValue<qulonglong>(*delta_seq));
+          }
         }
       }
     }
