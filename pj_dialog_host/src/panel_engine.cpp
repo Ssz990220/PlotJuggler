@@ -166,6 +166,7 @@ struct PanelEngine::Impl {
     // each tick. Skip the parse + per-key diff + apply when nothing changed —
     // one-shot requests (close/sub-dialog) flip the bytes, so they still fire.
     if (raw == prev_raw) {
+      ++stats.skipped_identical_count;
       return std::nullopt;
     }
     prev_raw = raw;

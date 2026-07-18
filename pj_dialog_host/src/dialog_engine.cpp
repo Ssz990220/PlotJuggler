@@ -76,9 +76,28 @@ struct ApplyResult {
   std::optional<std::string> sub_dialog_ui;
 };
 
+/// The engine's memory of the last payload delivered to a widget tree: the
+/// parsed per-widget state (key-diffing) plus the raw bytes (byte-identical
+/// skip guard). The two are always mutated together.
+struct PayloadMemo {
+  nlohmann::json data = nlohmann::json::object();
+  std::string raw;
+};
+
 static ApplyResult applyAndDiff(
-    QWidget* root, PJ::DialogHandle& handle, nlohmann::json& prev_data, bool enable_diff, int& diff_apply_count) {
+    QWidget* root, PJ::DialogHandle& handle, PayloadMemo& memo, const PJ::DialogEngineConfig& config,
+    PJ::DialogEngine::Stats& stats) {
+  const bool enable_diff = config.enable_diff;
+  int& diff_apply_count = stats.diff_apply_count;
   std::string raw = handle.widget_data();
+  // A plugin that reports "changed" but re-emits byte-identical widget data
+  // pays nothing: skip the parse + diff + apply (same guard as PanelEngine).
+  // One-shot requests (accept/sub-dialog) flip the bytes, so they still fire.
+  if (raw == memo.raw) {
+    ++stats.skipped_identical_count;
+    return {};
+  }
+  memo.raw = raw;
   nlohmann::json new_data = nlohmann::json::parse(raw, nullptr, false);
   if (new_data.is_discarded()) {
     return {};
@@ -94,7 +113,7 @@ static ApplyResult applyAndDiff(
   new_data.erase("__request_sub_dialog");
 
   if (enable_diff) {
-    nlohmann::json diff = computeDiff(prev_data, new_data);
+    nlohmann::json diff = computeDiff(memo.data, new_data);
     if (!diff.empty()) {
       PJ::WidgetDataView view(diff.dump());
       applyWidgetData(root, view);
@@ -103,7 +122,7 @@ static ApplyResult applyAndDiff(
   } else {
     applyWidgetData(root, full_view);
   }
-  prev_data = std::move(new_data);
+  memo.data = std::move(new_data);
   return result;
 }
 
@@ -275,11 +294,11 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
   QVBoxLayout* parser_slot_layout = nullptr;
   QWidget* parser_dialog_widget = nullptr;
   std::unique_ptr<PJ::DialogHandle> parser_dialog_handle;
-  nlohmann::json parser_prev_data = nlohmann::json::object();
+  PayloadMemo parser_memo;
 
   // Parameterized file/folder picker handlers (work for any dialog handle)
   auto show_file_picker_for = [&](const std::string& widget_name, PJ::DialogHandle* handle, QWidget* target_widget,
-                                  nlohmann::json& target_prev_data) {
+                                  PayloadMemo& target_memo) {
     if (!config_.enable_file_picker || !handle) {
       return;
     }
@@ -300,14 +319,17 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
           new_data.erase("__request_sub_dialog");
           PJ::WidgetDataView v(raw);
           applyWidgetData(target_widget, v);
-          target_prev_data = std::move(new_data);
+          target_memo.data = std::move(new_data);
+          // Invalidate rather than memoize: this direct path does not extract
+          // one-shot commands, so the next poll must re-parse to fire them.
+          target_memo.raw.clear();
         }
       }
     }
   };
 
   auto show_folder_picker_for = [&](const std::string& widget_name, PJ::DialogHandle* handle, QWidget* target_widget,
-                                    nlohmann::json& target_prev_data) {
+                                    PayloadMemo& target_memo) {
     if (!config_.enable_file_picker || !handle) {
       return;
     }
@@ -326,14 +348,17 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
           new_data.erase("__request_sub_dialog");
           PJ::WidgetDataView v(raw);
           applyWidgetData(target_widget, v);
-          target_prev_data = std::move(new_data);
+          target_memo.data = std::move(new_data);
+          // Invalidate rather than memoize: this direct path does not extract
+          // one-shot commands, so the next poll must re-parse to fire them.
+          target_memo.raw.clear();
         }
       }
     }
   };
 
   auto show_save_file_picker_for = [&](const std::string& widget_name, PJ::DialogHandle* handle, QWidget* target_widget,
-                                       nlohmann::json& target_prev_data) {
+                                       PayloadMemo& target_memo) {
     if (!config_.enable_file_picker || !handle) {
       return;
     }
@@ -356,7 +381,10 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
           new_data.erase("__request_sub_dialog");
           PJ::WidgetDataView v(raw);
           applyWidgetData(target_widget, v);
-          target_prev_data = std::move(new_data);
+          target_memo.data = std::move(new_data);
+          // Invalidate rather than memoize: this direct path does not extract
+          // one-shot commands, so the next poll must re-parse to fire them.
+          target_memo.raw.clear();
         }
       }
     }
@@ -371,7 +399,7 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
       parser_dialog_widget = nullptr;
     }
     parser_dialog_handle.reset();
-    parser_prev_data = nlohmann::json::object();
+    parser_memo = {};
 
     // 2. Query parser dialog vtable via provider
     if (!config_.parser_dialog_provider) {
@@ -424,9 +452,10 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
 
     // 6. Apply initial parser widget data
     std::string parser_initial_raw = parser_dialog_handle->widget_data();
-    parser_prev_data = nlohmann::json::parse(parser_initial_raw, nullptr, false);
-    if (parser_prev_data.is_discarded()) {
-      parser_prev_data = nlohmann::json::object();
+    parser_memo.raw = parser_initial_raw;
+    parser_memo.data = nlohmann::json::parse(parser_initial_raw, nullptr, false);
+    if (parser_memo.data.is_discarded()) {
+      parser_memo.data = nlohmann::json::object();
     }
     {
       PJ::WidgetDataView view(parser_initial_raw);
@@ -437,14 +466,16 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
     connectWidgetSignals(parser_dialog_widget, [&](const std::string& name, const std::string& event_json) {
       stats_.event_count++;
       if (parser_dialog_handle && parser_dialog_handle->sendEvent(name, event_json)) {
-        // Re-apply parser widget data
+        // Re-apply parser widget data (same byte-identical skip as applyAndDiff)
         std::string raw = parser_dialog_handle->widget_data();
-        nlohmann::json new_data = nlohmann::json::parse(raw, nullptr, false);
-        if (!new_data.is_discarded()) {
+        if (raw == parser_memo.raw) {
+          ++stats_.skipped_identical_count;
+        } else if (nlohmann::json new_data = nlohmann::json::parse(raw, nullptr, false); !new_data.is_discarded()) {
+          parser_memo.raw = raw;
           new_data.erase("__request_accept");
           new_data.erase("__request_sub_dialog");
           if (config_.enable_diff) {
-            nlohmann::json diff = computeDiff(parser_prev_data, new_data);
+            nlohmann::json diff = computeDiff(parser_memo.data, new_data);
             if (!diff.empty()) {
               PJ::WidgetDataView view(diff.dump());
               applyWidgetData(parser_dialog_widget, view);
@@ -453,14 +484,14 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
             PJ::WidgetDataView view(raw);
             applyWidgetData(parser_dialog_widget, view);
           }
-          parser_prev_data = std::move(new_data);
+          parser_memo.data = std::move(new_data);
         }
       }
 
       // Handle file/folder pickers in parser dialog
-      show_file_picker_for(name, parser_dialog_handle.get(), parser_dialog_widget, parser_prev_data);
-      show_folder_picker_for(name, parser_dialog_handle.get(), parser_dialog_widget, parser_prev_data);
-      show_save_file_picker_for(name, parser_dialog_handle.get(), parser_dialog_widget, parser_prev_data);
+      show_file_picker_for(name, parser_dialog_handle.get(), parser_dialog_widget, parser_memo);
+      show_folder_picker_for(name, parser_dialog_handle.get(), parser_dialog_widget, parser_memo);
+      show_save_file_picker_for(name, parser_dialog_handle.get(), parser_dialog_widget, parser_memo);
     });
   };
 
@@ -493,9 +524,11 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
 
   // 3. Apply initial widget data
   std::string initial_raw = handle_.widget_data();
-  nlohmann::json prev_data = nlohmann::json::parse(initial_raw, nullptr, false);
-  if (prev_data.is_discarded()) {
-    prev_data = nlohmann::json::object();
+  PayloadMemo memo;
+  memo.raw = initial_raw;
+  memo.data = nlohmann::json::parse(initial_raw, nullptr, false);
+  if (memo.data.is_discarded()) {
+    memo.data = nlohmann::json::object();
   }
   {
     PJ::WidgetDataView view(initial_raw);
@@ -546,20 +579,28 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
     delete sub_dialog;
   };
 
+  // Shared tail for every applyAndDiff call site: accept ends the dialog
+  // (returns true), otherwise a requested sub-dialog opens.
+  auto handle_apply_result = [&](const ApplyResult& ar) {
+    if (ar.wants_accept) {
+      dialog->accept();
+      return true;
+    }
+    maybe_open_sub_dialog(ar);
+    return false;
+  };
+
   // 5. Wire signals
   connectWidgetSignals(binding_root, [&](const std::string& name, const std::string& event_json) {
     stats_.event_count++;
     if (handle_.sendEvent(name, event_json)) {
-      auto ar = applyAndDiff(binding_root, handle_, prev_data, config_.enable_diff, stats_.diff_apply_count);
-      if (ar.wants_accept) {
-        dialog->accept();
+      if (handle_apply_result(applyAndDiff(binding_root, handle_, memo, config_, stats_))) {
         return;
       }
-      maybe_open_sub_dialog(ar);
     }
-    show_file_picker_for(name, &handle_, binding_root, prev_data);
-    show_folder_picker_for(name, &handle_, binding_root, prev_data);
-    show_save_file_picker_for(name, &handle_, binding_root, prev_data);
+    show_file_picker_for(name, &handle_, binding_root, memo);
+    show_folder_picker_for(name, &handle_, binding_root, memo);
+    show_save_file_picker_for(name, &handle_, binding_root, memo);
   });
 
   // 5b. Install button keyboard shortcuts declared in widget data
@@ -576,12 +617,9 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
       auto* drop_filter = new DropEventFilter(dialog, [&](const std::string& name, const std::string& event_json) {
         stats_.event_count++;
         if (handle_.sendEvent(name, event_json)) {
-          auto ar = applyAndDiff(binding_root, handle_, prev_data, config_.enable_diff, stats_.diff_apply_count);
-          if (ar.wants_accept) {
-            dialog->accept();
+          if (handle_apply_result(applyAndDiff(binding_root, handle_, memo, config_, stats_))) {
             return;
           }
-          maybe_open_sub_dialog(ar);
         }
       });
       for (const auto& t : targets) {
@@ -596,8 +634,12 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
   QObject::connect(&tick_timer, &QTimer::timeout, [&]() {
     stats_.tick_count++;
     if (handle_.tick()) {
-      auto ar = applyAndDiff(binding_root, handle_, prev_data, config_.enable_diff, stats_.diff_apply_count);
-      maybe_open_sub_dialog(ar);
+      // The tick path shares the same tail: the skip guard consumes a
+      // payload's first delivery, so a command missed here would have no
+      // identical-bytes retry via a later event to fall back on.
+      if (handle_apply_result(applyAndDiff(binding_root, handle_, memo, config_, stats_))) {
+        return;
+      }
     }
   });
   tick_timer.start();

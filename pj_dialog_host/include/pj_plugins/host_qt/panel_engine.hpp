@@ -92,6 +92,9 @@ class PanelEngine : public QObject {
     int tick_count = 0;
     int event_count = 0;
     int diff_apply_count = 0;
+    /// Polls whose payload was byte-identical to the previous one and were
+    /// dropped before parsing (a gauge of plugin chattiness).
+    int skipped_identical_count = 0;
   };
   [[nodiscard]] Stats stats() const;
 

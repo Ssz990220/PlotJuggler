@@ -6,6 +6,7 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDialog>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QHeaderView>
@@ -19,6 +20,7 @@
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
 #include <map>
@@ -1106,6 +1108,153 @@ TEST(NamedIconResolver, ReturnsEmptyForUnknownOrEmptyId) {
   EXPECT_TRUE(PJ::resolveNamedIconPath("").isEmpty());
   // Case-sensitive: ids are exact semantic tokens, not free text.
   EXPECT_TRUE(PJ::resolveNamedIconPath("Link").isEmpty());
+}
+
+// ==========================================================================
+// Byte-identical payload skip (parity with PanelEngine's applyAndDiff guard)
+// ==========================================================================
+
+namespace identical_mock {
+
+// Chatty-idle plugin: every tick reports "re-read me" while widget_data stays
+// byte-identical — the exact traffic the skip guard exists to absorb. After
+// `accept_after_ticks` ticks (when >= 0) the payload gains __request_accept
+// and stays byte-stable, so the request's first delivery must be honored —
+// there is no identical-bytes retry to fall back on.
+struct Ctx {
+  std::string manifest = R"({"name":"identical"})";
+  std::string ui = R"(<ui version="4.0"><class>D</class><widget class="QWidget" name="D">
+<layout class="QVBoxLayout"><item><widget class="QLineEdit" name="name_input"/></item></layout>
+</widget></ui>)";
+  std::string payload = R"({"name_input":{"text":"fixed"}})";
+  int accept_after_ticks = -1;
+  int ticks = 0;
+};
+
+// Knob consumed by create(): ticks after which the payload raises
+// __request_accept (-1 = never). Set before constructing the DialogHandle.
+int& acceptAfterTicksKnob() {
+  static int v = -1;
+  return v;
+}
+
+void* create() noexcept {
+  auto* c = new Ctx();
+  c->accept_after_ticks = acceptAfterTicksKnob();
+  return c;
+}
+void destroy(void* ctx) noexcept {
+  delete static_cast<Ctx*>(ctx);
+}
+const char* manifest(void* ctx) noexcept {
+  return static_cast<Ctx*>(ctx)->manifest.c_str();
+}
+const char* uiContent(void* ctx) noexcept {
+  return static_cast<Ctx*>(ctx)->ui.c_str();
+}
+const char* widgetData(void* ctx) noexcept {
+  auto* c = static_cast<Ctx*>(ctx);
+  if (c->accept_after_ticks >= 0 && c->ticks >= c->accept_after_ticks) {
+    c->payload = R"({"name_input":{"text":"fixed"},"__request_accept":true})";
+  }
+  return c->payload.c_str();
+}
+bool widgetEvent(void*, const char*, const char*, PJ_error_t*) noexcept {
+  return false;
+}
+bool tick(void* ctx, PJ_error_t*) noexcept {
+  ++static_cast<Ctx*>(ctx)->ticks;
+  return true;
+}
+void accepted(void*, const char*) noexcept {}
+void rejected(void*) noexcept {}
+bool saveConfig(void*, PJ_string_view_t* out_json, PJ_error_t*) noexcept {
+  out_json->data = "";
+  out_json->size = 0;
+  return true;
+}
+bool loadConfig(void*, PJ_string_view_t, PJ_error_t*) noexcept {
+  return true;
+}
+
+const PJ_dialog_vtable_t* vtable() {
+  static const PJ_dialog_vtable_t vt = [] {
+    PJ_dialog_vtable_t v{};
+    v.protocol_version = PJ_DIALOG_PROTOCOL_VERSION;
+    v.struct_size = sizeof(PJ_dialog_vtable_t);
+    v.create = create;
+    v.destroy = destroy;
+    v.get_manifest = manifest;
+    v.get_ui_content = uiContent;
+    v.get_widget_data = widgetData;
+    v.on_widget_event = widgetEvent;
+    v.on_tick = tick;
+    v.on_accepted = accepted;
+    v.on_rejected = rejected;
+    v.save_config = saveConfig;
+    v.load_config = loadConfig;
+    return v;
+  }();
+  return &vt;
+}
+
+}  // namespace identical_mock
+
+TEST_F(DialogEngineTest, IdenticalPayloadTicksAreSkipped) {
+  identical_mock::acceptAfterTicksKnob() = -1;
+  PJ::DialogHandle handle(identical_mock::vtable());
+  PJ::DialogEngineConfig config;
+  config.tick_interval_ms = 1;
+  PJ::DialogEngine engine(std::move(handle), config);
+
+  // Close the modal from inside its own event loop, but only once enough ticks
+  // ran — gating on the live stats keeps this immune to slow-runner startup.
+  QTimer close_timer;
+  close_timer.setInterval(20);
+  QObject::connect(&close_timer, &QTimer::timeout, [&engine] {
+    if (engine.lastStats().tick_count < 3) {
+      return;
+    }
+    for (QWidget* w : QApplication::topLevelWidgets()) {
+      if (auto* dlg = qobject_cast<QDialog*>(w); dlg != nullptr && dlg->isVisible()) {
+        dlg->reject();
+      }
+    }
+  });
+  close_timer.start();
+  (void)engine.showDialog();
+
+  const auto stats = engine.lastStats();
+  ASSERT_GE(stats.tick_count, 2);
+  // Byte-identical re-emissions never reach the parser or the widgets.
+  EXPECT_EQ(stats.diff_apply_count, 0);
+  EXPECT_GE(stats.skipped_identical_count, stats.tick_count - 1);
+}
+
+// The first delivery of a payload carrying __request_accept must be honored on
+// the tick path itself: once the bytes go stable, the skip guard removes the
+// identical-bytes retry that could previously pick the command up later.
+TEST_F(DialogEngineTest, TickHonorsRequestAccept) {
+  identical_mock::acceptAfterTicksKnob() = 2;
+  PJ::DialogHandle handle(identical_mock::vtable());
+  identical_mock::acceptAfterTicksKnob() = -1;
+  PJ::DialogEngineConfig config;
+  config.tick_interval_ms = 1;
+  PJ::DialogEngine engine(std::move(handle), config);
+
+  // Safety net: reject if the accept never happens, so the test cannot hang.
+  QTimer bailout_timer;
+  bailout_timer.setInterval(2000);
+  QObject::connect(&bailout_timer, &QTimer::timeout, [] {
+    for (QWidget* w : QApplication::topLevelWidgets()) {
+      if (auto* dlg = qobject_cast<QDialog*>(w); dlg != nullptr && dlg->isVisible()) {
+        dlg->reject();
+      }
+    }
+  });
+  bailout_timer.start();
+
+  EXPECT_EQ(engine.showDialog(), PJ::DialogResult::kAccepted);
 }
 
 // ==========================================================================

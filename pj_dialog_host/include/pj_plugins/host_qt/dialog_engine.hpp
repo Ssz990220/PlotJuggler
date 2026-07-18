@@ -81,6 +81,9 @@ class DialogEngine {
     int tick_count = 0;
     int event_count = 0;
     int diff_apply_count = 0;
+    /// Re-reads whose payload was byte-identical to the previous one and were
+    /// dropped before parsing (a gauge of plugin chattiness).
+    int skipped_identical_count = 0;
     bool has_parser_slot = false;
     bool parser_dialog_injected = false;  // True if a parser dialog was actually injected
   };
