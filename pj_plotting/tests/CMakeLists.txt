@@ -48,6 +48,19 @@ target_link_libraries(dock_fullscreen_test PRIVATE
 
 add_test(NAME DockFullscreenTest COMMAND dock_fullscreen_test)
 
+add_executable(tabbed_widget_tab_test
+    tabbed_widget_tab_test.cpp
+)
+
+target_compile_options(tabbed_widget_tab_test PRIVATE ${PJ_WARNING_FLAGS})
+target_link_libraries(tabbed_widget_tab_test PRIVATE
+    pj_plotting
+    pj_widgets
+    GTest::gtest
+)
+
+add_test(NAME TabbedWidgetTabTest COMMAND tabbed_widget_tab_test)
+
 add_executable(plot_widget_replace_curve_test
     plot_widget_replace_curve_test.cpp
 )

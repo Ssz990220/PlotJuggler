@@ -26,7 +26,7 @@ Public headers live under `include/pj_plugins/host_qt/` — the namespace mirror
 | Header | Role |
 |---|---|
 | `dialog_engine.hpp` | Top-level engine: takes a `WidgetData` tree, returns a constructed `QWidget`, drives events. |
-| `panel_engine.hpp` | Hosts a long-lived interactive panel built from a plugin's typed-dialog UI. Sibling of `dialog_engine.hpp`: same .ui loader/binding/tick-and-diff, but returns a bare `QWidget*` via `openPanel()` (no modal `exec()`) and is closed by plugin-initiated `requestClose("<reason>")`. |
+| `panel_engine.hpp` | Hosts a long-lived interactive panel built from a plugin's typed-dialog UI. Sibling of `dialog_engine.hpp`: same .ui loader/binding/tick-and-diff, but returns a bare `QWidget*` via `openPanel()` (no modal `exec()`) and is closed by plugin-initiated `requestClose("<reason>")`. A hidden panel root (e.g. a toolbox pinned into a non-current central tab) ticks at 1/10 rate — plugin logic keeps advancing while the invisible UI mostly skips poll+diff — with a queued catch-up tick on Show. |
 | `widget_binding.hpp` | Per-widget event/data binding plumbing. |
 | `pj_ui_loader.hpp` | `QUiLoader` subclass (`PjUiLoader`) that teaches `QUiLoader` to instantiate host-provided custom widgets (RangeSlider, DateRangePicker, CredentialsEditor) from plugin `.ui` files; shared by both the dialog and panel engines. |
 | `chart_preview_widget.hpp` | Embedded chart widget used by toolboxes (e.g. FFT preview). Qwt-based (no Qt Charts dependency). |

@@ -210,6 +210,7 @@ ICON_MAPPING: dict[str, tuple[str, dict[str, str]]] = {
     "share_eta.svg":                       ("Share Eta",                  {}),
     "show_point.svg":                      ("Step Into",                  {}),
     "t0.svg":                              ("Start",                      {}),
+    "tab_move.svg":                        ("Tab Move",                   {}),
     "trash.svg":                           ("Delete",                     {}),
     "transition_push.svg":                 ("Transition Push",            {}),
     "tree.svg":                            ("Account Tree",               {}),

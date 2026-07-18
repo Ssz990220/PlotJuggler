@@ -214,6 +214,7 @@
     <file alias="style_steps_inverted.svg">svg/style_steps_inverted.svg</file>
     <file alias="style_sticks.svg">svg/style_sticks.svg</file>
     <file alias="t0.svg">svg/t0.svg</file>
+    <file alias="tab_move.svg">svg/tab_move.svg</file>
     <file alias="transition_push.svg">svg/transition_push.svg</file>
     <file alias="trash.svg">svg/trash.svg</file>
     <file alias="tree.svg">svg/tree.svg</file>

@@ -7,6 +7,7 @@
 #include <QDir>
 #include <QDomDocument>
 #include <QElapsedTimer>
+#include <QHash>
 #include <QList>
 #include <QMainWindow>
 #include <QMetaObject>
@@ -170,6 +171,12 @@ class MainWindow : public QMainWindow {
   void setCustomPluginFolders(const QStringList& folders);
   [[nodiscard]] QStringList builtinPluginFolders() const;
 
+  // Where launchToolbox presents the toolbox: the default chart-area
+  // takeover, or directly pinned as a central tab (the layout-restore path
+  // of the "migrate to tab" gesture). Lives in the public: section — moc
+  // rejects type declarations inside slots/signals sections.
+  enum class ToolboxLaunchTarget { kTakeover, kPinnedTab };
+
   // Marketplace registry URL — the single owner of the Marketplace/registryUrl
   // settings key. registryUrlSetting() is the raw persisted value, "" when
   // unset (the built-in default applies); the setter persists immediately (""
@@ -282,12 +289,18 @@ class MainWindow : public QMainWindow {
 
   // Launches a toolbox by id: builds a ToolboxRuntimeHost, binds the
   // toolbox, hosts its dialog in a PanelEngine, and presents it in the
-  // chart area. Close tears it all down. Shared by the Toolbox menu and
-  // LeftPanel::cloudToolboxRequested ("cloud" is just a manifest tag).
+  // chart area (or pins it as a tab, per `target`). Close tears it all
+  // down. Shared by the Toolbox menu and LeftPanel::cloudToolboxRequested
+  // ("cloud" is just a manifest tag). If the toolbox is already pinned as a
+  // tab, launching focuses that tab instead (one live instance per id).
   // `initial_config` (optional) is handed to the toolbox via loadConfig() before
   // its dialog is built — used to open the Transform Editor pre-populated for an
-  // in-place edit of an existing derived series.
-  void launchToolbox(const QString& plugin_id, const QString& initial_config = QString());
+  // in-place edit of an existing derived series. `pin_tab_name` (kPinnedTab
+  // only) overrides the plugin display name as the tab label, so a layout
+  // restore re-creates a renamed tab born with its saved name.
+  void launchToolbox(
+      const QString& plugin_id, const QString& initial_config = QString(),
+      ToolboxLaunchTarget target = ToolboxLaunchTarget::kTakeover, const QString& pin_tab_name = QString());
 
   void onThemeChanged(const QString& theme);
 
@@ -777,15 +790,64 @@ class MainWindow : public QMainWindow {
  private:
   // Swaps the chart area (ui_->tabbedPlotWidget) out and presents `panel` in
   // its place; returns false if a panel is already up. restoreCentralArea
-  // tears the panel down and restores the chart.
+  // tears the panel down and restores the chart; releaseCentralPanel is the
+  // non-destructive variant that swaps the chart back and RETURNS the panel
+  // (reparented out, hidden) instead of deleting it — the "migrate to tab"
+  // gesture uses it to keep the live toolbox widget.
   bool presentPanel(QWidget* panel);
   void restoreCentralArea();
+  QWidget* releaseCentralPanel();
+
+  // Tears down whatever panel currently occupies the chart-area takeover —
+  // the same close-restore-delete sequence presentPanel uses when replacing
+  // it. No-op when no takeover is up. Called before focusing or restoring a
+  // pinned toolbox tab, which the takeover would otherwise hide.
+  void dismissTakeoverPanel();
+
+  // wrapToolboxPanel's product: the framed container plus the transition
+  // that strips the takeover-only banner buttons (migrate + close) when the
+  // panel is pinned as a tab — the tab frame provides name + close, and
+  // only wrapToolboxPanel knows which banner widgets are takeover chrome.
+  struct WrappedToolboxPanel {
+    QWidget* container = nullptr;
+    std::function<void()> enter_pinned_chrome;
+  };
 
   // Wraps a toolbox panel's `content` in the canonical Banner header (title on
-  // the far left, close button on the far right; Surface::Banner). The close
-  // button invokes `on_close`. The returned container is what presentPanel()
-  // swaps into the chart area.
-  QWidget* wrapToolboxPanel(QWidget* content, const QString& title, const std::function<void()>& on_close);
+  // the far left; migrate-to-tab + close buttons on the far right;
+  // Surface::Banner). The close button invokes `on_close`; the migrate button
+  // strips the banner chrome and invokes `on_migrate`. The returned container
+  // is what presentPanel() swaps into the chart area.
+  WrappedToolboxPanel wrapToolboxPanel(
+      QWidget* content, const QString& title, const std::function<void()>& on_close,
+      const std::function<void()>& on_migrate);
+
+  // Pins a wrapped toolbox panel (`container`, from wrapToolboxPanel, already
+  // switched to pinned chrome) as a central widget tab: registers the pinned
+  // entry, re-routes the engine's plugin-initiated requestClose to the
+  // tab-close path, and adds + focuses the tab. `save_config` captures the
+  // toolbox handle's saveConfig (and, transitively, ownership of the plugin
+  // session) for layout save.
+  void pinToolboxPanel(
+      QWidget* container, const QString& plugin_id, const QString& title, PanelEngine* engine,
+      std::function<QString()> save_config);
+
+  // Layout persistence of pinned toolbox tabs (NOT part of the undo
+  // snapshot; see TabbedPlotWidget::xmlSaveState). savePinnedToolboxes emits
+  // <pinned_toolboxes><toolbox plugin_id="...">config-json</toolbox>...</>;
+  // restorePinnedToolboxes closes every live pinned tab, then relaunches
+  // from the element (missing plugins surface a diagnostic and are dropped).
+  [[nodiscard]] QDomElement savePinnedToolboxes(QDomDocument& doc) const;
+  void restorePinnedToolboxes(const QDomElement& root);
+  void closeAllPinnedToolboxTabs();
+
+  // The single commit boundary of a layout open: runs what must happen only
+  // once every abort/rollback path has returned — replacing the pinned
+  // toolbox set with the layout's and re-baselining undo history. Both
+  // restore legs (sync applyRestoredLayout, progressive
+  // onProgressiveLayoutDrained) end here; restoreChromeAndPanels must NOT
+  // grow commit-only steps, it also runs on the abortable stretch.
+  void commitRestoredLayout(const QDomDocument& doc);
 
   // Constructs + wires (but does not populate) an object-widget dock of the
   // given kind ("scene3d" / "scene2d"). Shared by both the drop and the
@@ -955,6 +1017,19 @@ class MainWindow : public QMainWindow {
   PanelEngine* current_panel_engine_ = nullptr;
   int panel_layout_index_ = -1;
   QWidget* panel_parent_ = nullptr;
+
+  // A toolbox pinned into the central tab strip via the banner's
+  // "migrate to tab" button. `container` is the tab content (banner +
+  // plugin panel); `save_config` reads the toolbox's saveConfig() JSON for
+  // layout save and — by capturing the launch's PanelSession — keeps the
+  // plugin session alive while pinned (the entry is erased on tab close,
+  // releasing it). Keyed by plugin id: one live instance per toolbox.
+  struct PinnedToolbox {
+    QPointer<QWidget> container;
+    QPointer<PanelEngine> engine;
+    std::function<QString()> save_config;
+  };
+  QHash<QString, PinnedToolbox> pinned_toolboxes_;
   // The plot a Filter Editor panel was opened on. Its style/width drive the
   // before/after preview (the preview mirrors THAT plot, not a global default).
   // Set after presentPanel() succeeds; cleared in restoreCentralArea(). QPointer so

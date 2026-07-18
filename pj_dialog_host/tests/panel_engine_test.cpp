@@ -146,6 +146,7 @@ TEST_F(PanelEngineTest, TickPropagatesPluginStateChanges) {
       makeMockHandle(), {/*tick_interval_ms=*/10, /*enable_diff=*/true, /*catalog_key_resolver=*/{}});
   QWidget* panel = engine.openPanel();
   ASSERT_NE(panel, nullptr);
+  panel->show();  // hidden panels tick at 1/10 rate; exercise the visible fast path
 
   // After mutating plugin state, the next tick should refresh the label.
   mockPanelState().label = "Updated";
@@ -171,6 +172,7 @@ TEST_F(PanelEngineTest, RequestCloseFiresCallback) {
 
   QWidget* panel = engine.openPanel();
   ASSERT_NE(panel, nullptr);
+  panel->show();  // hidden panels tick at 1/10 rate; exercise the visible fast path
 
   // Ask the plugin to request close on next tick.
   mockPanelState().close_on_next_tick = true;
@@ -180,6 +182,23 @@ TEST_F(PanelEngineTest, RequestCloseFiresCallback) {
 
   EXPECT_TRUE(fired);
   EXPECT_EQ(captured_reason, "import_complete");
+
+  delete panel;
+}
+
+TEST_F(PanelEngineTest, HiddenPanelStillTicksAtReducedRate) {
+  PJ::PanelEngine engine(makeMockHandle(), {/*tick_interval_ms=*/5, /*enable_diff=*/true, /*catalog_key_resolver=*/{}});
+  QWidget* panel = engine.openPanel();
+  ASSERT_NE(panel, nullptr);
+  // Never shown: the plugin's periodic logic must stay alive regardless —
+  // a pinned toolbox in a non-current tab keeps fetching/advancing.
+  mockPanelState().label = "Updated";
+  pumpEventLoop(200);  // 40 timer fires -> at least a few 1/10-rate ticks
+
+  EXPECT_GT(engine.stats().tick_count, 0);
+  auto* label = panel->findChild<QLabel*>("labelHello");
+  ASSERT_NE(label, nullptr);
+  EXPECT_EQ(label->text().toStdString(), "Updated");
 
   delete panel;
 }

@@ -30,6 +30,12 @@ using namespace Qt::StringLiterals;
 
 namespace PJ {
 
+namespace {
+// A hidden panel root delivers one tick per this many timer fires (a pinned
+// toolbox tab that is not current still advances its plugin, just slower).
+constexpr int kHiddenTickDivisor = 10;
+}  // namespace
+
 struct PanelEngine::Impl {
   // DialogHandle has no default ctor; construct Impl with the handle.
   Impl(DialogHandle h, PanelEngineConfig c) : handle(std::move(h)), config(c) {}
@@ -68,6 +74,33 @@ struct PanelEngine::Impl {
       }
     }
   }
+
+  // One full tick: advance the plugin, poll widget_data, apply the diff, and
+  // honor a requestClose. Shared by the tick timer and the Show-event
+  // catch-up (see PanelEngine::eventFilter). The sub_panel guard only matters
+  // for the catch-up path — during a modal sub-dialog exec() the timer is
+  // already paused, and a re-entrant tick could observe half-applied state.
+  void runTick() {
+    if (closed || sub_panel != nullptr) {
+      return;
+    }
+    ++stats.tick_count;
+    (void)handle.tick();
+    if (auto reason = applyAndDiff(); reason.has_value()) {
+      if (close_cb) {
+        close_cb(*reason);
+      }
+      if (request_owner_close) {
+        request_owner_close();
+      }
+    }
+  }
+  // Timer fires skipped since the last delivered tick while the panel root
+  // was hidden (a pinned toolbox tab that is not the current tab).
+  int hidden_tick_skips = 0;
+  // A Show-event catch-up tick is already queued (coalesces bursts of Show
+  // events into one deferred tick).
+  bool show_catchup_queued = false;
 
   // Open the interactive sub-panel from its .ui XML. Unlike the requestSubDialog
   // modal, this is a live, non-blocking child wired into the normal event path:
@@ -446,17 +479,18 @@ QWidget* PanelEngine::openPanel() {
   impl_->tick_timer = new QTimer(this);
   impl_->tick_timer->setInterval(impl_->config.tick_interval_ms);
   QObject::connect(impl_->tick_timer, &QTimer::timeout, this, [this]() {
-    if (impl_->closed) {
-      return;
-    }
-    ++impl_->stats.tick_count;
-    (void)impl_->handle.tick();
-    if (auto reason = impl_->applyAndDiff(); reason.has_value()) {
-      if (impl_->close_cb) {
-        impl_->close_cb(*reason);
+    // A hidden panel root (e.g. a toolbox pinned into a non-current central
+    // tab) ticks at 1/kHiddenTickDivisor rate: the plugin's periodic logic
+    // stays alive (async fetches keep progressing) while the invisible UI
+    // skips most poll+diff work. A Show event delivers a catch-up tick
+    // immediately (see eventFilter), so stale state never flashes on reveal.
+    if (impl_->root != nullptr && !impl_->root->isVisible()) {
+      if (++impl_->hidden_tick_skips < kHiddenTickDivisor) {
+        return;
       }
-      this->close();
     }
+    impl_->hidden_tick_skips = 0;
+    impl_->runTick();
   });
   impl_->tick_timer->start();
 
@@ -504,6 +538,23 @@ bool PanelEngine::eventFilter(QObject* watched, QEvent* event) {
       WidgetDataView view(impl_->prev_raw);
       applyWidgetData(impl_->root, view);
     }
+  }
+  // A panel revealed after being hidden (tab switch back to a pinned toolbox)
+  // may have skipped up to kHiddenTickDivisor-1 timer fires; catch up so the
+  // user never sees stale widget state. Queued, not synchronous: a Show fired
+  // mid-presentation (splitter replaceWidget / stack setCurrentWidget) must
+  // not reenter the host's presentation bookkeeping through a plugin
+  // requestClose before that bookkeeping is committed.
+  if (event->type() == QEvent::Show && watched == impl_->root && !impl_->show_catchup_queued) {
+    impl_->show_catchup_queued = true;
+    impl_->hidden_tick_skips = 0;
+    QMetaObject::invokeMethod(
+        this,
+        [this]() {
+          impl_->show_catchup_queued = false;
+          impl_->runTick();
+        },
+        Qt::QueuedConnection);
   }
   return QObject::eventFilter(watched, event);
 }
