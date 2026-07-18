@@ -21,6 +21,7 @@
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDateTimeEdit>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -855,6 +856,79 @@ TEST(WidgetScrollAreaAdapter, RespectsAlwaysOnPolicyPerAxis) {
   EXPECT_EQ(root.findChildren<PJ::Scrollbar*>().size(), 1) << "only the horizontal (default) axis is adapted";
   EXPECT_EQ(area->verticalScrollBarPolicy(), Qt::ScrollBarAlwaysOn) << "pinned AlwaysOn vertical bar is left untouched";
   EXPECT_EQ(area->horizontalScrollBarPolicy(), Qt::ScrollBarAlwaysOff) << "default horizontal axis still gets a pill";
+}
+
+// setDateTime/setDateTimeRange land on a QDateTimeEdit (range first, so the
+// value is not clamped by a stale default range).
+TEST(WidgetBindingDateTime, AppliesValueAndRange) {
+  qapp();
+  QWidget root;
+  auto* edit = new QDateTimeEdit(&root);
+  edit->setObjectName("startTime");
+
+  PJ::WidgetData wd;
+  wd.setDateTime("startTime", "2026-05-21T13:45:00");
+  wd.setDateTimeRange("startTime", "2026-05-01T00:00:00", "2026-06-01T00:00:00");
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
+
+  EXPECT_EQ(edit->dateTime(), QDateTime::fromString(u"2026-05-21T13:45:00"_s, Qt::ISODate));
+  EXPECT_EQ(edit->minimumDateTime(), QDateTime::fromString(u"2026-05-01T00:00:00"_s, Qt::ISODate));
+  EXPECT_EQ(edit->maximumDateTime(), QDateTime::fromString(u"2026-06-01T00:00:00"_s, Qt::ISODate));
+}
+
+// An edited QDateTimeEdit reports back as a datetime_iso event so the typed
+// dispatcher routes it to onDateTimeChanged.
+TEST(WidgetBindingDateTime, UserEditEmitsDateTimeIso) {
+  qapp();
+  recorder()->clear();
+  QWidget root;
+  auto* edit = new QDateTimeEdit(&root);
+  edit->setObjectName("startTime");
+
+  PJ::connectWidgetSignals(
+      &root, [](const std::string& name, const std::string& json) { recorder()->push_back({name, json}); });
+
+  edit->setDateTime(QDateTime::fromString(u"2026-01-02T03:04:05"_s, Qt::ISODate));
+
+  bool saw_datetime = false;
+  for (const auto& ev : *recorder()) {
+    if (ev.name != "startTime") {
+      continue;
+    }
+    auto j = nlohmann::json::parse(ev.json, nullptr, false);
+    if (!j.is_discarded() && j.contains("datetime_iso") && j["datetime_iso"] == "2026-01-02T03:04:05") {
+      saw_datetime = true;
+    }
+  }
+  EXPECT_TRUE(saw_datetime) << "QDateTimeEdit edit must emit a datetime_iso event";
+}
+
+// Editors whose display format carries milliseconds must round-trip them
+// (the event serializes with ISODateWithMs; whole-second values stay bare).
+TEST(WidgetBindingDateTime, MillisecondEditorEmitsFractionalSeconds) {
+  qapp();
+  recorder()->clear();
+  QWidget root;
+  auto* edit = new QDateTimeEdit(&root);
+  edit->setObjectName("stamp");
+  edit->setDisplayFormat(u"yyyy-MM-dd HH:mm:ss.zzz"_s);
+
+  PJ::connectWidgetSignals(
+      &root, [](const std::string& name, const std::string& json) { recorder()->push_back({name, json}); });
+
+  edit->setDateTime(QDateTime::fromString(u"2026-01-02T03:04:05.678"_s, Qt::ISODateWithMs));
+
+  bool saw_ms = false;
+  for (const auto& ev : *recorder()) {
+    if (ev.name != "stamp") {
+      continue;
+    }
+    auto j = nlohmann::json::parse(ev.json, nullptr, false);
+    if (!j.is_discarded() && j.contains("datetime_iso") && j["datetime_iso"] == "2026-01-02T03:04:05.678") {
+      saw_ms = true;
+    }
+  }
+  EXPECT_TRUE(saw_ms) << "ms-precision editors must not truncate fractional seconds";
 }
 
 }  // namespace

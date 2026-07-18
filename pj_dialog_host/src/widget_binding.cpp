@@ -17,6 +17,7 @@
 #include <QComboBox>
 #include <QDate>
 #include <QDateTime>
+#include <QDateTimeEdit>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFile>
@@ -1126,6 +1127,26 @@ static void applyToWidget(
     return;
   }
 
+  // --- QDateTimeEdit (ISO-8601 value + allowed range) ---
+  if (auto* dte = qobject_cast<QDateTimeEdit*>(w)) {
+    // Range first: Qt clamps the value against the range in force when it lands.
+    if (auto range = view.dateTimeRange(name)) {
+      if (const QDateTime mn = QDateTime::fromString(QString::fromStdString(range->first), Qt::ISODate); mn.isValid()) {
+        dte->setMinimumDateTime(mn);
+      }
+      if (const QDateTime mx = QDateTime::fromString(QString::fromStdString(range->second), Qt::ISODate);
+          mx.isValid()) {
+        dte->setMaximumDateTime(mx);
+      }
+    }
+    if (auto iso = view.dateTime(name)) {
+      if (const QDateTime dt = QDateTime::fromString(QString::fromStdString(*iso), Qt::ISODate); dt.isValid()) {
+        dte->setDateTime(dt);
+      }
+    }
+    return;
+  }
+
   // --- DateRangePicker (date/time range placeholder hints) ---
   if (auto* drp = qobject_cast<DateRangePicker*>(w)) {
     if (auto iso = view.dateRangeEarliest(name)) {
@@ -1584,6 +1605,15 @@ void connectWidgetSignals(QWidget* root, WidgetEventCallback callback) {
           to_iso = QDateTime(*f.date_to, f.to_time, QTimeZone::utc()).toString(Qt::ISODate).toStdString();
         }
         callback(name, WidgetEventBuilder::dateRangeChanged(from_iso, to_iso));
+      });
+      continue;
+    }
+    if (auto* dte = qobject_cast<QDateTimeEdit*>(w)) {
+      QObject::connect(dte, &QDateTimeEdit::dateTimeChanged, dte, [callback, name](const QDateTime& dt) {
+        // Wall-clock local time, verbatim. Fractional seconds only when the
+        // editor actually carries them, so whole-second events stay bare.
+        const Qt::DateFormat format = dt.time().msec() != 0 ? Qt::ISODateWithMs : Qt::ISODate;
+        callback(name, WidgetEventBuilder::dateTimeChanged(dt.toString(format).toStdString()));
       });
       continue;
     }
