@@ -99,7 +99,7 @@ the GUI is forwarded to the host display via `xhost`.
 `.github/workflows/linux-appimage-release.yml` (the release build) compiles the
 app inside the `pj4-appimage-builder` container (glibc 2.35 floor), bundles the
 curated plugin set with `--plugins-registry`, audits the result's glibc needs,
-and — on a `v*` tag — attaches the AppImage to the GitHub Release
+and — on a version tag (e.g. `3.9.1`, no leading `v`) — attaches the AppImage to the GitHub Release
 (`workflow_dispatch` builds an artifact only).
 
 ## Multi-distro ROS 2

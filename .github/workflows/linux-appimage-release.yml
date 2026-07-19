@@ -18,14 +18,15 @@ name: Release AppImage
 #     release fails — nothing is compiled locally or skipped best-effort.
 #
 # Triggers:
-#   - workflow_dispatch  -> build from any branch (artifact only, no Release upload)
-#   - push of a `v*` tag -> build + attach the AppImage to that tag's Release
+#   - workflow_dispatch          -> build from any branch (artifact only, no Release upload)
+#   - push of a version tag      -> build + attach the AppImage to that tag's Release
+#     (e.g. `3.9.1` — no leading 'v')
 
 on:
   workflow_dispatch:
   push:
     tags:
-      - 'v*'
+      - '[0-9]+.[0-9]+.[0-9]+'
 
 permissions:
   contents: write   # softprops/action-gh-release needs write to create/update the Release
