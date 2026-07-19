@@ -8,14 +8,12 @@
 #include <QDialog>
 #include <QEvent>
 #include <QFont>
-#include <QFontMetrics>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QLabel>
 #include <QMouseEvent>
 #include <QPlainTextEdit>
-#include <QPointer>
 #include <QPushButton>
 #include <QScrollBar>
 #include <QSettings>
@@ -31,6 +29,7 @@
 #include "pj_marketplace/registry_manager.hpp"
 #include "pj_marketplace/version_compare.hpp"
 #include "pj_widgets/ChromeMetrics.h"
+#include "pj_widgets/ElidingLabel.h"
 #include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/Scrollbar.h"
 #include "pj_widgets/Search.h"
@@ -152,11 +151,13 @@ void MarketplaceWindow::setupUi() {
   // Master–detail split: the plugin list (left) is narrower than the detail
   // panel (right), but wide enough that a card's action button fits fully; the
   // right keeps enough room that its button row (ending in "Visit Website") is
-  // never clipped by the window edge. Only this middle band is split.
+  // never clipped by the window edge. Only this middle band is split, and the
+  // user can drag the boundary (childrenCollapsible is off in the .ui so
+  // neither pane can be dragged away to zero width).
   ui_->scroll_area_->setMinimumWidth(410);
   ui_->detail_scroll_->setMinimumWidth(520);
-  ui_->content_split_->setStretch(0, 2);
-  ui_->content_split_->setStretch(1, 3);
+  ui_->content_split_->setStretchFactor(0, 2);
+  ui_->content_split_->setStretchFactor(1, 3);
 
   // Hard floor on the window size so it can never be shrunk to where the two
   // panes overlap or buttons get hidden: left(360) + right(520) minimum pane
@@ -446,22 +447,12 @@ void MarketplaceWindow::populateCards(bool preserve_scroll) {
     card_layout->addLayout(top_row);
 
     auto* bottom_row = new QHBoxLayout();
-    auto* desc_lbl = new QLabel(ext.description, card);
+    // Two-line summary: wraps, then elides with "…" once the text exceeds two
+    // lines (the full text lives in the tooltip and the detail panel).
+    auto* desc_lbl = new ElidingLabel(card);
     desc_lbl->setObjectName("extCardDescription");
-    // Wrap the description, but cap the card at exactly TWO visible lines (the
-    // full text lives in the right-hand detail panel). The height is measured
-    // after the widget is polished — deferred to the next event-loop turn —
-    // because the #extCardDescription QSS font (11px) is not yet applied at
-    // construction, and measuring the pre-polish font left room for a clipped
-    // third line.
-    desc_lbl->setWordWrap(true);
-    desc_lbl->setContentsMargins(0, 0, 0, 0);
-    QPointer<QLabel> desc_ptr = desc_lbl;
-    QTimer::singleShot(0, desc_lbl, [desc_ptr]() {
-      if (desc_ptr) {
-        desc_ptr->setMaximumHeight(desc_ptr->fontMetrics().lineSpacing() * 2);
-      }
-    });
+    desc_lbl->setMaxLineCount(2);
+    desc_lbl->setFullText(ext.description);
     bottom_row->addWidget(desc_lbl, /*stretch=*/1);
     bottom_row->addLayout(btn_box);
     // Keep the button pinned to the top of a now-possibly-multiline row.

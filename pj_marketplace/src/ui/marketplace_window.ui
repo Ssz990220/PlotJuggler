@@ -46,11 +46,21 @@
    </item>
 
    <!-- Plugin list (left) + detail panel (right). Only this middle band is split;
-        the toolbar and status bar stay full width. -->
+        the toolbar and status bar stay full width. A QSplitter (not a plain
+        QHBoxLayout) so the user can drag the boundary between the two panes. -->
    <item>
-    <layout class="QHBoxLayout" name="content_split_">
-     <property name="spacing"><number>8</number></property>
-     <item>
+    <widget class="QSplitter" name="content_split_">
+     <!-- Unlike the QHBoxLayout it replaces, a bare QSplitter widget defaults
+          to a Preferred/Preferred size policy and does not inherit its
+          children's Expanding vertical policy, so it stops claiming leftover
+          vertical space from main_layout without this override. -->
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+       <horstretch>0</horstretch><verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+     <property name="orientation"><enum>Qt::Horizontal</enum></property>
+     <property name="childrenCollapsible"><bool>false</bool></property>
     <widget class="QScrollArea" name="scroll_area_">
      <property name="widgetResizable"><bool>true</bool></property>
      <property name="frameShape"><enum>QFrame::NoFrame</enum></property>
@@ -75,15 +85,12 @@
       </layout>
      </widget>
     </widget>
-     </item>
-     <item>
-      <widget class="QScrollArea" name="detail_scroll_">
-       <property name="widgetResizable"><bool>true</bool></property>
-       <property name="frameShape"><enum>QFrame::NoFrame</enum></property>
-       <widget class="QWidget" name="detail_container_"/>
-      </widget>
-     </item>
-    </layout>
+    <widget class="QScrollArea" name="detail_scroll_">
+     <property name="widgetResizable"><bool>true</bool></property>
+     <property name="frameShape"><enum>QFrame::NoFrame</enum></property>
+     <widget class="QWidget" name="detail_container_"/>
+    </widget>
+    </widget>
    </item>
 
    <!-- Status bar -->

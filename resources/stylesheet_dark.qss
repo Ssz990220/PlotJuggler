@@ -2094,6 +2094,11 @@ QScrollArea#scroll_area_ > QWidget > QWidget {
     background: ${backdrop};
 }
 
+QScrollArea#detail_scroll_,
+QScrollArea#detail_scroll_ > QWidget > QWidget {
+    background: ${surface_dialog};
+}
+
 QFrame#extCard {
     background: ${neutral_nominal};
     color: ${on_neutral_nominal};

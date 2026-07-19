@@ -2109,6 +2109,14 @@ QScrollArea#scroll_area_ > QWidget > QWidget {
     background: ${backdrop};
 }
 
+/* Detail pane (right of the splitter): the lighter "paper" surface the
+   selected card's full description sits against, distinct from the list's
+   backdrop tone. */
+QScrollArea#detail_scroll_,
+QScrollArea#detail_scroll_ > QWidget > QWidget {
+    background: ${surface_dialog};
+}
+
 QFrame#extCard {
     background: ${neutral_nominal};
     color: ${on_neutral_nominal};

@@ -211,6 +211,25 @@ set_target_properties(dual_options_widget_test PROPERTIES
 
 add_test(NAME DualOptionsWidget COMMAND dual_options_widget_test)
 
+add_executable(eliding_label_test eliding_label_test.cpp)
+
+target_link_libraries(eliding_label_test PRIVATE
+    pj_widgets
+    GTest::gtest
+    Qt6::Test
+    Qt6::Widgets
+)
+
+if(DEFINED PJ_WARNING_FLAGS)
+    target_compile_options(eliding_label_test PRIVATE ${PJ_WARNING_FLAGS})
+endif()
+
+set_target_properties(eliding_label_test PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+
+add_test(NAME ElidingLabel COMMAND eliding_label_test)
+
 add_executable(toggle_switch_test toggle_switch_test.cpp)
 
 target_link_libraries(toggle_switch_test PRIVATE
