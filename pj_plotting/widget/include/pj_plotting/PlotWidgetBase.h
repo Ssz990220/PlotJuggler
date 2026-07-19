@@ -147,6 +147,10 @@ class PlotWidgetBase : public QWidget {
   class QwtPlotPimpl;
 
   void setStyle(QwtPlotCurve* curve, CurveStyle style);
+  // Maps a CurveStyle onto the Qwt style/symbol/attribute triple without
+  // touching the pen, so callers that manage pen width separately (per-curve
+  // width) can restyle a curve non-destructively.
+  void applyStyleToCurve(QwtPlotCurve* curve, CurveStyle style);
   QColor nextColor();
 
   [[nodiscard]] QwtPlot* qwtPlot();

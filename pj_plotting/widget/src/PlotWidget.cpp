@@ -1030,6 +1030,11 @@ void PlotWidget::onChangeCurveColor(const QString& curve_name, QColor new_color)
   CurveInfo* info = curveFromTitle(curve_name);
   if (info != nullptr && info->curve != nullptr) {
     info->curve->setPen(new_color, info->curve->pen().widthF());
+    // The Lines-and-Dots symbol snapshots its color at creation; recolor it
+    // too or the dots keep the old hue.
+    if (const QwtSymbol* symbol = info->curve->symbol(); symbol != nullptr) {
+      info->curve->setSymbol(new QwtSymbol(symbol->style(), new_color, QPen(new_color), symbol->size()));
+    }
     // Remember the override so the curve keeps this color when re-dragged into
     // another plot (issue #68). Keyed by source_name, the same key addCurve uses.
     // Time-series only: XY curves are keyed by a composed title and the registry
@@ -1058,31 +1063,10 @@ void PlotWidget::setCurveStyle(const QString& curve_name, CurveStyle style) {
   if (info == nullptr || info->curve == nullptr) {
     return;
   }
-  // Mirror PlotWidgetBase::setStyle()'s style-to-Qwt mapping (Steps + Inverted
-  // attribute), but skip the pen-width assignment so per-curve width set via
-  // setCurveLineWidth() survives a style toggle.
-  switch (style) {
-    case kLines:
-      info->curve->setStyle(QwtPlotCurve::Lines);
-      break;
-    case kLinesAndDots:
-      info->curve->setStyle(QwtPlotCurve::LinesAndDots);
-      break;
-    case kDots:
-      info->curve->setStyle(QwtPlotCurve::Dots);
-      break;
-    case kSticks:
-      info->curve->setStyle(QwtPlotCurve::Sticks);
-      break;
-    case kSteps:
-      info->curve->setStyle(QwtPlotCurve::Steps);
-      info->curve->setCurveAttribute(QwtPlotCurve::Inverted, false);
-      break;
-    case kStepsInverted:
-      info->curve->setStyle(QwtPlotCurve::Steps);
-      info->curve->setCurveAttribute(QwtPlotCurve::Inverted, true);
-      break;
-  }
+  // Same style-to-Qwt mapping as PlotWidgetBase::setStyle(), minus the
+  // pen-width assignment so per-curve width set via setCurveLineWidth()
+  // survives a style toggle.
+  applyStyleToCurve(info->curve, style);
   replot();
   if (!loading_state_) {
     emit undoableChange();

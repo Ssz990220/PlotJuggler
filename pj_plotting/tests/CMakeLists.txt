@@ -73,6 +73,18 @@ target_link_libraries(plot_widget_replace_curve_test PRIVATE
 
 add_test(NAME PlotWidgetReplaceCurveTest COMMAND plot_widget_replace_curve_test)
 
+add_executable(plot_scale_draw_test
+    plot_scale_draw_test.cpp
+)
+
+target_compile_options(plot_scale_draw_test PRIVATE ${PJ_WARNING_FLAGS})
+target_link_libraries(plot_scale_draw_test PRIVATE
+    pj_plotting
+    GTest::gtest
+)
+
+add_test(NAME PlotScaleDrawTest COMMAND plot_scale_draw_test)
+
 add_executable(plot_widget_default_style_test
     plot_widget_default_style_test.cpp
     ${CMAKE_SOURCE_DIR}/resources/resources.qrc  # framework token palette (DataBackdrop test)

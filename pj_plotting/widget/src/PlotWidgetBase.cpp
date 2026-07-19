@@ -37,6 +37,7 @@
 #include "pj_plotting/PlotLegend.h"
 #include "pj_plotting/PlotMagnifier.h"
 #include "pj_plotting/PlotPanner.h"
+#include "pj_plotting/PlotScaleDraw.h"
 #include "pj_plotting/PlotZoomer.h"
 #include "pj_widgets/FrameworkTokens.h"
 
@@ -90,6 +91,9 @@ class PlotWidgetBase::QwtPlotPimpl : public QwtPlot {
         event_callback(std::move(event_callback)),
         parent(parent_widget) {
     setCanvas(canvas_widget);
+    for (const int axis : {QwtPlot::yLeft, QwtPlot::yRight, QwtPlot::xBottom, QwtPlot::xTop}) {
+      setAxisScaleDraw(axis, new PlotScaleDraw);
+    }
     const auto fw_theme = theme::appTheme();
     legend = new PlotLegend(this);
     grid = new QwtPlotGrid();
@@ -635,10 +639,13 @@ void PlotWidgetBase::removeAllCurves() {
 void PlotWidgetBase::setStyle(QwtPlotCurve* curve, CurveStyle style) {
   const double width = style == kDots ? dotWidthValue(lineWidth()) : lineWidthValue(lineWidth());
   curve->setPen(curve->pen().color(), width);
+  applyStyleToCurve(curve, style);
+}
 
-  // Qwt's QwtPlotCurve::LinesAndDots style on its own does not draw visible
-  // dots at the pen widths we use (1.4-4.2 px); attach an explicit symbol so
-  // each sample is rendered as a small filled circle. Cleared for plain Lines.
+void PlotWidgetBase::applyStyleToCurve(QwtPlotCurve* curve, CurveStyle style) {
+  // kLinesAndDots draws plain Lines plus an explicit symbol: dots drawn by the
+  // curve pen itself are not visible at the pen widths we use (1.4-4.2 px), so
+  // each sample gets a small filled circle instead. Cleared for other styles.
   switch (style) {
     case kLines:
       curve->setStyle(QwtPlotCurve::Lines);

@@ -146,10 +146,18 @@ Mirror PJ3's `3rdparty/` convention. Vendored deps live at `./3rdparty/<name>/` 
 
 Explicitly vendored (do not take from Conan or system packages):
 
-- **Qwt** — required for Qt 6 compatibility and for parity with PJ3 plot widgets.
 - **Qt-Advanced-Docking-System** — docking framework used by `pj_app`.
 - **nanocdr** — vendored via `add_subdirectory`.
 - **doomgeneric** — a vendored C engine whose sources are globbed directly into the `pj-raster-helper` target (not `add_subdirectory`'d). It and `raster_helper` form an optional, GPL-isolated standalone executable that PlotJuggler never links. **Off by default**: the `pj-raster-helper` target is built only with `-DPJ_BUILD_RASTER_HELPER=ON` (and only when the vendored source is checked out), so a default/CI build never compiles the doomgeneric engine.
+
+**Qwt is external, not vendored** (special case): `3rdparty/qwt/` holds only the
+CMake glue — the default build `FetchContent`s the official 6.3.0 release tarball
+(SHA-256 pinned) and compiles it unmodified; the pixi path links conda-forge's
+prebuilt `qwt` via `-DPJ_SYSTEM_QWT=ON`. Never patch Qwt sources — PJ-specific
+behavior that PJ3 carried as in-tree Qwt patches lives in the app instead: axis
+tick-label formatting in `pj_plotting`'s `PlotScaleDraw` (twin in
+`pj_dialog_host`'s chart preview), and the "Lines and Dots" curve style as
+`Lines` + explicit symbol in `PlotWidgetBase`. See `3rdparty/qwt/README.PJ4.md`.
 
 Other PJ3-style vendorables (`QCodeEditor`, `sol2`, `color_widgets`, `date`) will be vendored on the same pattern as we pull in the modules that need them — decide per-case when each module lands.
 

@@ -102,7 +102,7 @@ add_subdirectory(pj_scripting)
 # Vendored third-party
 # ---------------------------------------------------------------------------
 
-add_subdirectory(3rdparty/qwt/src)
+add_subdirectory(3rdparty/qwt)
 add_subdirectory(3rdparty/nanocdr)
 
 # Qt-Advanced-Docking submodule (PlotJuggler/Qt-Advanced-Docking-System fork
