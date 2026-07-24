@@ -29,6 +29,7 @@
 #include "pj_base/dataset.hpp"
 #include "pj_base/type_tree.hpp"
 #include "pj_datastore/engine.hpp"
+#include "pj_datastore/merge_result.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_datastore/query.hpp"
 #include "pj_datastore/reader.hpp"
@@ -776,6 +777,53 @@ TEST(PlotWidgetSnapshotReload, ReloadChangingXFieldToStringEmptiesSnapshot) {
 
   plot.setTrackerPosition(0.5);
   EXPECT_EQ(snapshotOf(plot.curveList().front())->size(), 0U) << "type-changed X should leave the snapshot empty";
+}
+
+// --- destructive merge: revalidate drops consumed snapshots, keeps the anchor ----
+
+// A destructive merge folds a source dataset into the anchor and consumes the source.
+// revalidate() must remove a snapshot bound to the consumed dataset (never migrate it
+// to the anchor) while re-resolving and keeping a snapshot bound to the anchor.
+TEST(PlotWidgetSnapshotReload, DestructiveMergeRemovesConsumedSnapshotKeepsAnchor) {
+  SessionManager session;
+  CatalogModel catalog(&session);
+  const SplineDataset anchor = buildSplineDataset(session, "anchor", "splineAnchor", 0.0);
+  const SplineDataset source = buildSplineDataset(session, "source", "splineSource", 100000.0);
+  catalog.rebuildFromDatastore();
+
+  // One plot holding a snapshot on EACH dataset (same topic + pattern, distinct
+  // datasets — coexisting via the dataset-qualified key from item A).
+  PlotWidget plot(&session, &catalog);
+  ASSERT_EQ(
+      plot.addSnapshotCurveGroup(
+              anchor.dataset_id, anchor.topic_id, QString(), {QStringLiteral("predicted_trajectory[:].positions[0]")})
+          .size(),
+      1U);
+  ASSERT_EQ(
+      plot.addSnapshotCurveGroup(
+              source.dataset_id, source.topic_id, QString(), {QStringLiteral("predicted_trajectory[:].positions[0]")})
+          .size(),
+      1U);
+  ASSERT_EQ(plot.curveList().size(), 2U);
+
+  // Fold `source` into `anchor`, then drop the consumed dataset from the catalog and
+  // revalidate — the sequence MainWindow runs (mergeDatasets -> removeDataset ->
+  // syncWidgetsToCatalog).
+  const auto report = session.mergeDatasets(
+      anchor.dataset_id, {DatasetMergeSource{.dataset_id = source.dataset_id, .raw_shift_ns = 0}});
+  ASSERT_TRUE(report.has_value());
+  catalog.removeDataset(source.dataset_id);
+  catalog.rebuildFromDatastore();
+
+  EXPECT_TRUE(plot.revalidate());
+  ASSERT_EQ(plot.curveList().size(), 1U) << "the consumed-source snapshot must be removed";
+  const SnapshotSeriesData* survivor = snapshotOf(plot.curveList().front());
+  ASSERT_NE(survivor, nullptr);
+  EXPECT_EQ(survivor->datasetId(), anchor.dataset_id) << "the surviving snapshot must be the anchor's, not migrated";
+
+  // The survivor still plots real data (its plan was re-resolved against the anchor).
+  plot.setTrackerPosition(0.5);
+  EXPECT_EQ(survivor->size(), static_cast<std::size_t>(kElements));
 }
 
 // The snapshot-group dialog populates its topic combo from the catalog and defaults

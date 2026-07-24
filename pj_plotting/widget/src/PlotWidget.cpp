@@ -1520,6 +1520,7 @@ bool PlotWidget::revalidate() {
   // then remove: removeCurve() mutates curve_list, so removing while iterating
   // would invalidate the iterator.
   QStringList to_remove;
+  bool snapshot_rebound = false;
   for (const CurveInfo& info : curveList()) {
     if (info.curve == nullptr) {
       continue;
@@ -1533,13 +1534,33 @@ bool PlotWidget::revalidate() {
           !catalog_->curveDescriptor(xy_series->ySource().name).has_value()) {
         to_remove.push_back(info.source_name);
       }
+    } else if (auto* snapshot = dynamic_cast<SnapshotSeriesData*>(info.curve->data())) {
+      // A snapshot's source_name is a synthetic key, so check its (dataset, topic) by
+      // enumerating the topic's columns. TopicId is globally unique, so an empty set
+      // means the topic is gone from the catalog — e.g. a destructive merge consumed
+      // its dataset. Remove it; never silently migrate a consumed-source snapshot to
+      // the merge anchor. If the topic survives (the anchor), its schema may have
+      // changed additively, so re-resolve the patterns / rebuild the plan.
+      const std::vector<SnapshotColumn> columns = snapshotColumnsForTopic(snapshot->topicId());
+      if (columns.empty()) {
+        to_remove.push_back(info.source_name);
+      } else {
+        snapshot->rebuildPlan(columns);
+        snapshot_rebound = true;
+      }
     }
   }
-  if (to_remove.isEmpty()) {
+  if (to_remove.isEmpty() && !snapshot_rebound) {
     return false;
   }
   for (const QString& source_name : to_remove) {
     removeCurve(source_name);
+  }
+  // Re-populate any snapshot whose plan was just rebuilt (rebuildPlan cleared its
+  // points) so it shows the current message rather than rendering blank until the
+  // next tracker move.
+  if (snapshot_rebound) {
+    refreshSnapshotCurves(last_tracker_time_sec_);
   }
   // If revalidation drained every curve, mirror removeAllCurves()'s reset out of
   // XY mode: onDragEnterEvent() only accepts an add_curve drop when !isXYPlot(),
