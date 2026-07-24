@@ -8,11 +8,13 @@
 #include <QTimer>
 #include <QtGlobal>
 #include <memory>
+#include <string>
 #include <string_view>
 #include <utility>
 
 #include "PendingDisplayBinder.h"
 #include "TopicDemandController.h"
+#include "pj_base/type_tree.hpp"
 #include "pj_datastore/writer.hpp"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
@@ -99,6 +101,51 @@ QString addRawScalarTopic(PJ::AppSession& app_session, DatasetId dataset_id, con
   app_session.catalogModel().rebuildFromDatastore();
   const auto key = PJ::resolveSeriesPath(app_session.catalogModel(), PJ::layout_xml::SeriesPath{topic_name, QString()});
   return key.value_or(QString());
+}
+
+// Registers a spline-shaped array topic (predicted_trajectory[0..4], each element
+// carrying positions[0..1] + time_from_start_s) and writes one message, so a
+// snapshot curve group can wildcard it. Returns its TopicId (0 on failure).
+PJ::TopicId addSplineTopic(PJ::AppSession& app_session, DatasetId dataset_id, const std::string& topic_name) {
+  PJ::DataWriter writer = app_session.sessionManager().dataEngine().createWriter();
+  auto positions = PJ::makeArray("positions", PJ::makePrimitive("", PJ::PrimitiveType::kFloat64), 2);
+  auto element = PJ::makeStruct("", {positions, PJ::makePrimitive("time_from_start_s", PJ::PrimitiveType::kFloat64)});
+  auto traj = PJ::makeArray("predicted_trajectory", element, 5);
+  auto root = PJ::makeStruct("SplineInfo", {traj});
+  auto schema = writer.registerSchema("spline", root);
+  if (!schema.has_value()) {
+    ADD_FAILURE() << schema.error();
+    return 0;
+  }
+  auto topic = writer.registerTopic(dataset_id, PJ::TopicDescriptor{.name = topic_name, .schema_id = *schema});
+  if (!topic.has_value()) {
+    ADD_FAILURE() << topic.error();
+    return 0;
+  }
+  if (!writer.bindTopicWriter(*topic).has_value() || !writer.beginRow(*topic, 100).has_value()) {
+    ADD_FAILURE() << "bind/beginRow failed";
+    return 0;
+  }
+  for (int i = 0; i < 5; ++i) {
+    for (int j = 0; j < 2; ++j) {
+      if (auto c = writer.resolveField(
+              *topic, "predicted_trajectory[" + std::to_string(i) + "].positions[" + std::to_string(j) + "]");
+          c.has_value()) {
+        writer.set(*topic, static_cast<std::size_t>(*c), 1.0 * i + j);
+      }
+    }
+    if (auto s = writer.resolveField(*topic, "predicted_trajectory[" + std::to_string(i) + "].time_from_start_s");
+        s.has_value()) {
+      writer.set(*topic, static_cast<std::size_t>(*s), 0.5 * i);
+    }
+  }
+  if (!writer.finishRow(*topic).has_value() ||
+      app_session.sessionManager().commitChunks(writer.flushAll()).empty()) {
+    ADD_FAILURE() << "finishRow/commit failed";
+    return 0;
+  }
+  app_session.catalogModel().rebuildFromDatastore();
+  return *topic;
 }
 
 void addObjectTopic(PJ::AppSession& app_session, DatasetId dataset_id, const QString& topic_name) {
@@ -225,6 +272,28 @@ TEST_F(TopicDemandControllerTest, PlotCurveAddRemoveTracksDemand) {
 
   plot.removeAllCurves();
   EXPECT_FALSE(referencesTopic(app_session_->topicDemandTracker(), dataset_id_, u"/speed"_s));
+}
+
+TEST_F(TopicDemandControllerTest, SnapshotCurveReferencesItsTopicUntilRemoved) {
+  const PJ::TopicId topic_id = addSplineTopic(*app_session_, dataset_id_, "/spline");
+  ASSERT_NE(topic_id, 0U);
+
+  PJ::PlotWidget plot(&app_session_->sessionManager(), &app_session_->catalogModel());
+  controller_->registerPlot(&plot);
+  auto& tracker = app_session_->topicDemandTracker();
+  EXPECT_FALSE(referencesTopic(tracker, dataset_id_, u"/spline"_s));
+
+  const auto added = plot.addSnapshotCurveGroup(
+      dataset_id_, topic_id, QStringLiteral("predicted_trajectory[:].time_from_start_s"),
+      {QStringLiteral("predicted_trajectory[:].positions[0]")});
+  ASSERT_EQ(added.size(), 1U);
+  // The snapshot curve's source_name is a synthetic key absent from the catalog. A
+  // demand-capable source would unsubscribe the topic (freezing the plot) unless the
+  // controller holds a reference to it for as long as the curve is shown.
+  EXPECT_TRUE(referencesTopic(tracker, dataset_id_, u"/spline"_s));
+
+  plot.removeAllCurves();
+  EXPECT_FALSE(referencesTopic(tracker, dataset_id_, u"/spline"_s));
 }
 
 TEST_F(TopicDemandControllerTest, XyCurveReferencesBothSources) {

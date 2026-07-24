@@ -13,6 +13,7 @@
 #include "pj_datastore/engine.hpp"
 #include "pj_plotting/PlotWidget.h"
 #include "pj_plotting/PointSeriesXY.h"
+#include "pj_plotting/SnapshotSeriesData.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DataProcessorService.h"
 #include "pj_runtime/TopicDemandTracker.h"
@@ -101,6 +102,17 @@ void TopicDemandController::syncPlot(PlotWidget* plot) {
           current, xy_series->xSource().dataset_id, xy_series->xSource().topic_name, xy_series->xSource().topic_id);
       appendTopicRefs(
           current, xy_series->ySource().dataset_id, xy_series->ySource().topic_name, xy_series->ySource().topic_id);
+      continue;
+    }
+    if (const auto* snapshot = dynamic_cast<const SnapshotSeriesData*>(info.curve->data())) {
+      // A snapshot curve's source_name is a synthetic key (snapshot:<topic>:<x>:<y>)
+      // that the itemDescriptor() lookup below cannot resolve — so without this branch
+      // no demand is registered, and a demand-capable streaming source unsubscribes the
+      // topic and the snapshot freezes. Reference its own (dataset, topic) identity
+      // through the same appendTopicRefs the XY branch uses.
+      appendTopicRefs(
+          current, snapshot->datasetId(), QString::fromStdString(snapshot->binding().topic_name),
+          snapshot->topicId());
       continue;
     }
     const auto item = catalog_.itemDescriptor(info.source_name);
