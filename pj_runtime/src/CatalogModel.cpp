@@ -318,6 +318,21 @@ bool CatalogModel::isEmpty() const noexcept {
   return impl_->items.empty();
 }
 
+std::vector<DatasetId> CatalogModel::datasetsNamingTopic(const QString& topic_name) const {
+  std::vector<DatasetId> ids;
+  if (topic_name.isEmpty()) {
+    return ids;
+  }
+  for (const auto& [key, item] : impl_->items) {
+    (void)key;
+    if (item.topic_name == topic_name &&
+        std::find(ids.begin(), ids.end(), item.dataset_id) == ids.end()) {
+      ids.push_back(item.dataset_id);
+    }
+  }
+  return ids;
+}
+
 std::optional<CatalogItem> CatalogModel::itemDescriptor(const QString& key) const {
   const auto it = impl_->items.find(key);
   if (it == impl_->items.end()) {

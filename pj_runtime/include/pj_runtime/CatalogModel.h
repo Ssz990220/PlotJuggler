@@ -134,6 +134,11 @@ class CatalogModel : public QObject {
   std::vector<CatalogItem> items() const;
   // Fast alternative to items().empty(), which copies and sorts entries.
   [[nodiscard]] bool isEmpty() const noexcept;
+  // Dataset ids that currently name `topic_name`, in unspecified order. A plain
+  // equality scan — unlike items(), no catalog copy and no locale-aware sort —
+  // so it is safe in per-entry hot paths (the pending display binder refreshes
+  // demand refs for every staged curve on every ingest-driven flush).
+  [[nodiscard]] std::vector<DatasetId> datasetsNamingTopic(const QString& topic_name) const;
   [[nodiscard]] std::optional<CatalogItem> itemDescriptor(const QString& key) const;
 
   // Latest scalar value at or before display-axis time `display_seconds` for the

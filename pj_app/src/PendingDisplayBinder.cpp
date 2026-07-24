@@ -18,17 +18,12 @@ namespace {
 // an advertised placeholder both count (see PendingDisplayBinder's class doc: a
 // pending bind is a demand reference, and referencing every candidate dataset is
 // the safe superset when the name is ambiguous across datasets).
+// Must stay off CatalogModel::items(): that accessor copies the whole catalog and
+// locale-aware-sorts it, and this helper runs per staged entry on every flush —
+// with a large flattened catalog that turns layout restore into a multi-second
+// GUI stall.
 std::vector<DatasetId> datasetsNaming(const CatalogModel& catalog, const QString& topic_name) {
-  std::vector<DatasetId> ids;
-  if (topic_name.isEmpty()) {
-    return ids;
-  }
-  for (const CatalogItem& item : catalog.items()) {
-    if (item.topic_name == topic_name && std::find(ids.begin(), ids.end(), item.dataset_id) == ids.end()) {
-      ids.push_back(item.dataset_id);
-    }
-  }
-  return ids;
+  return catalog.datasetsNamingTopic(topic_name);
 }
 }  // namespace
 
