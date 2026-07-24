@@ -80,12 +80,15 @@ constexpr int kHoverHitRadiusPx = 40;
 }
 
 // Stable, per-load-invariant identity key for a snapshot curve. Encodes the
-// binding (topic + X source + Y leaf), NOT the per-load topic id / column indices,
-// so it survives save/reload and drives the load remove-pass and idempotent re-add.
+// binding (dataset source + topic + X source + Y leaf), NOT the per-load topic id /
+// column indices, so it survives save/reload and drives the load remove-pass and
+// idempotent re-add. The dataset source qualifier keeps two same-pattern snapshots
+// from different datasets in one plot from colliding onto a single key (which
+// PlotWidgetBase::addCurve rejects as a duplicate, silently dropping the second).
 [[nodiscard]] QString stableSnapshotKey(
-    const QString& topic_name, const QString& x_pattern, const QString& y_pattern) {
-  return QStringLiteral("snapshot:%1:%2:%3")
-      .arg(topic_name, x_pattern.isEmpty() ? QStringLiteral("index") : x_pattern, y_pattern);
+    const QString& dataset_source, const QString& topic_name, const QString& x_pattern, const QString& y_pattern) {
+  return QStringLiteral("snapshot:%1:%2:%3:%4")
+      .arg(dataset_source, topic_name, x_pattern.isEmpty() ? QStringLiteral("index") : x_pattern, y_pattern);
 }
 
 // A CONCRETE field path for one element of a wildcard pattern: "<array>[:]<leaf>"
@@ -468,10 +471,13 @@ PlotWidget::CurveInfo* PlotWidget::addSnapshotCurve(
   };
   auto* series =
       new SnapshotSeriesData(session_, topic_id, dataset_id, x_mode, x_elements, std::move(y_elements), binding);
-  // Identity is the stable (topic, X, Y) key so save/reload and the load remove-pass
-  // line up regardless of the per-load topic id; legend shows the caller's label or
-  // the Y leaf name.
-  const QString name = stableSnapshotKey(topic_name, x_pattern, y_pattern);
+  // Identity is the stable (dataset source, topic, X, Y) key so save/reload and the
+  // load remove-pass line up regardless of the per-load topic id; legend shows the
+  // caller's label or the Y leaf name. The dataset source is the raw source_name of
+  // this snapshot's dataset — the same value xmlSaveState persists and the load path
+  // re-derives, so the runtime key matches the one desired_keys computes from XML.
+  const QString dataset_source = catalog_->datasetSourceName(dataset_id).value_or(QString());
+  const QString name = stableSnapshotKey(dataset_source, topic_name, x_pattern, y_pattern);
   const QString display = display_label.isEmpty() ? snapshotLeafLabel(y_pattern) : display_label;
   CurveInfo* info = PlotWidgetBase::addCurve(name, series, color, display);
   if (info == nullptr) {
@@ -889,6 +895,18 @@ QDomElement PlotWidget::xmlSaveState(QDomDocument& doc) const {
       // Representative concrete field: the first resolved element of the Y pattern.
       const uint32_t element = snapshot->yElements().empty() ? 0 : snapshot->yElements().front().element_index;
       curve_element.setAttribute(u"field"_s, concreteField(y_pattern, element));
+      // Dataset qualifiers, exactly as write_stable_path stamps them for a normal
+      // curve: the exact id plus the portable raw source_name. These let the loader
+      // (and the app-level rebind that reads topic/field/dataset_* into a SeriesPath)
+      // resolve the representative field within THIS dataset, never interchanging a
+      // same-topic sibling. Absent on old v3 layouts → the loader's unqualified path.
+      if (catalog_ != nullptr) {
+        curve_element.setAttribute(u"dataset_id"_s, QString::number(snapshot->datasetId()));
+        if (const auto source = catalog_->datasetSourceName(snapshot->datasetId());
+            source.has_value() && !source->isEmpty()) {
+          curve_element.setAttribute(u"dataset_source"_s, *source);
+        }
+      }
     } else {
       write_stable_path(curve_element, u"topic"_s, u"field"_s, u"dataset_id"_s, u"dataset_source"_s, info.source_name);
     }
@@ -1034,10 +1052,12 @@ bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
   for (QDomElement curve_element = plot_element.firstChildElement(u"curve"_s); !curve_element.isNull();
        curve_element = curve_element.nextSiblingElement(u"curve"_s)) {
     if (curve_element.hasAttribute(u"snapshot_y"_s)) {
-      // Snapshot curve: keyed by its stable (topic, X pattern, Y pattern) identity.
+      // Snapshot curve: keyed by its stable (dataset source, topic, X, Y) identity.
+      // The dataset_source attr (absent on pre-qualifier layouts → empty segment)
+      // matches the token addSnapshotCurve derives from the resolved dataset id.
       desired_keys.insert(curveKey(stableSnapshotKey(
-          curve_element.attribute(u"topic"_s), curve_element.attribute(u"snapshot_x"_s),
-          curve_element.attribute(u"snapshot_y"_s))));
+          curve_element.attribute(u"dataset_source"_s), curve_element.attribute(u"topic"_s),
+          curve_element.attribute(u"snapshot_x"_s), curve_element.attribute(u"snapshot_y"_s))));
     } else if (isXYPlot() && curve_element.hasAttribute(u"curve_x"_s) && curve_element.hasAttribute(u"curve_y"_s)) {
       desired_keys.insert(curveKey(
           curve_element.attribute(u"name"_s), curve_element.attribute(u"curve_x"_s),
@@ -1200,23 +1220,51 @@ PlotWidget::CurveInfo* PlotWidget::applyCurveElement(const QDomElement& curve_el
     const QString x_pattern = curve_element.attribute(u"snapshot_x"_s);
     const QString y_pattern = curve_element.attribute(u"snapshot_y"_s);
     const QString label = curve_element.attribute(u"label"_s);
-    loaded_curve = curveFromTitle(stableSnapshotKey(topic_name, x_pattern, y_pattern));
+    const QString dataset_source = curve_element.attribute(u"dataset_source"_s);
+    loaded_curve = curveFromTitle(stableSnapshotKey(dataset_source, topic_name, x_pattern, y_pattern));
     if (loaded_curve == nullptr && catalog_ != nullptr) {
-      // Resolve the topic id/dataset AND collect its columns in ONE catalog pass, so a
-      // layout with many snapshot curves does not copy the (large) catalog twice per
-      // curve as topics bind in during a live-bridge connect.
+      // Resolve the snapshot's topic to a SPECIFIC (dataset id, topic id) exactly the
+      // way a normal curve resolves — via the representative concrete field + its saved
+      // dataset qualifiers — so a same-topic sibling dataset is never interchanged and
+      // the column enumeration below never mixes columns across datasets. TopicId is
+      // globally unique, so restricting to it is sufficient.
       DatasetId dataset_id = 0;
       TopicId topic_id = 0;
-      std::vector<SnapshotColumn> columns;
-      for (const CurveDescriptor& curve : catalog_->curves()) {
-        if (curve.topic_name != topic_name) {
-          continue;
+      bool have_topic = false;
+      const QString field = curve_element.attribute(u"field"_s);
+      if (!field.isEmpty()) {
+        const DatasetId saved_id =
+            static_cast<DatasetId>(curve_element.attribute(u"dataset_id"_s).toULongLong());
+        const QString saved_path = curve_element.attribute(u"dataset_path"_s);
+        if (const auto key = catalog_->resolveCurveKey(saved_id, dataset_source, saved_path, topic_name, field);
+            key.has_value()) {
+          if (const auto descriptor = catalog_->curveDescriptor(*key); descriptor.has_value()) {
+            dataset_id = descriptor->dataset_id;
+            topic_id = descriptor->topic_id;
+            have_topic = true;
+          }
         }
-        dataset_id = curve.dataset_id;
-        topic_id = curve.topic_id;
-        columns.push_back(
-            SnapshotColumn{.column_index = curve.column_index, .field_path = curve.field_path.toStdString()});
       }
+      // Backward compat: a pre-qualifier layout (no dataset_source / unresolvable
+      // representative field) binds by topic name, taking the first matching topic.
+      // This still restricts columns to ONE topic id below, so it never mixes sibling
+      // datasets the way the old topic-name column scan did; for the single-dataset v3
+      // case it is exactly the intended topic.
+      if (!have_topic) {
+        for (const CurveDescriptor& curve : catalog_->curves()) {
+          if (curve.topic_name == topic_name) {
+            dataset_id = curve.dataset_id;
+            topic_id = curve.topic_id;
+            have_topic = true;
+            break;
+          }
+        }
+      }
+      // ONE catalog pass for the resolved topic's columns (a layout restore of many
+      // snapshot curves must not re-copy the large catalog per curve during a
+      // live-bridge connect).
+      const std::vector<SnapshotColumn> columns =
+          have_topic ? snapshotColumnsForTopic(topic_id) : std::vector<SnapshotColumn>{};
       if (!columns.empty()) {
         loaded_curve = addSnapshotCurve(
             dataset_id, topic_id, topic_name, x_pattern, y_pattern, label, color.isValid() ? color : Qt::transparent,
@@ -1731,6 +1779,11 @@ void PlotWidget::stampClipboardCurveKeys(QDomElement& plot_element) const {
       curve_element.setAttribute(u"curve_y"_s, xy_series->ySource().name);
       stamp_path(curve_element, u"x_dataset_path"_s, xy_series->xSource().dataset_id);
       stamp_path(curve_element, u"y_dataset_path"_s, xy_series->ySource().dataset_id);
+    } else if (auto* snapshot = dynamic_cast<SnapshotSeriesData*>(info.curve->data())) {
+      // A snapshot's source_name is a synthetic key, so curveDescriptor() cannot find
+      // its dataset. Take the dataset id straight from the series so the full-path
+      // qualifier still gets stamped (the tiebreak rebindClipboardCurveKeys needs).
+      stamp_path(curve_element, u"dataset_path"_s, snapshot->datasetId());
     } else if (catalog_ != nullptr) {
       if (const auto descriptor = catalog_->curveDescriptor(info.source_name); descriptor.has_value()) {
         stamp_path(curve_element, u"dataset_path"_s, descriptor->dataset_id);

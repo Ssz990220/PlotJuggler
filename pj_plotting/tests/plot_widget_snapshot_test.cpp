@@ -541,6 +541,126 @@ TEST(YAxisRangeDialogTest, SeedsAndReportsBounds) {
   EXPECT_DOUBLE_EQ(*full.yMax(), 2.0);
 }
 
+// --- dataset-qualified snapshot identity (two datasets sharing a topic) --------
+
+struct SplineDataset {
+  DatasetId dataset_id = 0;
+  TopicId topic_id = 0;
+};
+
+// Builds a dataset named `source` carrying topic "/spline" (predicted_trajectory
+// [0..kElements) × positions[0..kPositions) + time_from_start_s), one message at
+// t=0. positions[j] of element i = base + 10*i + j, so the two datasets' data are
+// distinguishable — a snapshot's plotted value reveals which dataset it bound to.
+SplineDataset buildSplineDataset(
+    SessionManager& session, const std::string& source, const std::string& schema_name, double base) {
+  SplineDataset out;
+  out.dataset_id = *session.dataEngine().createDataset(DatasetDescriptor{.source_name = source});
+  DataWriter writer = session.dataEngine().createWriter();
+  auto positions = makeArray("positions", makePrimitive("", PrimitiveType::kFloat64), kPositions);
+  auto element = makeStruct("", {positions, makePrimitive("time_from_start_s", PrimitiveType::kFloat64)});
+  auto traj = makeArray("predicted_trajectory", element, kElements);
+  auto root = makeStruct("SplineInfo", {traj});
+  out.topic_id = *writer.registerTopic(
+      out.dataset_id, TopicDescriptor{.name = "/spline", .schema_id = *writer.registerSchema(schema_name, root)});
+  EXPECT_TRUE(writer.bindTopicWriter(out.topic_id).has_value());
+  EXPECT_TRUE(writer.beginRow(out.topic_id, 0).has_value());
+  for (int i = 0; i < kElements; ++i) {
+    for (int j = 0; j < kPositions; ++j) {
+      writer.set(out.topic_id, static_cast<std::size_t>(*writer.resolveField(out.topic_id, posPath(i, j))),
+                 base + 10.0 * i + j);
+    }
+    writer.set(out.topic_id, static_cast<std::size_t>(*writer.resolveField(out.topic_id, stampPath(i))), stampValue(i));
+  }
+  EXPECT_TRUE(writer.finishRow(out.topic_id).has_value());
+  EXPECT_FALSE(session.commitChunks(writer.flushAll()).empty());
+  return out;
+}
+
+// Save a snapshot on the SECOND of two same-topic datasets, then reload: it must
+// re-bind to that exact dataset (never the sibling), reading its data — and the
+// saved XML must carry the dataset qualifiers that make this unambiguous.
+TEST(PlotWidgetSnapshotDataset, BindsToTheRightDatasetAndPersistsQualifiers) {
+  SessionManager session;
+  CatalogModel catalog(&session);
+  const SplineDataset a = buildSplineDataset(session, "fileA", "splineA", 0.0);
+  const SplineDataset b = buildSplineDataset(session, "fileB", "splineB", 100000.0);
+  catalog.rebuildFromDatastore();
+
+  PlotWidget src(&session, &catalog);
+  ASSERT_EQ(
+      src.addSnapshotCurveGroup(
+             b.dataset_id, b.topic_id, QString(), {QStringLiteral("predicted_trajectory[:].positions[0]")})
+          .size(),
+      1U);
+  src.setTrackerPosition(0.5);
+  const SnapshotSeriesData* s = snapshotOf(src.curveList().front());
+  ASSERT_NE(s, nullptr);
+  EXPECT_EQ(s->datasetId(), b.dataset_id);
+  EXPECT_DOUBLE_EQ(s->sample(0).y(), 100000.0) << "source snapshot must read dataset B's data";
+
+  QDomDocument doc;
+  QDomElement elem = src.xmlSaveState(doc);
+  doc.appendChild(elem);
+  const QDomElement saved_curve = elem.firstChildElement(QStringLiteral("curve"));
+  EXPECT_EQ(saved_curve.attribute(QStringLiteral("dataset_id")).toUInt(), b.dataset_id);
+  EXPECT_EQ(saved_curve.attribute(QStringLiteral("dataset_source")), QStringLiteral("fileB"));
+
+  // Reload into a fresh plot sharing the session: must bind to B, not A.
+  PlotWidget dst(&session, &catalog);
+  ASSERT_TRUE(dst.xmlLoadState(elem));
+  ASSERT_EQ(dst.curveList().size(), 1U);
+  const SnapshotSeriesData* d = snapshotOf(dst.curveList().front());
+  ASSERT_NE(d, nullptr);
+  EXPECT_EQ(d->datasetId(), b.dataset_id) << "reload bound to the wrong (sibling) dataset";
+  dst.setTrackerPosition(0.5);
+  EXPECT_DOUBLE_EQ(d->sample(0).y(), 100000.0);
+
+  // Round-trip preserves the qualifiers (re-save is stable).
+  QDomDocument doc2;
+  QDomElement elem2 = dst.xmlSaveState(doc2);
+  const QDomElement resaved = elem2.firstChildElement(QStringLiteral("curve"));
+  EXPECT_EQ(resaved.attribute(QStringLiteral("dataset_id")).toUInt(), b.dataset_id);
+  EXPECT_EQ(resaved.attribute(QStringLiteral("dataset_source")), QStringLiteral("fileB"));
+}
+
+// Two same-pattern snapshots from DIFFERENT datasets must coexist in one plot. The
+// dataset-qualified stable key keeps them distinct; a topic-only key would collide
+// and PlotWidgetBase::addCurve would silently drop the second.
+TEST(PlotWidgetSnapshotDataset, SameTopicTwoDatasetsCoexistInOnePlot) {
+  SessionManager session;
+  CatalogModel catalog(&session);
+  const SplineDataset a = buildSplineDataset(session, "fileA", "splineA", 0.0);
+  const SplineDataset b = buildSplineDataset(session, "fileB", "splineB", 100000.0);
+  catalog.rebuildFromDatastore();
+
+  PlotWidget plot(&session, &catalog);
+  ASSERT_EQ(
+      plot.addSnapshotCurveGroup(
+              a.dataset_id, a.topic_id, QString(), {QStringLiteral("predicted_trajectory[:].positions[0]")})
+          .size(),
+      1U);
+  ASSERT_EQ(
+      plot.addSnapshotCurveGroup(
+              b.dataset_id, b.topic_id, QString(), {QStringLiteral("predicted_trajectory[:].positions[0]")})
+          .size(),
+      1U);
+  ASSERT_EQ(plot.curveList().size(), 2U) << "the second same-pattern snapshot collided onto the first";
+
+  plot.setTrackerPosition(0.5);
+  // Each curve reads its OWN dataset's data (0 vs 100000), proving they are two
+  // distinct series bound to distinct datasets, not one shadowing the other.
+  double y_a = std::numeric_limits<double>::quiet_NaN();
+  double y_b = std::numeric_limits<double>::quiet_NaN();
+  for (const auto& info : plot.curveList()) {
+    const SnapshotSeriesData* series = snapshotOf(info);
+    ASSERT_NE(series, nullptr);
+    (series->datasetId() == a.dataset_id ? y_a : y_b) = series->sample(0).y();
+  }
+  EXPECT_DOUBLE_EQ(y_a, 0.0);
+  EXPECT_DOUBLE_EQ(y_b, 100000.0);
+}
+
 // The snapshot-group dialog populates its topic combo from the catalog and defaults
 // to index x-mode with nothing selected.
 TEST(SnapshotGroupDialogTest, PopulatesTopicAndDefaults) {
