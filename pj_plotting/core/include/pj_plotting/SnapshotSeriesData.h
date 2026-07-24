@@ -70,6 +70,15 @@ class SnapshotSeriesData final : public QwtSeriesData<QPointF> {
   // Drop the current snapshot (dataset replaced / cleared).
   void onDataCleared();
 
+  // Re-resolve the X/Y patterns held in binding() against a fresh column set (the
+  // topic's columns after an in-place dataset reload swapped its column descriptors
+  // wholesale) and rebuild the read plan, so the cached numeric column indices can
+  // never silently point at different fields. Clears the current points; the next
+  // refresh() repopulates. Returns true if the Y pattern (and, in kColumn x-mode, at
+  // least one element-paired X) still resolves — false leaves the plan empty so the
+  // curve gracefully renders nothing.
+  bool rebuildPlan(const std::vector<SnapshotColumn>& columns);
+
   [[nodiscard]] TopicId topicId() const noexcept {
     return topic_id_;
   }
@@ -101,6 +110,9 @@ class SnapshotSeriesData final : public QwtSeriesData<QPointF> {
   };
 
   void recomputeBoundingRect() const;
+  // Build query_columns_ + plans_ from the current x_elements_/y_elements_ (the
+  // shared core of construction and rebuildPlan). Clears both first.
+  void buildPlan();
 
   SessionManager* session_ = nullptr;
   TopicId topic_id_ = 0;

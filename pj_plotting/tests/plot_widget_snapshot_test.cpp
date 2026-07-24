@@ -24,8 +24,12 @@
 #include <utility>
 #include <vector>
 
+#include <memory>
+
 #include "pj_base/dataset.hpp"
 #include "pj_base/type_tree.hpp"
+#include "pj_datastore/engine.hpp"
+#include "pj_datastore/object_store.hpp"
 #include "pj_datastore/query.hpp"
 #include "pj_datastore/reader.hpp"
 #include "pj_datastore/writer.hpp"
@@ -659,6 +663,119 @@ TEST(PlotWidgetSnapshotDataset, SameTopicTwoDatasetsCoexistInOnePlot) {
   }
   EXPECT_DOUBLE_EQ(y_a, 0.0);
   EXPECT_DOUBLE_EQ(y_b, 100000.0);
+}
+
+// --- in-place reload rebuilds the cached column plan (item B) -------------------
+
+// Reloads `primary_id`'s "/spline" topic IN PLACE with a staged copy whose element
+// struct is `element` — letting a case reorder / insert / remove / retype fields.
+// positions[j] of element i is written as base + 10*i + j; time_from_start_s as
+// 0.5*i, but only when `stamp_is_float` (a string stamp is left unwritten). Uses the
+// real SessionManager::replaceDataset path, so it fires datasetAboutToBeReplaced +
+// samplesIngested exactly like a file reload; the topic keeps its TopicId while its
+// column descriptors are swapped wholesale. The caller rebuilds the catalog after,
+// mirroring FileLoader::finishLoadOnGui.
+void reloadSplineInPlace(
+    SessionManager& session, DatasetId primary_id, const std::shared_ptr<TypeTreeNode>& element, int elements,
+    double base, bool stamp_is_float) {
+  DataEngine staged_engine;
+  ObjectStore staged_store;
+  const DatasetId staged_id = *staged_engine.createDataset(DatasetDescriptor{.source_name = "spline"});
+  DataWriter writer = staged_engine.createWriter();
+  auto traj = makeArray("predicted_trajectory", element, elements);
+  auto root = makeStruct("SplineInfo", {traj});
+  const TopicId topic = *writer.registerTopic(
+      staged_id, TopicDescriptor{.name = "/spline", .schema_id = *writer.registerSchema("spline_reloaded", root)});
+  EXPECT_TRUE(writer.bindTopicWriter(topic).has_value());
+  EXPECT_TRUE(writer.beginRow(topic, 0).has_value());
+  for (int i = 0; i < elements; ++i) {
+    for (int j = 0; j < kPositions; ++j) {
+      if (auto c = writer.resolveField(topic, posPath(i, j)); c.has_value()) {
+        writer.set(topic, static_cast<std::size_t>(*c), base + 10.0 * i + j);
+      }
+    }
+    if (stamp_is_float) {
+      if (auto c = writer.resolveField(topic, stampPath(i)); c.has_value()) {
+        writer.set(topic, static_cast<std::size_t>(*c), stampValue(i));
+      }
+    }
+  }
+  EXPECT_TRUE(writer.finishRow(topic).has_value());
+  staged_engine.commitChunks(writer.flushAll());
+  session.replaceDataset(staged_engine, staged_store, staged_id, primary_id, {});
+}
+
+// A reload that reorders (and inserts) columns must leave the snapshot plotting the
+// FIELD, not a now-stale column index. The engine keeps the TopicId but swaps the
+// column descriptors, so the cached indices would silently point at other fields.
+TEST(PlotWidgetSnapshotReload, ReloadReordersColumnsSnapshotTracksField) {
+  Fixture fx;  // element = {positions[0..1], time_from_start_s}
+  PlotWidget plot(&fx.session, &fx.catalog);
+  plot.addSnapshotCurveGroup(
+      fx.dataset_id, fx.topic_id, QString(), {QStringLiteral("predicted_trajectory[:].positions[0]")});
+  plot.setTrackerPosition(0.5);
+  const SnapshotSeriesData* s = snapshotOf(plot.curveList().front());
+  ASSERT_NE(s, nullptr);
+  ASSERT_EQ(s->size(), static_cast<std::size_t>(kElements));
+  EXPECT_DOUBLE_EQ(s->sample(0).y(), posValue(0, 0, 0));
+
+  // Reload: put time_from_start_s FIRST and insert a leaf before positions, so
+  // positions[0]'s flattened column index shifts. New data base = 5000.
+  auto positions = makeArray("positions", makePrimitive("", PrimitiveType::kFloat64), kPositions);
+  auto reordered = makeStruct(
+      "", {makePrimitive("time_from_start_s", PrimitiveType::kFloat64),
+           makePrimitive("inserted_leaf", PrimitiveType::kFloat64), positions});
+  reloadSplineInPlace(fx.session, fx.dataset_id, reordered, kElements, 5000.0, /*stamp_is_float=*/true);
+  fx.catalog.rebuildFromDatastore();  // mirrors FileLoader::finishLoadOnGui
+
+  plot.setTrackerPosition(0.5);
+  ASSERT_EQ(s->size(), static_cast<std::size_t>(kElements)) << "snapshot lost its points across the reload";
+  // 5000 == reloaded positions[0] of element 0; a stale index would read
+  // time_from_start_s / inserted_leaf instead.
+  EXPECT_DOUBLE_EQ(s->sample(0).y(), 5000.0) << "snapshot read a stale column index, not the field";
+  EXPECT_DOUBLE_EQ(s->sample(1).y(), 5010.0);
+}
+
+// A reload that removes the selected field leaves the snapshot empty (graceful), not
+// stale — and does NOT remove the curve (reload keeps curves; only destructive merge
+// removes them via revalidate).
+TEST(PlotWidgetSnapshotReload, ReloadRemovingSelectedFieldEmptiesSnapshotGracefully) {
+  Fixture fx;
+  PlotWidget plot(&fx.session, &fx.catalog);
+  plot.addSnapshotCurveGroup(
+      fx.dataset_id, fx.topic_id, QString(), {QStringLiteral("predicted_trajectory[:].positions[1]")});
+  plot.setTrackerPosition(0.5);
+  ASSERT_EQ(snapshotOf(plot.curveList().front())->size(), static_cast<std::size_t>(kElements));
+
+  // Reload with positions shrunk to a single element — positions[1] no longer exists.
+  auto positions = makeArray("positions", makePrimitive("", PrimitiveType::kFloat64), 1);
+  auto element = makeStruct("", {positions, makePrimitive("time_from_start_s", PrimitiveType::kFloat64)});
+  reloadSplineInPlace(fx.session, fx.dataset_id, element, kElements, 5000.0, /*stamp_is_float=*/true);
+  fx.catalog.rebuildFromDatastore();
+
+  plot.setTrackerPosition(0.5);
+  EXPECT_EQ(snapshotOf(plot.curveList().front())->size(), 0U) << "removed field must empty, not keep stale points";
+  EXPECT_EQ(plot.curveList().size(), 1U) << "reload must keep the (empty) curve, not remove it";
+}
+
+// A reload that turns the X field numeric->string drops it from the numeric column
+// set, so the column-x-mode snapshot re-resolves to an empty (unpaired) plan.
+TEST(PlotWidgetSnapshotReload, ReloadChangingXFieldToStringEmptiesSnapshot) {
+  Fixture fx;
+  PlotWidget plot(&fx.session, &fx.catalog);
+  plot.addSnapshotCurveGroup(
+      fx.dataset_id, fx.topic_id, QStringLiteral("predicted_trajectory[:].time_from_start_s"),
+      {QStringLiteral("predicted_trajectory[:].positions[0]")});
+  plot.setTrackerPosition(0.5);
+  ASSERT_EQ(snapshotOf(plot.curveList().front())->size(), static_cast<std::size_t>(kElements));
+
+  auto positions = makeArray("positions", makePrimitive("", PrimitiveType::kFloat64), kPositions);
+  auto element = makeStruct("", {positions, makePrimitive("time_from_start_s", PrimitiveType::kString)});
+  reloadSplineInPlace(fx.session, fx.dataset_id, element, kElements, 5000.0, /*stamp_is_float=*/false);
+  fx.catalog.rebuildFromDatastore();
+
+  plot.setTrackerPosition(0.5);
+  EXPECT_EQ(snapshotOf(plot.curveList().front())->size(), 0U) << "type-changed X should leave the snapshot empty";
 }
 
 // The snapshot-group dialog populates its topic combo from the catalog and defaults

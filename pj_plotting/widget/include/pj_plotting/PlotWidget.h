@@ -267,6 +267,13 @@ class PlotWidget : public PlotWidgetBase {
   // `display_time_sec`. Returns whether any curve's point set changed, so callers
   // can gate a replot. No-op on plots with no snapshot curves.
   bool refreshSnapshotCurves(double display_time_sec);
+  // Re-resolve every snapshot curve's stable patterns against the topic's CURRENT
+  // columns and rebuild its read plan — but only when snapshot_plans_stale_ is set
+  // (an in-place dataset reload swapped a bound topic's column descriptors). No-op
+  // otherwise, so the common refresh path stays a single bool read. Runs at the top
+  // of refreshSnapshotCurves, after the post-swap catalog rebuild, so the fresh
+  // columns are visible; a pattern that no longer resolves leaves an empty curve.
+  void rebuildStaleSnapshotPlans();
   // True when at least one snapshot curve currently holds points. Gates the
   // one-time auto-fit: an empty snapshot (tracker before the topic's first message)
   // cannot frame anything, so fitting to it would strand the real points off a
@@ -338,6 +345,11 @@ class PlotWidget : public PlotWidgetBase {
   // Snapshot ("current message") mode: X axis is a data field / element index, not
   // the shared time axis. Set by addSnapshotCurveGroup, cleared by removeAllCurves.
   bool snapshot_mode_ = false;
+  // Set when a bound snapshot topic's dataset is about to be replaced in place (a
+  // reload swaps column descriptors wholesale, invalidating cached column indices).
+  // Consumed by rebuildStaleSnapshotPlans() on the next refresh, after the catalog
+  // has been rebuilt with the new columns.
+  bool snapshot_plans_stale_ = false;
   // Coalescing state for the streaming-ingest snapshot refresh (see flushSnapshotIngest).
   // Snapshot curves refresh to the last tracker time (see setTrackerPosition) on a
   // streaming ingest, since samplesIngested carries no time of its own.

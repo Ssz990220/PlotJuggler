@@ -42,10 +42,16 @@ SnapshotSeriesData::SnapshotSeriesData(
       y_elements_(std::move(y_elements)),
       binding_(std::move(binding)),
       cached_bounding_rect_(invalidRect()) {
-  // Build the read plan once: the set of columns to read per refresh (query_columns_)
-  // and, per plotted element, where its X/Y values land in that read's result. For
-  // kColumn we inner-join Y onto X by element index so a Y-only element is dropped
-  // and X/Y never get misaligned across gaps.
+  buildPlan();
+}
+
+void SnapshotSeriesData::buildPlan() {
+  // Build the read plan: the set of columns to read per refresh (query_columns_) and,
+  // per plotted element, where its X/Y values land in that read's result. For kColumn
+  // we inner-join Y onto X by element index so a Y-only element is dropped and X/Y
+  // never get misaligned across gaps.
+  query_columns_.clear();
+  plans_.clear();
   plans_.reserve(y_elements_.size());
   if (x_mode_ == XMode::kIndex) {
     for (const SnapshotElement& y : y_elements_) {
@@ -75,6 +81,21 @@ SnapshotSeriesData::SnapshotSeriesData(
       plans_.push_back(plan);
     }
   }
+}
+
+bool SnapshotSeriesData::rebuildPlan(const std::vector<SnapshotColumn>& columns) {
+  // Re-resolve the stable patterns against the (possibly reordered / renumbered /
+  // shrunk) columns so the plan tracks the FIELD, not a stale column position. In
+  // kIndex x-mode X is the element index, so only the Y pattern is re-resolved.
+  if (x_mode_ == XMode::kColumn) {
+    x_elements_ = resolveSnapshotPattern(columns, binding_.x_pattern);
+  } else {
+    x_elements_.clear();
+  }
+  y_elements_ = resolveSnapshotPattern(columns, binding_.y_pattern);
+  buildPlan();
+  onDataCleared();  // the current points are the pre-reload vintage — drop them
+  return !plans_.empty();
 }
 
 std::size_t SnapshotSeriesData::size() const {

@@ -534,6 +534,7 @@ std::vector<PlotWidget::CurveInfo*> PlotWidget::addSnapshotCurveGroup(
 }
 
 bool PlotWidget::refreshSnapshotCurves(double display_time_sec) {
+  rebuildStaleSnapshotPlans();
   bool changed = false;
   for (auto& info : curveList()) {
     if (info.curve == nullptr) {
@@ -544,6 +545,31 @@ bool PlotWidget::refreshSnapshotCurves(double display_time_sec) {
     }
   }
   return changed;
+}
+
+void PlotWidget::rebuildStaleSnapshotPlans() {
+  if (!snapshot_plans_stale_) {
+    return;
+  }
+  snapshot_plans_stale_ = false;
+  if (catalog_ == nullptr) {
+    return;
+  }
+  // An in-place reload swapped a bound topic's column descriptors (engine keeps the
+  // TopicId but replaces its columns wholesale). Re-resolve each snapshot's stable
+  // patterns against the topic's CURRENT columns and rebuild its read plan, so the
+  // plotted value tracks the FIELD, not a now-stale column index. A curve whose
+  // pattern no longer resolves is left empty (graceful) rather than removed here —
+  // mirroring how a reload that drops a topic leaves a normal curve empty; the
+  // destructive-merge path (revalidate) is what removes truly-gone curves.
+  for (auto& info : curveList()) {
+    if (info.curve == nullptr) {
+      continue;
+    }
+    if (auto* snapshot = dynamic_cast<SnapshotSeriesData*>(info.curve->data())) {
+      snapshot->rebuildPlan(snapshotColumnsForTopic(snapshot->topicId()));
+    }
+  }
 }
 
 void PlotWidget::flushSnapshotIngest() {
@@ -2248,6 +2274,11 @@ void PlotWidget::reconnectDataSignals() {
           if (auto* snapshot = dynamic_cast<SnapshotSeriesData*>(info.curve->data())) {
             if (snapshot->datasetId() == dataset_id) {
               snapshot->onDataCleared();
+              // The reload will swap this topic's column descriptors wholesale, so the
+              // snapshot's cached column indices would silently read different fields.
+              // Flag a plan rebuild for the next refresh, which runs AFTER the catalog
+              // has been rebuilt with the new columns (see rebuildStaleSnapshotPlans).
+              snapshot_plans_stale_ = true;
             }
           }
         }
