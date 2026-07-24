@@ -7,10 +7,13 @@
 #include <QStringList>
 #include <filesystem>
 #include <memory>
+#include <shared_mutex>
+#include <string>
 #include <vector>
 
 #include "pj_base/diagnostic_sink.hpp"
-#include "pj_plugins/host/plugin_runtime_catalog.hpp"
+#include "pj_plugins/host/message_parser_library.hpp"
+#include "pj_runtime/PluginRuntimeCatalog.h"
 
 namespace PJ {
 
@@ -25,19 +28,40 @@ using LoadedToolbox = RuntimeToolboxPlugin;
 // pj_marketplace or pj_plugins directly — it asks this service.
 //
 // The service owns an ExtensionManager rooted on `extensions_dir_` (by default
-// PlatformUtils::extensionsDir(), shared with pj_marketplace). At construction it applies
-// any pending Windows staging actions and then scans the directory. Call
+// PlatformUtils::extensionsDir(), shared with pj_marketplace). Construction runs
+// three steps in order: the ExtensionManager applies any pending staged
+// install/uninstall actions, seedBundledPlugins() syncs the bundled (share)
+// plugins into the default marketplace dir, then the scan hierarchy loads. The
+// bundled dir is a seed source only — never scanned as a load path. Call
 // reload() after a marketplace install/uninstall to hot-load new plugins.
 class ExtensionCatalogService : public QObject {
   Q_OBJECT
  public:
   using Ptr = std::shared_ptr<ExtensionCatalogService>;
 
+  // Directory roots, resolved at construction. Production uses the QString
+  // constructors below (everything defaulted); tests inject temp dirs here so
+  // seeding and scanning never touch the real user profile or executable path.
+  struct Paths {
+    // The dir the ExtensionManager manages and the top scan tier: the
+    // --plugin-dir override. Empty = default mode (the marketplace dir).
+    QString install_dir;
+    // Seed destination and lowest (managed) scan tier. Empty =
+    // PlatformUtils::extensionsDir().
+    QString marketplace_dir;
+    // Seed source (share). Empty = <prefix>/lib/plotjuggler/plugins resolved
+    // relative to the executable.
+    QString bundled_dir;
+  };
+
   // Creates a service using the default extension directory unless overridden.
   explicit ExtensionCatalogService(QString extensions_dir = {}, QObject* parent = nullptr);
 
   // Creates a service with an optional app-level diagnostic sink.
   ExtensionCatalogService(QString extensions_dir, DiagnosticSink sink, QObject* parent = nullptr);
+
+  // Creates a service with every directory root injectable (test seam).
+  ExtensionCatalogService(Paths paths, DiagnosticSink sink, QObject* parent = nullptr);
 
   // Releases marketplace and loaded plugin resources.
   ~ExtensionCatalogService() override;
@@ -79,22 +103,42 @@ class ExtensionCatalogService : public QObject {
   // Finds file-import DataSources that handle ext.
   std::vector<const LoadedDataSource*> findSourcesForExtension(QStringView ext) const;
 
-  // Finds a MessageParser by encoding name.
+  // Finds a MessageParser by encoding name. Returns a raw pointer INTO the
+  // catalog vector, valid only until the next reload(). GUI-THREAD ONLY — a
+  // concurrent reload() (which reallocates the vector) would dangle it. Off-GUI
+  // callers (a streaming source's poll thread) must use
+  // createParserHandleForEncoding()/parserEncodings() instead, which resolve
+  // under the catalog lock and never leak a raw catalog pointer.
   const LoadedMessageParser* findParserByEncoding(QStringView encoding) const;
+
+  // [thread-safe] Resolve a parser by encoding and create an instance of it,
+  // atomically under a shared catalog lock. The returned MessageParserHandle
+  // carries its own DSO keepalive, so it stays valid even if a later reload()
+  // drops the catalog entry. An invalid handle (`!valid()`) means no parser
+  // handles that encoding. This is the ONLY safe way for a non-GUI thread to
+  // obtain a parser while reload() may run on the GUI thread.
+  [[nodiscard]] MessageParserHandle createParserHandleForEncoding(QStringView encoding) const;
+
+  // [thread-safe] The set of encodings the loaded parsers accept, returned by
+  // value (a snapshot copy) so a caller never holds a reference into the
+  // catalog vector across a reload(). Sorted, de-duplicated.
+  [[nodiscard]] std::vector<std::string> parserEncodings() const;
 
   // Builds a QFileDialog-compatible filter string from all file-import sources.
   QString buildFileFilter() const;
 
-  // User-managed extra plugin folders, highest scan priority, persisted in
-  // QSettings (Preferences::plugin_folders). Changes apply on next launch (no
+  // User-managed extra plugin folders, persisted in QSettings
+  // (Preferences::plugin_folders). Authoritative scan tier below a --plugin-dir
+  // override and above the marketplace dir. Changes apply on next launch (no
   // hot reload), so the setter only writes the key — it does not re-scan.
   [[nodiscard]] QStringList customPluginFolders() const;
   void setCustomPluginFolders(const QStringList& folders);
 
-  // Built-in plugin folders in scan-priority order: the install dir
-  // (the --plugin-dir override or the marketplace location), the marketplace
-  // location (only when the override made it distinct), then <exe>/plugins.
-  // Read-only — shown to the user for reference.
+  // Built-in *scanned* folders in scan-priority order: the install dir (the
+  // --plugin-dir override, or the marketplace dir in default mode) and, when
+  // the override made it distinct, the marketplace dir. The bundled (share)
+  // dir is not listed — it is a seed source, not a scanned folder. Read-only —
+  // shown to the user for reference.
   [[nodiscard]] QStringList builtinPluginFolders() const;
 
  signals:
@@ -105,16 +149,59 @@ class ExtensionCatalogService : public QObject {
   // Emits one diagnostic through the optional app-level sink.
   void reportDiagnostic(DiagnosticLevel level, const QString& message, const QString& id = {}) const;
 
-  // Assembles the ordered scan list: custom folders first, then the built-in
-  // folders. De-duplication by plugin id (first folder wins) is done in the
-  // PluginRuntimeCatalog.
-  [[nodiscard]] std::vector<std::filesystem::path> buildScanHierarchy() const;
+  // Assembles the ordered scan list — highest priority first: the --plugin-dir
+  // override (when extensions_dir_is_explicit), the custom Preferences folders,
+  // then the marketplace dir. The first two tiers are user-explicit and marked
+  // authoritative (a hard override in the catalog's duplicate-id resolution,
+  // version-blind); the marketplace dir stays managed. The bundled (share) dir
+  // is never scanned — bundled plugins reach the scan through
+  // seedBundledPlugins(). Folders missing on disk are skipped: an absent
+  // optional folder must not report a kError per launch and mask real
+  // plugin-load errors.
+  [[nodiscard]] std::vector<PluginDirEntry> buildScanHierarchy(bool extensions_dir_is_explicit) const;
+
+  // Syncs the bundled (share) plugins into the default marketplace dir — the
+  // only path by which bundled plugins become loadable. Runs in EVERY mode
+  // (--plugin-dir sessions included; the override dir is never a seed source or
+  // destination), AFTER the ExtensionManager applied pending staged installs,
+  // so a staged upgrade is promoted before the version comparison sees it. Per
+  // bundled id: absent or unreadable in the marketplace dir -> copy; installed
+  // version older than bundled -> refresh (staged copy + rename swap, so a
+  // failed refresh keeps the working old copy); installed same-or-newer ->
+  // untouched (equal version never refreshes — ship a change by bumping the
+  // version). In the steady state a size+mtime signature match against the
+  // bundled DSO (the seed stamps copies with the bundled mtime) skips the
+  // installed-side manifest read. Best-effort: failures are logged and retried
+  // next launch. The bundled id -> version map is handed to the
+  // ExtensionManager (setBundledVersions: uninstall lock +
+  // downgrade-to-bundled) only in default mode — in a --plugin-dir session the
+  // manager governs the override dir, and locking user-owned copies there by
+  // id would be wrong.
+  void seedBundledPlugins();
 
   QString extensions_dir_;
+  // Default marketplace dir: seed destination + lowest scan tier. Equals
+  // extensions_dir_ in default mode.
+  QString marketplace_dir_;
+  // Bundled (share) dir: seed source, never scanned.
+  QString bundled_dir_;
+  // True when no --plugin-dir override was given (the ExtensionManager is
+  // rooted on the marketplace dir). Captured at construction and used to scope
+  // the core-plugin lock — never re-derived by comparing paths, which could
+  // misclassify a Paths caller that made the two dirs textually equal.
+  bool default_mode_ = false;
   DiagnosticSink sink_;
 
   std::unique_ptr<ExtensionManager> extension_manager_;
   std::unique_ptr<PluginRuntimeCatalog> plugin_catalog_;
+
+  // Guards plugin_catalog_'s vectors against the one genuine cross-thread
+  // hazard: a streaming source's poll thread resolving a parser while the GUI
+  // thread reloads the catalog (Marketplace install/uninstall). reload() takes
+  // the exclusive lock; the thread-safe accessors take a shared lock. GUI-only
+  // readers (findParserByEncoding, dataSources, buildFileFilter, …) do not
+  // lock — they cannot race reload(), which is also GUI-thread-only.
+  mutable std::shared_mutex catalog_mutex_;
 };
 
 }  // namespace PJ

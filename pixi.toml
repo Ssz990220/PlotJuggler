@@ -1,0 +1,144 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# EXPLORATORY pixi environment for building PJ4 with conda-forge dependencies
+# instead of Conan (+ the manual install_qt6.sh Qt install).
+#
+# Status: exploration — see docs/research/pixi_build_exploration.md for
+# findings. The Conan path (`./build.sh`) remains the canonical build.
+#
+# Local-channel packages (built from recipes/ — see the bootstrap note at the
+# bottom of this file):
+#   - luau      (pj_scripting's filter engine; not on conda-forge)
+#   - mcap      (C++ header-only reader/writer; the conda-forge `mcap` package
+#                is the *Python* wrapper, not the C++ lib)
+#   - cloudini  (compressed point clouds; our own library)
+#   - ffmpeg    (NOT a conda-forge gap — a decode-only LGPL-only rebuild
+#                mirroring conanfile.txt's trimmed option set; replaces the
+#                feature-complete lgpl_* build on linux-64 and the GPL-only
+#                ffmpeg on win-64, where conda-forge has no LGPL build at all)
+
+[workspace]
+name = "pj4"
+# local-channel/ holds the packages built from recipes/ (4 conda-forge gaps +
+# the LGPL-lean ffmpeg) via:
+# rattler-build build --recipe-dir recipes/ -m recipes/variants.yaml -c conda-forge --output-dir local-channel
+channels = ["conda-forge", "./local-channel"]
+platforms = ["linux-64"]
+
+[dependencies]
+# --- toolchain -------------------------------------------------------------
+cmake = ">=3.28"
+ninja = "*"
+cxx-compiler = "*"
+pkg-config = "*"
+ccache = "*"
+
+# --- Qt (replaces install_qt6.sh; PJ4 pins 6.11.1 in CMakeLists) ------------
+qt6-main = "6.11.1.*"
+
+# --- direct library deps (mirror conanfile.txt) ------------------------------
+fmt = "12.*"
+tsl_robin_map = "1.4.*"          # conda name uses underscores; CMake config is tsl-robin-map
+gtest = "1.17.*"
+glm = "1.0.*"
+benchmark = "1.9.*"
+libnanoarrow = "0.7.*"           # local channel (conda-forge `nanoarrow` is the Python binding)
+nlohmann_json = "3.12.*"
+python = "3.12.*"                # embedded CPython for pj_scripting's PythonEngine
+pybind11 = "2.13.*"
+zstd = "1.5.*"
+lz4-c = "*"                      # cloudini + mcap runtime
+fast_float = "8.*"
+libarchive = "3.8.*"             # shared (conda-forge has no static); conanfile used static
+libjpeg-turbo = "3.*"
+libpng = "1.6.*"
+backward-cpp = "1.6.*"
+draco = "*"                      # conan pinned 1.5.6 only for assimp source-build graph conflict
+assimp = "*"                     # conda-forge is 6.x vs conan 5.4.3 — API risk to verify
+
+# --- local channel (gaps vs conda-forge; see recipes/) ------------------------
+luau = "0.700.*"
+libmcap = "2.1.*"                # C++ header-only mcap (conda-forge `mcap` is the Python wrapper)
+cloudini = "1.2.*"
+
+# Linux-only deps. elfutils backs backward-cpp's `dw` stack-trace backend
+# (Windows backward-cpp uses the DbgHelp/PDB backend instead); the libGL/EGL
+# -devel stubs feed pj_scene3D's find_package(OpenGL) (Windows gets OpenGL from
+# the SDK's opengl32). None of these have win-64 conda packages.
+[target.linux-64.dependencies]
+# Prebuilt against the same qt6-main; consumed via the configure task's
+# -DPJ_SYSTEM_QWT=ON. linux-64 ONLY: conda-forge ships qwt as a DLL on
+# win-64, and MSVC duplicates the QwtSeriesData<QPointF> template members
+# between qwt.dll and our own subclasses (LNK2005), so Windows always uses
+# the default FetchContent static build instead (see 3rdparty/qwt/).
+qwt = "6.3.*"
+elfutils = "*"
+libgl-devel = "*"
+libopengl-devel = "*"
+libegl-devel = "*"
+# Local decode-only LGPL-only build (recipes/ffmpeg) — PJ4 ships MPL-2.0 and
+# must not link GPL codec libs, and conda-forge's lgpl_* variant is license-
+# clean but feature-complete (all LGPL encoders/filters/network protocols).
+# This rebuild mirrors conanfile.txt's trimmed ffmpeg/* option block exactly.
+# Both pins matter: `channel` overrides strict channel priority (which would
+# always resolve `ffmpeg` from conda-forge), and the pj_lgpl_lean* build
+# string matches no upstream variant, so a misconfigured solve fails loudly
+# instead of silently shipping a conda-forge build.
+ffmpeg = { version = "8.*", build = "pj_lgpl_lean*", channel = "./local-channel" }
+
+# Windows is a required shipped target and conda-forge's win-64 ffmpeg has NO
+# lgpl build (GPL only) — so win-64 uses the same local LGPL-lean package as
+# linux-64. A Linux dev box cannot build the MSVC package; the pixi-ci win-64
+# leg builds it into local-channel/ before solving (same bootstrap as the gap
+# packages).
+[target.win-64.dependencies]
+ffmpeg = { version = "8.*", build = "pj_lgpl_lean*", channel = "./local-channel" }
+sccache = "0.16.*"               # MSVC cache + native GHA backend (see activation.env below)
+
+[tasks]
+# CMAKE_PREFIX_PATH lists both the env root and its Library subtree: on Windows
+# conda puts headers/libs/cmake under <prefix>/Library, on Linux under <prefix>.
+# Listing both keeps this one task cross-platform (the missing one is ignored).
+# ccache/sccache are wired via CMAKE_*_COMPILER_LAUNCHER env vars (see the
+# activation.env blocks below). CMP0141=NEW + Embedded switches MSVC to /Z7
+# (debug info embedded per .obj) instead of /Zi's shared .pdb: sccache doesn't
+# preserve MSVC's own /FS synchronization for concurrent writers to one shared
+# PDB, so a parallel build hits C1041 "cannot open program database" without
+# this. Inert on Linux (these are MSVC-only CMake variables).
+configure = "cmake -G Ninja -S . -B build-pixi -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_PREFIX_PATH=\"$CONDA_PREFIX;$CONDA_PREFIX/Library\" -DPJ_SYSTEM_QWT=ON -DCMAKE_POLICY_DEFAULT_CMP0141=NEW -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded"
+build = { cmd = "cmake --build build-pixi --parallel", depends-on = ["configure"] }
+# --timeout 120 bounds any single test (a GL test under software rendering /
+# llvmpipe can stall) so a hang fails fast instead of holding the runner — the
+# Conan linux-ci.yml uses the same per-test cap.
+test = { cmd = "ctest --test-dir build-pixi --output-on-failure --timeout 120", depends-on = ["build"] }
+
+# win-64 override: identical to the shared configure task minus
+# -DPJ_SYSTEM_QWT=ON (no conda qwt on Windows — see the qwt comment in
+# [target.linux-64.dependencies]); qwt is FetchContent-built statically.
+[target.win-64.tasks]
+configure = "cmake -G Ninja -S . -B build-pixi -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_PREFIX_PATH=\"$CONDA_PREFIX;$CONDA_PREFIX/Library\" -DCMAKE_POLICY_DEFAULT_CMP0141=NEW -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded"
+
+# ccache speeds up the GCC toolchain (linux). CMake reads these env vars to
+# seed CMAKE_<LANG>_COMPILER_LAUNCHER.
+[target.linux-64.activation.env]
+CMAKE_C_COMPILER_LAUNCHER = "ccache"
+CMAKE_CXX_COMPILER_LAUNCHER = "ccache"
+
+# sccache is the MSVC-compatible compiler cache — ccache's cl.exe support is
+# unreliable, especially with Ninja + PDB debug info. GitHub Actions enables
+# sccache's shared native backend; a local dev run uses its normal local cache.
+[target.win-64.activation.env]
+CMAKE_C_COMPILER_LAUNCHER = "sccache"
+CMAKE_CXX_COMPILER_LAUNCHER = "sccache"
+
+# Bootstrap: the default env depends on the local-channel packages, so it
+# must exist before ANY `pixi run`/`pixi install` (which always solves the
+# default env first). Build it with `pixi exec` — an ephemeral env that ignores
+# the project lockfile entirely — NOT `pixi run`:
+#
+#   pixi exec --spec "rattler-build>=0.66" \
+#     rattler-build build --recipe-dir recipes/ -m recipes/variants.yaml \
+#       -c conda-forge --output-dir local-channel
+#
+# -m recipes/variants.yaml pins the glibc sysroot so the archives stay portable
+# (without it the build falls back to system glibc → unresolved __isoc23_* refs).

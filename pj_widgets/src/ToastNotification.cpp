@@ -8,6 +8,8 @@
 #include <QPainter>
 #include <QPainterPath>
 
+#include "pj_widgets/FrameworkTokens.h"
+
 namespace PJ {
 
 ToastNotification::ToastNotification(const QString& message, const QPixmap& icon, int timeout_ms, QWidget* parent)
@@ -37,8 +39,10 @@ void ToastNotification::setupUI() {
   setMaximumWidth(400);
 
   layout_ = new QHBoxLayout(this);
-  layout_->setContentsMargins(8, 8, 8, 8);
-  layout_->setSpacing(12);
+  layout_->setContentsMargins(
+      theme::space(theme::Space::Comfortable), theme::space(theme::Space::Comfortable),
+      theme::space(theme::Space::Comfortable), theme::space(theme::Space::Comfortable));
+  layout_->setSpacing(theme::space(theme::Space::Section));
 
   // Icon label (optional, hidden until an icon is set).
   icon_label_ = new QLabel(this);
@@ -137,7 +141,9 @@ void ToastNotification::setMessage(const QString& message) {
 void ToastNotification::setIcon(const QPixmap& icon) {
   if (icon.isNull()) {
     icon_label_->setVisible(false);
-    layout_->setContentsMargins(8, 8, 8, 8);
+    layout_->setContentsMargins(
+        theme::space(theme::Space::Comfortable), theme::space(theme::Space::Comfortable),
+        theme::space(theme::Space::Comfortable), theme::space(theme::Space::Comfortable));
     return;
   }
 
@@ -145,7 +151,9 @@ void ToastNotification::setIcon(const QPixmap& icon) {
   icon_label_->setPixmap(createRoundedPixmap(scaled, kBorderRadius));
   icon_label_->setVisible(true);
   // Drop the left margin so the icon's rounded left edge meets the frame edge.
-  layout_->setContentsMargins(0, 0, 8, 0);
+  layout_->setContentsMargins(
+      theme::space(theme::Space::None), theme::space(theme::Space::None), theme::space(theme::Space::Comfortable),
+      theme::space(theme::Space::None));
 }
 
 QPixmap ToastNotification::createRoundedPixmap(const QPixmap& source, int radius) {

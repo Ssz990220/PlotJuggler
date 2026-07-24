@@ -31,6 +31,7 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_widgets/layers/occupancy_grid_layer.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -210,7 +211,7 @@ TEST_F(OccupancyGridLayerUpdatesTest, ScrubReplayMatchesReference) {
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session_;
-  pj::scene3d::OccupancyGridLayer layer(base_topic_, QStringLiteral("map"));
+  pj::scene3d::OccupancyGridLayer layer(base_topic_, u"map"_s);
   ASSERT_TRUE(layer.attach(ctx));
 
   renderAndExpectRef(layer, 100);  // base only
@@ -229,6 +230,53 @@ TEST_F(OccupancyGridLayerUpdatesTest, ScrubReplayMatchesReference) {
   renderAndExpectRef(layer, 125);  // backward across epochs, back to base1
 }
 
+// Out-of-order arrival in the updates topic: an update stamped with an OLDER ts
+// but pushed LAST carries the newest SequentialUID. A time-window query
+// (ObjectStore::rangeByTime) must include it by timestamp regardless of UID order.
+// Here a newest-UID entry sits at ts=200 (outside the render window) while the
+// out-of-order ts=150 patch inside the window must still be applied.
+TEST_F(OccupancyGridLayerUpdatesTest, OutOfOrderArrivalUpdateInWindowIsApplied) {
+  pushBase(100, 4, 4, 0);
+  pushUpdate(110, 0, 0, 1, 1, 50);  // uid1, cell[0]
+  pushUpdate(200, 3, 3, 1, 1, 60);  // uid2, cell[15] — newest UID, ts beyond the window
+  pushUpdate(150, 1, 1, 1, 1, 70);  // uid3 (OOO arrival): newest UID, ts inside the window, cell[5]
+
+  pj::scene3d::Scene3DLayerContext ctx;
+  ctx.session = &session_;
+  pj::scene3d::OccupancyGridLayer layer(base_topic_, u"map"_s);
+  ASSERT_TRUE(layer.attach(ctx));
+
+  // Window (100, 160] contains ts=110 and ts=150 but NOT ts=200 (whose newest UID
+  // must not pull it into the window).
+  renderAndExpectRef(layer, 160);
+  EXPECT_EQ(layer.reconstructedGridForTest().cells[5], static_cast<int8_t>(70))
+      << "out-of-order in-window update must be applied";
+  EXPECT_EQ(layer.reconstructedGridForTest().cells[15], static_cast<int8_t>(0))
+      << "ts=200 update must stay outside the (100,160] window";
+}
+
+// Out-of-order arrival at-or-before the window's LOW edge must not cause an
+// in-window update to be skipped. The in-window ts=120 patch is pushed first
+// (small UID); then an out-of-order update stamped 95 (<= lo=100) is pushed last
+// (largest UID). A timestamp-keyed window query (rangeByTime) still returns the
+// ts=120 patch — a UID cursor starting past the ts=95 boundary would have dropped it.
+TEST_F(OccupancyGridLayerUpdatesTest, OutOfOrderArrivalBelowWindowLowEdgeDoesNotSkipInWindowUpdate) {
+  pushBase(100, 4, 4, 0);
+  pushUpdate(120, 2, 2, 1, 1, 80);  // uid1: in-window, SMALL UID, cell[10]
+  pushUpdate(95, 0, 0, 1, 1, 40);   // uid2 (OOO): ts <= lo=100, LARGEST UID
+
+  pj::scene3d::Scene3DLayerContext ctx;
+  ctx.session = &session_;
+  pj::scene3d::OccupancyGridLayer layer(base_topic_, u"map"_s);
+  ASSERT_TRUE(layer.attach(ctx));
+
+  // Window (100, 160]: ts=120 is in, ts=95 is out (<= lo). A latestAt(100) start
+  // boundary resolves the ts=95 entry (largest UID) and skips ts=120.
+  renderAndExpectRef(layer, 160);
+  EXPECT_EQ(layer.reconstructedGridForTest().cells[10], static_cast<int8_t>(80))
+      << "in-window update with a UID below the <=lo boundary entry was dropped";
+}
+
 // H.13: the live drive advances the consumed window past the updates topic's
 // ingest; an update that lands later with ts at-or-before the consumed time
 // must still be folded in (via reconstructor invalidate + full rebuild) instead
@@ -239,7 +287,7 @@ TEST_F(OccupancyGridLayerUpdatesTest, RetroactiveUpdateIsReappliedAfterLiveEdgeO
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session_;
-  pj::scene3d::OccupancyGridLayer layer(base_topic_, QStringLiteral("map"));
+  pj::scene3d::OccupancyGridLayer layer(base_topic_, u"map"_s);
   ASSERT_TRUE(layer.attach(ctx));
 
   // The tracker is driven by a faster sibling topic's live edge, far past the
@@ -257,6 +305,49 @@ TEST_F(OccupancyGridLayerUpdatesTest, RetroactiveUpdateIsReappliedAfterLiveEdgeO
   renderAndExpectRef(layer, 220);
 }
 
+// H.13b: the retroactive-ingest cursor must SETTLE, not re-invalidate every frame.
+// H.13 above uses an in-order late update (ts after every retained entry), so its
+// UID matches its timestamp order and the cursor advances normally. Here the late
+// update is ALSO out-of-order in the array (older ts than an already-retained
+// entry), so it lands at an earlier array slot yet carries the newest UID. The
+// post-reconstruct cursor must be the max UID among entries with ts <= t (not
+// latestAt(t)'s UID, which resolves the newest-TIMESTAMP entry and is smaller):
+// otherwise the cursor parks below the late entry and re-detects it — a full
+// rebuild every frame.
+TEST_F(OccupancyGridLayerUpdatesTest, RetroactiveOutOfOrderUpdateSettlesCursorWithoutReinvalidateLoop) {
+  pushBase(100, 4, 4, 0);
+  pushUpdate(110, 0, 0, 1, 1, 50);  // uid1
+  pushUpdate(160, 3, 3, 1, 1, 60);  // uid2 — newest timestamp so far
+
+  pj::scene3d::Scene3DLayerContext ctx;
+  ctx.session = &session_;
+  pj::scene3d::OccupancyGridLayer layer(base_topic_, u"map"_s);
+  ASSERT_TRUE(layer.attach(ctx));
+
+  renderAndExpectRef(layer, 200);  // consume base + 110 + 160; cursor settles
+
+  // Late AND out-of-order: ts=150 (<= consumed 200) lands BEFORE the retained
+  // ts=160 in the array but carries the newest UID. latestAt(200) still resolves
+  // ts=160 (a lower UID), so a latestAt-keyed cursor never advances past ts=150.
+  pushUpdate(150, 2, 2, 1, 1, 70);  // uid3 (out-of-order), cell[10]
+
+  // Frame A: the retroactive change is detected once (invalidate) and applied.
+  layer.renderAtForTest(200);
+  const size_t invalidations_after_detect = layer.retroactiveInvalidateCountForTest();
+  EXPECT_EQ(invalidations_after_detect, 1u) << "the retroactive change must be detected exactly once";
+  EXPECT_EQ(layer.reconstructedGridForTest().cells[10], static_cast<int8_t>(70))
+      << "retroactive out-of-order update must be folded in";
+
+  // Frame B (same time, no new data): the cursor must have advanced past the late
+  // entry, so no further invalidation fires. With a latestAt-keyed cursor the count
+  // keeps rising — a rebuild every frame.
+  layer.renderAtForTest(200);
+  EXPECT_EQ(layer.retroactiveInvalidateCountForTest(), invalidations_after_detect)
+      << "cursor did not settle: the late out-of-order update re-invalidates every frame";
+  EXPECT_EQ(layer.reconstructedGridForTest().cells[10], static_cast<int8_t>(70))
+      << "the folded-in update must survive the settled render";
+}
+
 // M.47: re-rendering while the active base keyframe is unchanged must reuse the
 // memoized parse instead of re-parsing (and deep-copying) the cell payload on
 // every tracker tick.
@@ -266,7 +357,7 @@ TEST_F(OccupancyGridLayerUpdatesTest, UnchangedBaseKeyframeIsNotReparsed) {
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session_;
-  pj::scene3d::OccupancyGridLayer layer(base_topic_, QStringLiteral("map"));
+  pj::scene3d::OccupancyGridLayer layer(base_topic_, u"map"_s);
   ASSERT_TRUE(layer.attach(ctx));  // bootstrap parses the first sample once
 
   renderAndExpectRef(layer, 120);  // first renderAt populates the memo

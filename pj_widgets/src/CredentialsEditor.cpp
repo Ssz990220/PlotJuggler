@@ -13,6 +13,9 @@
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QToolButton>
+using namespace Qt::StringLiterals;
+
+#include "pj_widgets/FrameworkTokens.h"
 
 namespace PJ {
 
@@ -45,8 +48,9 @@ void CredentialsEditor::applyTick(QLabel* tick, const QString& text, bool ok) {
     return;
   }
   tick->setText(ok ? QString::fromUtf8("✓") : QString::fromUtf8("✗"));
-  tick->setStyleSheet(
-      ok ? QStringLiteral("color: green; font-weight: bold;") : QStringLiteral("color: red; font-weight: bold;"));
+  const auto fw_theme = theme::appTheme();
+  const QColor tick_color = theme::status(ok ? theme::Status::Success : theme::Status::Error, fw_theme);
+  tick->setStyleSheet(QStringLiteral("color: %1; font-weight: 600;").arg(tick_color.name(QColor::HexArgb)));
 }
 
 CredentialsEditor::CredentialsEditor(QWidget* parent) : QWidget(parent) {
@@ -54,12 +58,14 @@ CredentialsEditor::CredentialsEditor(QWidget* parent) : QWidget(parent) {
 
   // Certificate path + Browse + validity tick.
   cert_path_ = new QLineEdit(this);
-  cert_path_->setObjectName(QStringLiteral("certPath"));
+  cert_path_->setObjectName(u"certPath"_s);
   cert_tick_ = new QLabel(this);
-  cert_tick_->setObjectName(QStringLiteral("certTick"));
+  cert_tick_->setObjectName(u"certTick"_s);
   auto* browse = new QPushButton(tr("Browse..."), this);
   auto* cert_row = new QHBoxLayout();
-  cert_row->setContentsMargins(0, 0, 0, 0);
+  cert_row->setContentsMargins(
+      theme::space(theme::Space::None), theme::space(theme::Space::None), theme::space(theme::Space::None),
+      theme::space(theme::Space::None));
   cert_row->addWidget(cert_path_);
   cert_row->addWidget(cert_tick_);
   cert_row->addWidget(browse);
@@ -67,16 +73,18 @@ CredentialsEditor::CredentialsEditor(QWidget* parent) : QWidget(parent) {
 
   // API key, masked, with a Show/Hide reveal toggle + validity tick.
   api_key_ = new QLineEdit(this);
-  api_key_->setObjectName(QStringLiteral("apiKey"));
+  api_key_->setObjectName(u"apiKey"_s);
   api_key_->setEchoMode(QLineEdit::Password);
   api_key_tick_ = new QLabel(this);
-  api_key_tick_->setObjectName(QStringLiteral("apiKeyTick"));
+  api_key_tick_->setObjectName(u"apiKeyTick"_s);
   auto* reveal = new QToolButton(this);
-  reveal->setObjectName(QStringLiteral("apiKeyReveal"));
+  reveal->setObjectName(u"apiKeyReveal"_s);
   reveal->setCheckable(true);
   reveal->setText(tr("Show"));
   auto* key_row = new QHBoxLayout();
-  key_row->setContentsMargins(0, 0, 0, 0);
+  key_row->setContentsMargins(
+      theme::space(theme::Space::None), theme::space(theme::Space::None), theme::space(theme::Space::None),
+      theme::space(theme::Space::None));
   key_row->addWidget(api_key_);
   key_row->addWidget(api_key_tick_);
   key_row->addWidget(reveal);
@@ -84,7 +92,7 @@ CredentialsEditor::CredentialsEditor(QWidget* parent) : QWidget(parent) {
 
   // Plaintext fallback.
   allow_insecure_ = new QCheckBox(tr("Allow insecure / plaintext connection"), this);
-  allow_insecure_->setObjectName(QStringLiteral("allowInsecure"));
+  allow_insecure_->setObjectName(u"allowInsecure"_s);
   layout->addRow(QString(), allow_insecure_);
 
   connect(reveal, &QToolButton::toggled, this, [this, reveal](bool revealed) {

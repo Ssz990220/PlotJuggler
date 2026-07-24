@@ -168,9 +168,18 @@ QString TransformService::datasetSourceKey(PJ::DatasetId dataset_id) const {
   if (info == nullptr || info->source_name.empty()) {
     return {};
   }
-  // source_name is a free-form label (often a file path); percent-encode it so a
-  // '/' (or other special char) can't be misread as a QSettings group separator.
-  return QString::fromUtf8(QUrl::toPercentEncoding(QString::fromStdString(info->source_name)));
+  // Qualify the name with the source path: two same-named files in different
+  // folders must not share a remembered frame, and fan-out members (same path,
+  // distinct names) must stay distinct — so the key needs both parts. Each part
+  // is percent-encoded so a '/' can't be misread as a QSettings group separator;
+  // '|' never survives the encoding, making it an unambiguous joiner. A pathless
+  // source (e.g. a live stream with a stable name) keys by name alone.
+  const QString name = QString::fromUtf8(QUrl::toPercentEncoding(QString::fromStdString(info->source_name)));
+  const QString path = session_.datasetSourcePath(dataset_id);
+  if (path.isEmpty()) {
+    return name;
+  }
+  return QString::fromUtf8(QUrl::toPercentEncoding(path)) + u'|' + name;
 }
 
 void TransformService::rememberFixedFrame(PJ::DatasetId dataset_id, const QString& frame) {
@@ -279,22 +288,18 @@ bool TransformService::ingestNewerThanCursor(PJ::DatasetId dataset_id) {
       cursor_it = tf_cursors_.try_emplace(key).first;
     }
 
-    // Step the topic's sparse UID sequence forward from the cursor. UIDs are
-    // stable across front-eviction and per-topic SPARSE (process-global
-    // allocation), so this can never skip an un-ingested entry the way a raw
-    // index window did under concurrent eviction, and equal-timestamp entries
-    // get distinct UIDs so a late same-stamp arrival is still reached. Each step
-    // re-resolves under a fresh series lock (mirrors PR #179's entities path); an
-    // entry evicted between the UID step and the at() resolve is simply gone.
+    // Drain every edge that arrived since the cursor, in arrival order, and file
+    // each into the time-indexed TF buffer. Arrival order (not a time window) is
+    // required: a late out-of-order edge (older stamp, newest UID) must still be
+    // ingested, and the buffer places it at its own time. drainNewSince is
+    // eviction-safe and advances the cursor past every entry (even one evicted
+    // before it resolves), so nothing is ingested twice or skipped.
     TfCursor& cursor = cursor_it->second;
-    for (PJ::SequentialUID uid = object_store.nextUIDAfter(topic_id, cursor.last_ingested); uid.valid();
-         uid = object_store.nextUIDAfter(topic_id, uid)) {
-      cursor.last_ingested = uid;
-      auto entry = object_store.at(topic_id, uid);
-      if (!entry.has_value() || entry->payload.bytes.empty()) {
-        continue;  // evicted between the UID step and the resolve, or empty payload
+    for (const auto& entry : object_store.drainNewSince(topic_id, cursor.last_ingested)) {
+      if (entry.payload.bytes.empty()) {
+        continue;
       }
-      ingestEntry(*entry, parser_binding, *tf_buffer, stats);
+      ingestEntry(entry, parser_binding, *tf_buffer, stats);
     }
   }
 

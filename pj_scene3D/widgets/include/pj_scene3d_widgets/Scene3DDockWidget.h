@@ -172,6 +172,8 @@ class Scene3DDockWidget : public SceneDockWidget {
   QWidget* createSceneView() override;
   std::unique_ptr<SceneLayerContext> makeContext() override;
   [[nodiscard]] bool acceptsObjectType(sdk::BuiltinObjectType object_type) const override;
+  [[nodiscard]] bool acceptsDeferredObjectType(sdk::BuiltinObjectType object_type) const override;
+  [[nodiscard]] DeferredElementKind deferredElementKind(sdk::BuiltinObjectType object_type) const override;
   bool handleSceneConfigTopic(
       ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title) override;
   // Also prunes evicted FrameTransforms config topics (no render layer) and resets
@@ -205,6 +207,7 @@ class Scene3DDockWidget : public SceneDockWidget {
   void onDatasetTransformsReady(DatasetId dataset_id);
 
  private:
+  enum class ElementRestoreResult { kRestored, kConsumed, kDeferred, kInvalid };
   // Shared body of addTopic(). enforce_image_gate runs the kImage depth-encoding
   // gate (firstSampleIsDepthEncoded) — true for interactive adds (drop / family
   // switch), false for layout restore, which trusts the saved layer type because
@@ -213,8 +216,10 @@ class Scene3DDockWidget : public SceneDockWidget {
   bool addTopicImpl(
       ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title, bool enforce_image_gate);
 
-  [[nodiscard]] bool restoreLayerElement(const QDomElement& layer_el);
-  [[nodiscard]] bool restoreConfigTopicElement(const QDomElement& config_el);
+  [[nodiscard]] ElementRestoreResult restoreLayerElement(
+      const QDomElement& layer_el, QString* deferred_topic_name = nullptr);
+  [[nodiscard]] ElementRestoreResult restoreConfigTopicElement(const QDomElement& config_el);
+  void applyRestoredLayerOrder();
   // Per-element restore hook the base SceneDockWidget's shared pending-retry loop calls:
   // dispatches on the tag (<config_topic> -> restoreConfigTopicElement, else a render
   // <layer> -> restoreLayerElement).
@@ -243,6 +248,8 @@ class Scene3DDockWidget : public SceneDockWidget {
   void wireScene3DLayer(pj::scene3d::Scene3DLayer* layer);
   void absorbFallbackFrames(pj::scene3d::Scene3DLayer* layer);
   void applyResolvedFixedFrame(const QString& frame);
+  void applyRestoredFixedFrame(FixedFrameMode mode, const QString& frame);
+  void resetDatasetBindingForRestore();
   // The fixed frame to adopt in auto mode: the dataset's remembered manual choice
   // (TransformService::rememberedFixedFrame) when it is still present in `frames`,
   // else the map/world/odom heuristic (pickFixedFrame). This is what makes a
@@ -300,6 +307,8 @@ class Scene3DDockWidget : public SceneDockWidget {
   QString source_path_;
   uint32_t next_local_robot_topic_id_ = std::numeric_limits<uint32_t>::max();
   std::unordered_set<uint32_t> local_robot_layer_ids_;
+  std::unordered_map<int64_t, int> restored_layer_orders_;
+  bool xml_rollback_in_progress_ = false;
 
   QList<pj::scene3d::FrameRow> available_frames_;
   std::vector<std::string> fallback_frames_;

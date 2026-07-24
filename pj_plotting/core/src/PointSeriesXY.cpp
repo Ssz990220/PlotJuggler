@@ -5,13 +5,16 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <limits>
+#include <optional>
 #include <utility>
 
 #include "pj_datastore/chunk.hpp"
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/topic_storage.hpp"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/Time.h"
 
 namespace PJ {
 namespace {
@@ -67,6 +70,30 @@ QPointF PointSeriesXY::sample(std::size_t index) const {
     return invalidPoint();
   }
   return readPoint(pairs_[index]);
+}
+
+std::optional<QPointF> PointSeriesXY::sampleFromTime(double display_time_sec) const {
+  ensureAlignmentIndex();
+  if (pairs_.empty() || session_ == nullptr) {
+    return std::nullopt;
+  }
+
+  // The tracker speaks display seconds; pairs_ carries raw timestamps. Map back
+  // through the Y source's offset (X and Y share a time base) so the search key
+  // is in the same domain as the chunk timestamps compared below.
+  const DisplayOffset offset = session_->displayOffset(y_source_.dataset_id);
+  const Timestamp raw_time = displaySecondsToRaw(fromAxisDouble(display_time_sec), offset);
+
+  // pairs_ is time-ordered; find the last pair at-or-before raw_time (matching
+  // the time-series tracker's sampleAtOrBeforeTime semantics — the marker holds
+  // the most recent sample, it does not interpolate).
+  const auto after = std::upper_bound(pairs_.begin(), pairs_.end(), raw_time, [](Timestamp time, const PairSlot& slot) {
+    return time < slot.y_chunk->readTimestamp(slot.y_row);
+  });
+  if (after == pairs_.begin()) {
+    return std::nullopt;  // cursor is before the first sample
+  }
+  return readPoint(*std::prev(after));
 }
 
 QRectF PointSeriesXY::boundingRect() const {

@@ -12,9 +12,9 @@
 #include "pj_plugins/host/data_source_library.hpp"
 #include "pj_plugins/host/dialog_handle.hpp"
 #include "pj_plugins/host/message_parser_library.hpp"
-#include "pj_plugins/host/plugin_runtime_catalog.hpp"
 #include "pj_plugins/host_qt/dialog_engine.hpp"
 #include "pj_runtime/ExtensionCatalogService.h"
+#include "pj_runtime/PluginRuntimeCatalog.h"
 
 namespace PJ::dialog_presenter {
 
@@ -63,6 +63,7 @@ DataSourceResult showDataSourceDialog(const DataSourceRequest& req) {
 
   DialogEngineConfig engine_config;
   engine_config.parser_dialog_provider = makeParserDialogProvider(req.catalog);
+  engine_config.section_band_metrics = req.section_band_metrics;
   // string-from-string_view ctor (C++17) handles a default-empty view safely;
   // raw .assign(data(), size()) would be UB when data() is nullptr.
   engine_config.initial_parser_config = std::string(req.initial_parser_config);

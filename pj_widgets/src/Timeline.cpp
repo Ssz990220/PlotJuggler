@@ -36,10 +36,11 @@
 #include <optional>
 #include <utility>
 
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/Hatch.h"
 #include "pj_widgets/Scrollbar.h"
 #include "pj_widgets/SvgButton.h"
-#include "pj_widgets/ThemeColors.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -51,6 +52,15 @@ namespace {
 constexpr double kMinPxPerNs = 1e-12;
 constexpr double kMaxPxPerNs = 1e-1;
 constexpr int kMaxTicks = 10000;  // runaway guard
+
+theme::Theme frameworkTheme() {
+  const QColor window = QGuiApplication::palette().color(QPalette::Window);
+  return theme::themeFor(window.lightness() >= 128);
+}
+
+QColor timelineBackdrop() {
+  return theme::surface(theme::Surface::DataBackdrop, frameworkTheme());
+}
 
 // Human-friendly tick intervals in ns: 100 us / 200 us / 500 us / 1/2/5/10/20/50 ms ... up to 1 h.
 constexpr std::array<qint64, 23> kTickLadder = {
@@ -268,22 +278,13 @@ inline QString formatAbsoluteSeconds(qint64 epoch_ns, bool fixed_ms = false) {
   if (ms == 0 && !fixed_ms) {
     return QString::number(sec);
   }
-  return QStringLiteral("%1.%2").arg(sec).arg(ms, 3, 10, QChar('0'));
+  return u"%1.%2"_s.arg(sec).arg(ms, 3, 10, QChar('0'));
 }
 
-// Linear RGB blend a*(1-t) + b*t.
-QColor blendColor(const QColor& a, const QColor& b, double t) {
-  const auto mix = [t](float x, float y) { return static_cast<float>((x * (1.0 - t)) + (y * t)); };
-  return QColor::fromRgbF(mix(a.redF(), b.redF()), mix(a.greenF(), b.greenF()), mix(a.blueF(), b.blueF()));
-}
-
-// Theme-derived timeline colours. The app syncs QPalette::Window / WindowText per
-// theme (Theme::syncApplicationPalette) and QSS does NOT touch the palette, so a
-// self-painting widget must read QGuiApplication::palette() — never its own
-// QSS-clobbered palette. Everything else is a blend of bg<->text so it adapts:
-// white bg + dark-grey hatch + dark numbers in light, the inverse in dark.
+// Theme-derived timeline colours. A self-painting data view reads the same
+// framework data-backdrop/outline/text tokens used by stylesheet-driven views.
 struct TimelineColors {
-  QColor bg;          // rows + ruler background (QPalette::Window)
+  QColor bg;          // rows + ruler background
   QColor ruler_data;  // subtle tint over the data (OR) span
   QColor grid_line;   // faint full-height tick gridlines
   // (the empty-area diagonal hatch ink comes from the shared PJ::appHatchColor())
@@ -293,16 +294,16 @@ struct TimelineColors {
 };
 
 TimelineColors timelineColors() {
-  const QPalette pal = QGuiApplication::palette();
-  const QColor bg = pal.color(QPalette::Window);
-  const QColor text = pal.color(QPalette::WindowText);
+  const auto fw_theme = frameworkTheme();
+  const QColor bg = theme::surface(theme::Surface::DataBackdrop, fw_theme);
+  const QColor text = theme::onSurface(theme::Surface::DataBackdrop, theme::Emphasis::Default, fw_theme);
   return {
       .bg = bg,
-      .ruler_data = blendColor(bg, text, 0.06),
-      .grid_line = blendColor(bg, text, 0.16),
+      .ruler_data = theme::overlay(theme::Overlay::Selected, fw_theme),
+      .grid_line = theme::surface(PJ::theme::Surface::Separation, fw_theme),
       .text = text,
-      .ruler_border = blendColor(bg, text, 0.32),
-      .bar_border = blendColor(bg, text, 0.55),
+      .ruler_border = theme::surface(PJ::theme::Surface::Separation, fw_theme),
+      .bar_border = theme::surface(PJ::theme::Surface::Separation, fw_theme),
   };
 }
 }  // namespace
@@ -367,8 +368,8 @@ class TimelineBarItem : public QGraphicsRectItem {
     fill.setAlphaF(std::abs(ghost_dx_px_) < 0.001 ? 0.8f : 0.5f);
     painter->setBrush(fill);
 
-    // Selected/grouped bars get a slightly heavier blue accent border as a hint.
-    QPen border(highlighted_ ? QColor(0x3d, 0x8b, 0xff) : col.bar_border);
+    // Selected/grouped bars get a slightly heavier accent border as a hint.
+    QPen border(highlighted_ ? theme::surface(PJ::theme::Surface::Separation, frameworkTheme()) : col.bar_border);
     border.setWidth(highlighted_ ? 2 : 1);
     painter->setPen(border);
     painter->drawRect(r);
@@ -518,11 +519,20 @@ class TimelineNeedleItem : public QGraphicsItem {
   static constexpr double kGrabHalfWidth = 6.0;
   static constexpr double kPillHalfWidth = 52.0;  // paint room for the timestamp pill
 
-  TimelineNeedleItem(const QColor& idle_color, const QColor& grabbed_color)
-      : idle_color_(idle_color), grabbed_color_(grabbed_color) {
+  TimelineNeedleItem(const QColor& idle_color, const QColor& grabbed_color, const QColor& grabbed_text_color)
+      : idle_color_(idle_color), grabbed_color_(grabbed_color), grabbed_text_color_(grabbed_text_color) {
     setFlag(ItemIsSelectable, false);
     setCursor(Qt::SizeHorCursor);
     setAcceptHoverEvents(true);
+  }
+
+  // Re-resolve on a live theme switch (Timeline::changeEvent) — the colors are
+  // captured at construction and would otherwise keep the previous theme's ink.
+  void setColors(const QColor& idle_color, const QColor& grabbed_color, const QColor& grabbed_text_color) {
+    idle_color_ = idle_color;
+    grabbed_color_ = grabbed_color;
+    grabbed_text_color_ = grabbed_text_color;
+    update();
   }
 
   void setHeight(double height) {
@@ -601,9 +611,10 @@ class TimelineNeedleItem : public QGraphicsItem {
     const QRectF pill(-tw / 2.0 - 5.0, header_top_ + 0.5, tw + 10.0, rh - 1.0);
     painter->setPen(Qt::NoPen);
     painter->setBrush(color);
-    painter->drawRoundedRect(pill, 3.0, 3.0);
+    const qreal pill_radius = theme::radius(theme::Radius::Input);
+    painter->drawRoundedRect(pill, pill_radius, pill_radius);
     const double baseline = header_top_ + ((rh + fm.ascent() - fm.descent()) / 2.0);
-    painter->setPen(Qt::white);
+    painter->setPen(grabbed_text_color_);
     painter->drawText(QPointF(-tw / 2.0, baseline), label_);
   }
 
@@ -614,6 +625,7 @@ class TimelineNeedleItem : public QGraphicsItem {
   QString label_;
   QColor idle_color_;
   QColor grabbed_color_;
+  QColor grabbed_text_color_;
 };
 
 /// Full-height background that fills the EMPTY span (outside the data union) with
@@ -731,20 +743,22 @@ class TimelineNamePanel : public QWidget {
     // names. WA_StyledBackground so the band's QSS fill paints; opaque so rows
     // scrolled up never bleed into the header.
     header_ = new QWidget(this);
-    header_->setObjectName(QStringLiteral("timelineDatasetsHeader"));
+    header_->setObjectName(u"timelineDatasetsHeader"_s);
     header_->setAttribute(Qt::WA_StyledBackground, true);
     auto* row = new QHBoxLayout(header_);
-    row->setContentsMargins(0, 0, 0, 0);
-    row->setSpacing(0);
+    row->setContentsMargins(
+        theme::space(theme::Space::None), theme::space(theme::Space::None), theme::space(theme::Space::None),
+        theme::space(theme::Space::None));
+    row->setSpacing(theme::space(theme::Space::None));
 
     header_label_ = new QLabel(tr("Datasets"), header_);
-    header_label_->setObjectName(QStringLiteral("timelineDatasetsLabel"));
+    header_label_->setObjectName(u"timelineDatasetsLabel"_s);
 
     // Merge button (merge icon, no label; 24-px to match the app chrome).
     // An SvgButton, so it re-tints itself on theme change — no applyHeaderTheme hook.
     // The Timeline enables it only when ≥2 sources are selected and wires its click.
-    merge_button_ = new SvgButton(QStringLiteral(":/resources/svg/merge.svg"), SvgButton::Size::kDefault, header_);
-    merge_button_->setObjectName(QStringLiteral("timelineMergeButton"));
+    merge_button_ = new SvgButton(u":/resources/svg/merge.svg"_s, SvgButton::Size::kDefault, header_);
+    merge_button_->setObjectName(u"timelineMergeButton"_s);
     merge_button_->setToolTip(tr("Merge the selected datasets"));
     merge_button_->setEnabled(false);
 
@@ -789,7 +803,7 @@ class TimelineNamePanel : public QWidget {
   void paintEvent(QPaintEvent* /*event*/) override {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
-    const QColor window = QGuiApplication::palette().color(QPalette::Window);
+    const QColor window = timelineBackdrop();
     painter.fillRect(rect(), window);
     // The right divider is drawn by the splitter handle (TimelineSplitterHandle).
     const QFontMetricsF fm(font());
@@ -810,13 +824,14 @@ class TimelineNamePanel : public QWidget {
       return;
     }
     // Insertion indicator at the drop boundary.
-    painter.fillRect(QRectF(0.0, dropLineY() - 1.0, width(), 2.0), theme::kBlue);
+    const QColor accent = theme::interaction(theme::Variant::Accent, theme::State::Nominal, frameworkTheme());
+    painter.fillRect(QRectF(0.0, dropLineY() - 1.0, width(), 2.0), accent);
     // Floating copy of the grabbed row, opaque, following the cursor.
     const TimelineNameRow& grabbed = rows_[static_cast<std::size_t>(drag_grabbed_)];
     const double fy = drag_y_ - (grabbed.height / 2.0);
     painter.fillRect(QRectF(0.0, fy, width(), grabbed.height), window);
     paintRow(painter, grabbed, fy, fm, 1.0);
-    painter.setPen(QPen(theme::kBlue, 1));
+    painter.setPen(QPen(accent, theme::stroke(theme::Stroke::Hairline, frameworkTheme())));
     painter.drawRect(QRectF(0.5, fy + 0.5, width() - 1.0, grabbed.height - 1.0));
   }
 
@@ -829,17 +844,17 @@ class TimelineNamePanel : public QWidget {
   void paintRow(QPainter& painter, const TimelineNameRow& row, double y_top, const QFontMetricsF& fm, double opacity) {
     constexpr double kAccentWidth = 4.0;  // color strip tying a name to its bar
     constexpr double kTextPad = 8.0;
+    const TimelineColors col = timelineColors();
     painter.setOpacity(opacity);
     if (row.selected) {
-      QColor sel = QGuiApplication::palette().color(QPalette::Highlight);
-      sel.setAlpha(80);  // translucent so the accent strip + theme tone stay legible
-      painter.fillRect(QRectF(0.0, y_top, width(), row.height), sel);
+      painter.fillRect(
+          QRectF(0.0, y_top, width(), row.height), theme::overlay(theme::Overlay::Selected, frameworkTheme()));
     }
     painter.fillRect(QRectF(0.0, y_top, kAccentWidth, row.height), row.color);
     const double text_x = kAccentWidth + kTextPad;
     const double text_w = width() - text_x - kTextPad;
     const QString label = fm.elidedText(row.name, Qt::ElideRight, text_w);
-    painter.setPen(QGuiApplication::palette().color(QPalette::WindowText));
+    painter.setPen(col.text);
     painter.drawText(QRectF(text_x, y_top, text_w, row.height), Qt::AlignVCenter | Qt::AlignLeft, label);
     painter.setOpacity(1.0);
   }
@@ -885,9 +900,8 @@ constexpr double kRowGap = 2.0;
 // of breathing room).
 constexpr double kRowsTopOffset = 28.0;  // first-dataset vertical offset (px)
 constexpr double kMinBarWidthPx = 2.0;
-constexpr double kSnapThresholdPx = 8.0;        // catch distance for edge-snap during a drag
-constexpr double kSnapReleaseExtraPx = 6.0;     // extra hysteresis band before an active snap releases
-const QColor kSnapLineColor(0xFF, 0x6D, 0x00);  // orange alignment guide, distinct from playhead/reference
+constexpr double kSnapThresholdPx = 8.0;     // catch distance for edge-snap during a drag
+constexpr double kSnapReleaseExtraPx = 6.0;  // extra hysteresis band before an active snap releases
 // Chrono-derived so the seconds<->ns factor can never drift from the unit it
 // converts (mirrors PJ::kNanosecondsPerSecond in pj_runtime/Time.h, which
 // pj_widgets cannot include per its dependency rule). The widget's public
@@ -914,11 +928,11 @@ QString formatMarkerTime(qint64 rel_ns) {
   const qint64 min = (total_ms / 1000) / 60;
   QString body;
   if (min > 0) {
-    body = QStringLiteral("%1:%2.%3").arg(min).arg(sec, 2, 10, QChar('0')).arg(ms, 3, 10, QChar('0'));
+    body = u"%1:%2.%3"_s.arg(min).arg(sec, 2, 10, QChar('0')).arg(ms, 3, 10, QChar('0'));
   } else {
-    body = QStringLiteral("%1.%2 s").arg(sec).arg(ms, 3, 10, QChar('0'));
+    body = u"%1.%2 s"_s.arg(sec).arg(ms, 3, 10, QChar('0'));
   }
-  return (neg ? QStringLiteral("-") : QString()) + body;
+  return (neg ? u"-"_s : QString()) + body;
 }
 }  // namespace
 
@@ -927,13 +941,22 @@ using timeline_detail::TimelineBarItem;
 using timeline_detail::TimelineNeedleItem;
 using timeline_detail::TimelineRulerItem;
 
+namespace {
+// Wheel zoom and name-column drags fire per input event; one
+// viewStateChangeCommitted publishes after the gesture goes quiet.
+constexpr int kViewStateCommitDebounceMs = 200;
+}  // namespace
+
 Timeline::Timeline(QWidget* parent) : QWidget(parent) {
+  view_state_commit_debounce_.setSingleShot(true);
+  view_state_commit_debounce_.setInterval(kViewStateCommitDebounceMs);
+  connect(&view_state_commit_debounce_, &QTimer::timeout, this, &Timeline::viewStateChangeCommitted);
   gscene_ = new QGraphicsScene(this);
   view_ = new QGraphicsView(gscene_, this);
   view_->setRenderHint(QPainter::Antialiasing, true);
   // The background item paints the themed base over the whole scene; this only
   // shows in any viewport area beyond the scene rect. Kept in step via changeEvent.
-  view_->setBackgroundBrush(QGuiApplication::palette().color(QPalette::Window));
+  view_->setBackgroundBrush(timelineBackdrop());
   view_->setAlignment(Qt::AlignLeft | Qt::AlignTop);
   // The native bars are hidden in favour of PJ::Scrollbar overlay pills
   // (h_scrollbar_ / v_scrollbar_). AlwaysOff hides the widget but KEEPS each
@@ -961,16 +984,20 @@ Timeline::Timeline(QWidget* parent) : QWidget(parent) {
   h_scrollbar_ = new Scrollbar(Qt::Horizontal);
   h_scrollbar_->setClickToScroll(true);
   h_scrollbar_->attach(view_);
+  connect(h_scrollbar_, &Scrollbar::scrollChangeCommitted, this, &Timeline::viewStateChangeCommitted);
   v_scrollbar_ = new Scrollbar(Qt::Vertical);
   v_scrollbar_->setClickToScroll(true);
   v_scrollbar_->attach(view_);
+  connect(v_scrollbar_, &Scrollbar::scrollChangeCommitted, this, &Timeline::viewStateChangeCommitted);
 
   align_button_ = new QPushButton(tr("Align"), this);
   align_button_->setToolTip(tr("Shift every source so their starts line up at the earliest start"));
   connect(align_button_, &QPushButton::clicked, this, &Timeline::alignRequested);
 
   auto* toolbar = new QHBoxLayout;
-  toolbar->setContentsMargins(4, 4, 4, 0);
+  toolbar->setContentsMargins(
+      theme::space(theme::Space::Snug), theme::space(theme::Space::Snug), theme::space(theme::Space::Snug),
+      theme::space(theme::Space::None));
   toolbar->addWidget(align_button_);
   toolbar->addStretch(1);
   // Host the toolbar in its own widget so it can be hidden as a unit. Hidden for
@@ -997,10 +1024,10 @@ Timeline::Timeline(QWidget* parent) : QWidget(parent) {
   });
 
   // Plain QSplitter so its handle is the app's standard separator: the global
-  // QSS styles QSplitter::handle as a 1-px border line that turns purple on
-  // hover/drag, identical to every other splitter divider.
+  // QSS styles QSplitter::handle as a 1-px separator line that turns the
+  // Highlight (pressed) accent while grabbed, identical to every other splitter.
   name_splitter_ = new QSplitter(Qt::Horizontal, this);
-  name_splitter_->setObjectName(QStringLiteral("timelineNameSplitter"));
+  name_splitter_->setObjectName(u"timelineNameSplitter"_s);
   name_splitter_->setChildrenCollapsible(false);
   name_splitter_->setHandleWidth(1);
   name_splitter_->addWidget(name_panel_);
@@ -1013,11 +1040,14 @@ Timeline::Timeline(QWidget* parent) : QWidget(parent) {
   connect(name_splitter_, &QSplitter::splitterMoved, this, [this](int, int) {
     updateLockOverlayGeometry();
     emit nameColumnWidthChanged(nameColumnWidth());
+    view_state_commit_debounce_.start();
   });
 
   auto* layout = new QVBoxLayout(this);
-  layout->setContentsMargins(0, 0, 0, 0);
-  layout->setSpacing(2);
+  layout->setContentsMargins(
+      theme::space(theme::Space::None), theme::space(theme::Space::None), theme::space(theme::Space::None),
+      theme::space(theme::Space::None));
+  layout->setSpacing(theme::space(theme::Space::Tight));
   layout->addWidget(toolbar_row);
   layout->addWidget(name_splitter_);
 
@@ -1027,15 +1057,20 @@ Timeline::Timeline(QWidget* parent) : QWidget(parent) {
   ruler_item_ = new TimelineRulerItem();
   gscene_->addItem(ruler_item_);
 
-  // Playback needle: magenta idle (theme::kPurple — the SAME magenta as the plot
-  // widget's playback tracker line, for cross-widget visual consistency), darker
-  // magenta when grabbed. Reference needle: light blue idle, dark blue when
-  // grabbed, hidden until a reference line is toggled on by the host.
-  playhead_item_ = new TimelineNeedleItem(theme::kPurple, theme::kPurpleDark);
+  // Playback needle: Accent (blue). Reference needle: Highlight (magenta), so the
+  // two markers stay visually distinct. Both darken to the pressed state on grab.
+  const auto fw_theme = frameworkTheme();
+  playhead_item_ = new TimelineNeedleItem(
+      theme::interaction(theme::Variant::Accent, theme::State::Checked, fw_theme),
+      theme::interaction(theme::Variant::Accent, theme::State::CheckedPressed, fw_theme),
+      theme::onFill(theme::Variant::Accent, theme::State::CheckedPressed, fw_theme));
   playhead_item_->setZValue(200);
   gscene_->addItem(playhead_item_);
 
-  reference_item_ = new TimelineNeedleItem(theme::kLightBlue, theme::kBlue);
+  reference_item_ = new TimelineNeedleItem(
+      theme::interaction(theme::Variant::Highlight, theme::State::Checked, fw_theme),
+      theme::interaction(theme::Variant::Highlight, theme::State::CheckedPressed, fw_theme),
+      theme::onFill(theme::Variant::Highlight, theme::State::CheckedPressed, fw_theme));
   reference_item_->setZValue(190);  // just under the playback needle
   reference_item_->setVisible(false);
   gscene_->addItem(reference_item_);
@@ -1044,7 +1079,7 @@ Timeline::Timeline(QWidget* parent) : QWidget(parent) {
   // edge snaps to a neighbour's edge. Above the bars, below the playback needle.
   snap_line_item_ = new QGraphicsLineItem();
   snap_line_item_->setZValue(180);
-  snap_line_item_->setPen(QPen(kSnapLineColor, 1.0));
+  snap_line_item_->setPen(QPen(theme::interaction(theme::Variant::Emphasis, theme::State::Nominal, fw_theme), 1.0));
   snap_line_item_->setVisible(false);
   gscene_->addItem(snap_line_item_);
 
@@ -1053,17 +1088,24 @@ Timeline::Timeline(QWidget* parent) : QWidget(parent) {
   // Purely informational — WA_TransparentForMouseEvents so it never changes event
   // routing (the press/wheel gates already block interaction). Hidden until locked.
   lock_overlay_ = new QLabel(tr("Streaming: pause playback to interact with the timeline"), this);
-  lock_overlay_->setObjectName(QStringLiteral("timelineLockOverlay"));
+  lock_overlay_->setObjectName(u"timelineLockOverlay"_s);
   lock_overlay_->setAttribute(Qt::WA_TransparentForMouseEvents);
   lock_overlay_->setAlignment(Qt::AlignCenter);
   lock_overlay_->setWordWrap(true);
   // Rounded grey pill centered over the scene (geometry set in
   // updateLockOverlayGeometry): sized to the text + padding, NOT a full-width band —
   // prominent enough to read at a glance while leaving the streaming bars visible.
-  lock_overlay_->setStyleSheet(QStringLiteral(
-      "QLabel#timelineLockOverlay { background-color: rgba(120, 120, 120, 225); color: #f7f7f7; "
-      "border: 1px solid rgba(255, 255, 255, 55); border-radius: 10px; padding: 12px 28px; "
-      "font-size: 18px; font-weight: 600; }"));
+  lock_overlay_->setStyleSheet(
+      QStringLiteral(
+          "QLabel#timelineLockOverlay { background-color: %1; color: %2; "
+          "border: 1px solid %3; border-radius: %4px; padding: %5px %6px; "
+          "font-size: 18px; font-weight: 600; }")
+          .arg(theme::overlay(theme::Overlay::Hud, fw_theme).name(QColor::HexArgb))
+          .arg(theme::onOverlayHud(fw_theme).name(QColor::HexArgb))
+          .arg(theme::outline(theme::OutlineRole::Default, theme::OutlineState::Rest, fw_theme).name(QColor::HexArgb))
+          .arg(theme::radius(theme::Radius::Dialog))
+          .arg(theme::space(theme::Space::Section))
+          .arg(theme::space(theme::Space::Section)));
   lock_overlay_->hide();
 
   // Recenter the lock overlay on scroll / range changes; the PJ::Scrollbar overlays
@@ -1269,6 +1311,10 @@ qint64 Timeline::viewportLeftDisplayNs() const {
   return TimelineScene::pxToNs(static_cast<double>(view_->horizontalScrollBar()->value()), viewport_);
 }
 
+int Timeline::viewportTopOffsetPx() const {
+  return (view_ != nullptr && view_->verticalScrollBar() != nullptr) ? view_->verticalScrollBar()->value() : 0;
+}
+
 void Timeline::setViewportLeftDisplayNs(qint64 display_ns) {
   if (view_ == nullptr || view_->horizontalScrollBar() == nullptr) {
     return;
@@ -1277,6 +1323,12 @@ void Timeline::setViewportLeftDisplayNs(qint64 display_ns) {
   // a wider window than at save time) lands at the nearest reachable edge.
   const double scene_x = TimelineScene::nsToPx(display_ns, viewport_);
   view_->horizontalScrollBar()->setValue(static_cast<int>(std::llround(scene_x)));
+}
+
+void Timeline::setViewportTopOffsetPx(int offset_px) {
+  if (view_ != nullptr && view_->verticalScrollBar() != nullptr) {
+    view_->verticalScrollBar()->setValue(std::max(0, offset_px));
+  }
 }
 
 int Timeline::nameColumnWidth() const {
@@ -1723,6 +1775,10 @@ void Timeline::setSnapEnabled(bool enabled) {
   }
 }
 
+bool Timeline::snapEnabled() const {
+  return snap_enabled_;
+}
+
 void Timeline::setInteractionLocked(bool locked) {
   if (interaction_locked_ == locked) {
     return;
@@ -2160,6 +2216,7 @@ void Timeline::wheelEvent(QWheelEvent* event) {
   rebuild();
   const double new_anchor_scene_x = TimelineScene::nsToPx(anchor_ns, viewport_);
   view_->horizontalScrollBar()->setValue(static_cast<int>(std::llround(new_anchor_scene_x - anchor_vp_x)));
+  view_state_commit_debounce_.start();
   event->accept();
 }
 
@@ -2209,6 +2266,7 @@ void Timeline::mousePressEvent(QMouseEvent* event) {
     const TimelineSourceId pressed_id = bar->sourceId();
     const bool group_move = selected_ids_.count(pressed_id) != 0;
     drag_group_.clear();
+    bar_drag_changed_ = false;
     snap_active_ = false;  // fresh drag: start with no sticky snap held
     drag_start_scene_x_ = scene_pos.x();
     for (TimelineBarItem* candidate : bar_items_) {
@@ -2268,6 +2326,7 @@ void Timeline::mouseMoveEvent(QMouseEvent* event) {
   if (!drag_group_.empty()) {
     const double dx_px = scene_pos.x() - drag_start_scene_x_;
     qint64 delta_ns = TimelineScene::pxDeltaToNs(dx_px, viewport_);
+    bar_drag_changed_ = bar_drag_changed_ || delta_ns != 0;
     double applied_dx_px = dx_px;
     // Edge-snap: align a dragged start/end onto a neighbour's start/end when within
     // the threshold; a guide line marks it. Dragging past the threshold releases it.
@@ -2307,6 +2366,7 @@ void Timeline::mouseReleaseEvent(QMouseEvent* event) {
     panning_ = false;
     if (pan_moved_) {
       view_->viewport()->unsetCursor();
+      emit viewStateChangeCommitted();
     } else {
       clearSelection();  // a plain background click (no pan) deselects
     }
@@ -2326,15 +2386,20 @@ void Timeline::mouseReleaseEvent(QMouseEvent* event) {
     return;
   }
   if (!drag_group_.empty()) {
+    const bool changed = bar_drag_changed_;
     for (const DragMember& m : drag_group_) {
       m.item->setGhostDx(0.0);
     }
     drag_group_.clear();
+    bar_drag_changed_ = false;
     hideSnapLine();
     view_->viewport()->unsetCursor();
     // A rebuild was suppressed during the drag; re-lay-out now from whatever the
     // host wrote back (or the original state if it ignored the intent).
     rebuild();
+    if (changed) {
+      emit offsetChangeCommitted();
+    }
     event->accept();
     return;
   }
@@ -2351,13 +2416,27 @@ void Timeline::changeEvent(QEvent* event) {
   QWidget::changeEvent(event);
   if (event->type() == QEvent::ApplicationPaletteChange || event->type() == QEvent::PaletteChange ||
       event->type() == QEvent::StyleChange) {
-    // Items read QGuiApplication::palette() each paint; refresh the view's own
-    // backing brush and force a full repaint so the theme switch is immediate.
-    view_->setBackgroundBrush(QGuiApplication::palette().color(QPalette::Window));
+    // Items read framework tokens each paint; refresh the view's own backing
+    // brush and force a full repaint so the theme switch is immediate. The
+    // needles captured their colors at construction — re-resolve them here.
+    const auto fw_theme = frameworkTheme();
+    if (playhead_item_ != nullptr) {
+      playhead_item_->setColors(
+          theme::interaction(theme::Variant::Accent, theme::State::Checked, fw_theme),
+          theme::interaction(theme::Variant::Accent, theme::State::CheckedPressed, fw_theme),
+          theme::onFill(theme::Variant::Accent, theme::State::CheckedPressed, fw_theme));
+    }
+    if (reference_item_ != nullptr) {
+      reference_item_->setColors(
+          theme::interaction(theme::Variant::Highlight, theme::State::Checked, fw_theme),
+          theme::interaction(theme::Variant::Highlight, theme::State::CheckedPressed, fw_theme),
+          theme::onFill(theme::Variant::Highlight, theme::State::CheckedPressed, fw_theme));
+    }
+    view_->setBackgroundBrush(timelineBackdrop());
     gscene_->update();
     view_->viewport()->update();
     if (name_panel_ != nullptr) {
-      name_panel_->update();  // re-reads QGuiApplication::palette() on repaint
+      name_panel_->update();  // re-reads framework tokens on repaint
       // The name panel re-tints its own header merge button via its changeEvent.
     }
   }

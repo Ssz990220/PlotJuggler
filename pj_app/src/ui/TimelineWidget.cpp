@@ -80,7 +80,7 @@ void TimelineWidget::setSeekLocked(bool locked) {
     return;
   }
   seek_locked_ = locked;
-  ui_->timeSlider->setEnabled(!locked);
+  updateTransportEnabled();
   if (locked) {
     has_pending_seek_ = false;
     seek_throttle_timer_.stop();
@@ -124,6 +124,10 @@ void TimelineWidget::onEngineRangeChanged(double min, double max) {
   updating_from_engine_ = true;
   ui_->timeSlider->setLimits(min, max, steps);
   updating_from_engine_ = false;
+  // A collapsed range (max <= min) means no scrubbable data: disable the whole
+  // transport so a dead slider can't be dragged over nothing.
+  range_empty_ = !(max > min);
+  updateTransportEnabled();
   // setLimits keeps the slider's integer position, which now maps to a DIFFERENT
   // value under the new range — so a range-only change (no currentTimeChanged, e.g.
   // the union growing as files load, or an offset edit) would otherwise leave the
@@ -134,10 +138,25 @@ void TimelineWidget::onEngineRangeChanged(double min, double max) {
   }
 }
 
+void TimelineWidget::updateTransportEnabled() {
+  const bool has_data = !range_empty_;
+  // Play stays usable while the engine is already playing, so a live stream —
+  // whose first sample can be a single point (min==max) — can always be paused
+  // from the transport; loop + slider require a real (non-empty) range.
+  const bool playing = engine_ != nullptr && engine_->isPlaying();
+  ui_->buttonPlay->setEnabled(has_data || playing);
+  ui_->playbackLoop->setEnabled(has_data);
+  // The slider needs data AND an unlocked seek (streaming pause locks it).
+  ui_->timeSlider->setEnabled(has_data && !seek_locked_);
+}
+
 void TimelineWidget::onEnginePlayingChanged(bool playing) {
   updating_from_engine_ = true;
   ui_->buttonPlay->setChecked(playing);
   updating_from_engine_ = false;
+  // Play's enabled state depends on isPlaying() (a stream over a degenerate range
+  // stays pausable), so re-evaluate whenever the play state flips.
+  updateTransportEnabled();
 }
 
 void TimelineWidget::onEngineRateChanged(double rate) {
@@ -252,7 +271,7 @@ void TimelineWidget::onChromeMetricsChanged(const ChromeMetrics& metrics) {
 void TimelineWidget::applyIcons(QString theme) {
   const QSize icon_sz(chrome_metrics_.icon_size, chrome_metrics_.icon_size);
   const int button_extent = chrome_metrics_.icon_size + chrome_metrics_.icon_padding;
-  const int band_extent = button_extent + (2 * chrome_metrics_.layout_padding);
+  const int band_extent = chrome_metrics_.bandHeight();
   ui_->playbackLoop->setIcon(loadSvg(":/resources/svg/loop.svg", theme));
   ui_->playbackLoop->setIconSize(icon_sz);
   ui_->playbackLoop->setMinimumSize(button_extent, button_extent);

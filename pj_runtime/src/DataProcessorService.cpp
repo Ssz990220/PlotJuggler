@@ -4,6 +4,7 @@
 #include "pj_runtime/DataProcessorService.h"
 
 #include <algorithm>
+#include <functional>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -19,6 +20,7 @@
 #include "pj_datastore/processor_siso_adapter.hpp"
 #include "pj_datastore/sample.hpp"
 #include "pj_datastore/topic_storage.hpp"
+#include "pj_runtime/SessionManager.h"
 #include "pj_scripting/filter_catalogue.h"
 #include "pj_scripting/lua_mimo_transform.h"
 #include "pj_scripting/lua_siso_transform.h"
@@ -27,8 +29,16 @@
 
 namespace PJ {
 
+namespace {
+std::vector<std::string> inputFieldPaths(const DataEngine& engine, const TopicStorage& storage);
+std::string normalizedFieldPath(std::string path);
+}  // namespace
+
 DataProcessorService::DataProcessorService(DataEngine& engine)
     : engine_(engine), derived_(std::make_unique<DerivedEngine>(engine)) {}
+
+DataProcessorService::DataProcessorService(SessionManager& session)
+    : engine_(session.dataEngine()), session_(&session), derived_(std::make_unique<DerivedEngine>(engine_)) {}
 
 DataProcessorService::~DataProcessorService() = default;
 
@@ -91,6 +101,15 @@ Expected<DataProcessorService::FilterHandle> DataProcessorService::applyFilter(
   recipe.output_topic_id = outputs.front();
   recipe.input_topic_id = input_topic_id;
   recipe.input_column_index = input_column_index;
+  {
+    const auto engine_lock = engine_.lockEngine();
+    if (const TopicStorage* input = engine_.getTopicStorage(input_topic_id)) {
+      const std::vector<std::string> paths = inputFieldPaths(engine_, *input);
+      if (input_column_index < paths.size()) {
+        recipe.input_field_path = paths[input_column_index];
+      }
+    }
+  }
   recipe.dataset_id = dataset_id;
   recipe.processor_id = shared->id();
   recipe.output_name = output_name;
@@ -110,25 +129,47 @@ Expected<DataProcessorService::FilterHandle> DataProcessorService::applyFilter(
 }
 
 Status DataProcessorService::removeFilter(NodeId node_id) {
+  for (const auto& [output_topic_id, recipe] : recipes_) {
+    if (recipe.node_id != node_id) {
+      continue;
+    }
+    if (Status removed_dependents = removeProcessorsDependingOn({output_topic_id}); !removed_dependents.has_value()) {
+      return removed_dependents;
+    }
+    return removeFilterOnly(node_id);
+  }
+  return PJ::unexpected("DataProcessorService: filter node " + std::to_string(node_id) + " not found");
+}
+
+Status DataProcessorService::removeFilterOnly(NodeId node_id) {
   for (auto it = recipes_.begin(); it != recipes_.end(); ++it) {
     if (it->second.node_id == node_id) {
+      const TopicId output_topic_id = it->second.output_topic_id;
+      if (Status removed = derived_->removeNode(node_id); !removed.has_value()) {
+        return removed;
+      }
       recipes_.erase(it);
-      break;
+      engine_.retireTopic(output_topic_id);
+      return PJ::okStatus();
     }
   }
-  return derived_->removeNode(node_id);
+  return PJ::unexpected("DataProcessorService: filter node " + std::to_string(node_id) + " not found");
 }
 
 void DataProcessorService::clearAllFilters() {
+  std::vector<NodeId> nodes;
+  nodes.reserve(recipes_.size());
   for (const auto& [output_topic_id, recipe] : recipes_) {
-    (void)output_topic_id;  // key == recipe.output_topic_id; iterate by recipe for clarity
-    // Drop the engine node, then retire the materialized output so the next
-    // CatalogModel::rebuildFromDatastore stops listing it. removeNode alone would
-    // leave a catalog zombie (it does not touch DataEngine::retired_topic_ids).
-    (void)derived_->removeNode(recipe.node_id);
-    engine_.retireTopic(recipe.output_topic_id);
+    (void)output_topic_id;
+    nodes.push_back(recipe.node_id);
   }
-  recipes_.clear();
+  for (const NodeId node_id : nodes) {
+    const bool still_live = std::any_of(
+        recipes_.begin(), recipes_.end(), [node_id](const auto& entry) { return entry.second.node_id == node_id; });
+    if (still_live) {
+      (void)removeFilter(node_id);
+    }
+  }
 }
 
 std::vector<TopicId> DataProcessorService::advanceOnCommit(const std::vector<TopicId>& changed_inputs) {
@@ -162,31 +203,183 @@ std::vector<TopicId> DataProcessorService::advanceOnCommit(const std::vector<Top
   return outputs;
 }
 
-std::vector<TopicId> DataProcessorService::recomputeForReplacedSources(const std::vector<TopicId>& replaced_inputs) {
+namespace {
+// Index of the single leaf column whose normalized path equals `normalized_wanted`;
+// `ambiguous` distinguishes several-matches from none (callers word their errors).
+std::optional<std::size_t> uniqueColumnForFieldPath(
+    const std::vector<std::string>& paths, const std::string& normalized_wanted, bool& ambiguous) {
+  ambiguous = false;
+  std::optional<std::size_t> match;
+  for (std::size_t index = 0; index < paths.size(); ++index) {
+    if (normalizedFieldPath(paths[index]) != normalized_wanted) {
+      continue;
+    }
+    if (match.has_value()) {
+      ambiguous = true;
+      return std::nullopt;
+    }
+    match = index;
+  }
+  return match;
+}
+}  // namespace
+
+Expected<std::vector<TopicId>> DataProcessorService::rebindAndRecomputeForReplacedSources(
+    const std::vector<TopicId>& replaced_inputs) {
   std::vector<TopicId> affected_outputs;
-  if (replaced_inputs.empty() || recipes_.empty()) {
+  if (replaced_inputs.empty() || (recipes_.empty() && transform_recipes_.empty())) {
     return affected_outputs;
   }
-  // A reload swaps a raw input's chunks wholesale; reset + replay every recipe whose input is
-  // affected — TRANSITIVELY, so a filter-of-a-filter follows its parent (the chained recipe's
-  // input is the parent's output topic, not a raw input). recipes_ is keyed by output_topic_id
-  // and acyclic, so a fixpoint recomputes parents before children regardless of map order;
-  // `done` bounds it. Every affected output is REPORTED so each plot refreshes (recomputeBatch
-  // also cascades engine-downstream, but reporting the full set is the load-bearing guarantee).
-  std::unordered_set<TopicId> affected(replaced_inputs.begin(), replaced_inputs.end());
-  std::unordered_set<PJ::NodeId> done;
-  bool progress = true;
-  while (progress) {
-    progress = false;
-    for (auto& [out_tid, recipe] : recipes_) {
-      if (done.count(recipe.node_id) > 0 || affected.count(recipe.input_topic_id) == 0) {
-        continue;  // already done, or its input is not (yet) affected — a later pass may pick it up
+
+  const std::unordered_set<TopicId> replaced(replaced_inputs.begin(), replaced_inputs.end());
+  struct BindingChange {
+    NodeId node_id = 0;
+    DerivedEngine::InputBindingState prior;
+    DerivedEngine::InputBindingState desired;
+    std::optional<TopicId> filter_output;
+    std::string transform_key;
+  };
+  std::vector<BindingChange> binding_changes;
+
+  // Resolve the entire binding set before mutating any node. One missing field
+  // must not leave an earlier node rebound against the new schema. One lock
+  // scope makes the multi-step read atomic (inner acquisitions are recursive
+  // owner re-locks).
+  const auto resolution_lock = engine_.lockEngine();
+  const auto stage_if_changed = [this, &binding_changes](
+                                    NodeId node_id, std::vector<std::size_t> columns,
+                                    std::optional<TopicId> filter_output, std::string transform_key) -> Status {
+    auto prior = derived_->inputBindingState(node_id);
+    if (!prior.has_value()) {
+      return PJ::unexpected(prior.error());
+    }
+    if (prior->columns == columns) {
+      return PJ::okStatus();
+    }
+    auto desired = derived_->resolvedInputBindingState(node_id, columns);
+    if (!desired.has_value()) {
+      return PJ::unexpected(desired.error());
+    }
+    binding_changes.push_back(
+        BindingChange{
+            .node_id = node_id,
+            .prior = std::move(*prior),
+            .desired = std::move(*desired),
+            .filter_output = filter_output,
+            .transform_key = std::move(transform_key),
+        });
+    return PJ::okStatus();
+  };
+
+  std::unordered_map<TopicId, std::vector<std::string>> paths_by_topic;
+  for (const auto& [output_topic_id, recipe] : recipes_) {
+    if (replaced.count(recipe.input_topic_id) == 0 || recipe.input_field_path.empty()) {
+      continue;
+    }
+    auto paths = paths_by_topic.find(recipe.input_topic_id);
+    if (paths == paths_by_topic.end()) {
+      const TopicStorage* storage = engine_.getTopicStorage(recipe.input_topic_id);
+      if (storage == nullptr) {
+        return PJ::unexpected("DataProcessorService: filter input disappeared during reload");
       }
-      (void)derived_->recomputeBatch(recipe.node_id);
-      done.insert(recipe.node_id);
-      affected.insert(out_tid);
-      affected_outputs.push_back(out_tid);
-      progress = true;
+      paths = paths_by_topic.emplace(recipe.input_topic_id, inputFieldPaths(engine_, *storage)).first;
+    }
+    bool ambiguous = false;
+    const std::optional<std::size_t> rebound_column =
+        uniqueColumnForFieldPath(paths->second, normalizedFieldPath(recipe.input_field_path), ambiguous);
+    if (ambiguous) {
+      return PJ::unexpected("DataProcessorService: filter input field became ambiguous during reload");
+    }
+    if (!rebound_column.has_value()) {
+      return PJ::unexpected("DataProcessorService: filter input field disappeared during reload");
+    }
+    if (Status staged = stage_if_changed(recipe.node_id, {*rebound_column}, output_topic_id, {}); !staged.has_value()) {
+      return PJ::unexpected(staged.error());
+    }
+  }
+
+  for (const auto& [key, recipe] : transform_recipes_) {
+    const bool touches_replaced = std::any_of(
+        recipe.input_topic_ids.begin(), recipe.input_topic_ids.end(),
+        [&replaced](TopicId input) { return replaced.count(input) != 0; });
+    if (!touches_replaced) {
+      continue;
+    }
+    if (recipe.input_bindings.size() != recipe.input_topic_ids.size()) {
+      return PJ::unexpected("pj.data_processors: live transform lost its exact input bindings");
+    }
+    std::vector<std::size_t> columns;
+    columns.reserve(recipe.input_bindings.size());
+    for (std::size_t index = 0; index < recipe.input_bindings.size(); ++index) {
+      auto rebound = resolveInputBinding(recipe.input_bindings[index]);
+      if (!rebound.has_value()) {
+        return PJ::unexpected(rebound.error());
+      }
+      if (rebound->topic_id != recipe.input_topic_ids[index]) {
+        return PJ::unexpected("pj.data_processors: transform input topic changed during in-place reload");
+      }
+      columns.push_back(rebound->column);
+    }
+    if (Status staged = stage_if_changed(recipe.node_id, std::move(columns), std::nullopt, key); !staged.has_value()) {
+      return PJ::unexpected(staged.error());
+    }
+  }
+
+  std::size_t applied_bindings = 0;
+  const auto rollback_bindings = [&]() {
+    std::vector<NodeId> restored_nodes;
+    while (applied_bindings > 0) {
+      const BindingChange& change = binding_changes[--applied_bindings];
+      (void)derived_->restoreInputBindingState(change.node_id, change.prior);
+      restored_nodes.push_back(change.node_id);
+    }
+    if (!restored_nodes.empty()) {
+      (void)derived_->recomputeBatch(PJ::Span<const NodeId>(restored_nodes));
+    }
+  };
+  for (const BindingChange& change : binding_changes) {
+    if (Status rebound = derived_->restoreInputBindingState(change.node_id, change.desired); !rebound.has_value()) {
+      rollback_bindings();
+      return PJ::unexpected(rebound.error());
+    }
+    ++applied_bindings;
+  }
+
+  std::unordered_set<TopicId> affected(replaced_inputs.begin(), replaced_inputs.end());
+  std::unordered_set<NodeId> done;
+  forEachDependentProcessor(
+      affected, /*include_ephemeral_transforms=*/true,
+      [&done, &affected_outputs](TopicId output_topic_id, const FilterRecipe& recipe) {
+        done.insert(recipe.node_id);
+        affected_outputs.push_back(output_topic_id);
+      },
+      [&done, &affected_outputs](const std::string&, const TransformRecipe& recipe) {
+        done.insert(recipe.node_id);
+        affected_outputs.insert(affected_outputs.end(), recipe.output_topic_ids.begin(), recipe.output_topic_ids.end());
+      });
+
+  if (!done.empty()) {
+    const std::vector<NodeId> affected_nodes(done.begin(), done.end());
+    if (Status recomputed = derived_->recomputeBatch(PJ::Span<const NodeId>(affected_nodes)); !recomputed.has_value()) {
+      rollback_bindings();
+      return PJ::unexpected(recomputed.error());
+    }
+  }
+  for (const BindingChange& change : binding_changes) {
+    if (change.filter_output.has_value()) {
+      recipes_.at(*change.filter_output).input_column_index = change.desired.columns.front();
+      continue;
+    }
+    auto transform = transform_recipes_.find(change.transform_key);
+    if (transform == transform_recipes_.end()) {
+      rollback_bindings();
+      return PJ::unexpected("pj.data_processors: transform disappeared during reload transaction");
+    }
+    for (std::size_t index = 0; index < change.desired.columns.size(); ++index) {
+      transform->second.input_bindings[index].column_index = change.desired.columns[index];
+    }
+    if (change.desired.columns.size() == 1) {
+      transform->second.input_column_index = change.desired.columns.front();
     }
   }
   return affected_outputs;
@@ -293,6 +486,35 @@ Expected<std::string> inferTransformBackend(const std::string& script) {
   return PJ::unexpected(
       "pj.data_processors: unrecognized script backend directive (expected '-- pj-script: <lang>' on line 1)");
 }
+
+std::vector<std::string> inputFieldPaths(const DataEngine& engine, const TopicStorage& storage) {
+  if (storage.descriptor().schema_id != 0) {
+    if (const TypeTreeNode* root = engine.typeRegistry().lookup(storage.descriptor().schema_id)) {
+      return flattenFieldPaths(*root);
+    }
+  }
+  std::vector<std::string> paths;
+  if (!storage.columnDescriptors().empty()) {
+    paths.reserve(storage.columnDescriptors().size());
+    for (const auto& column : storage.columnDescriptors()) {
+      paths.push_back(column.field_path);
+    }
+    return paths;
+  }
+  if (!storage.sealedChunks().empty()) {
+    const auto& columns = storage.sealedChunks().front().columns;
+    paths.reserve(columns.size());
+    for (const auto& column : columns) {
+      paths.push_back(column.descriptor != nullptr ? column.descriptor->field_path : std::string{});
+    }
+  }
+  return paths;
+}
+
+std::string normalizedFieldPath(std::string path) {
+  std::replace(path.begin(), path.end(), '/', '.');
+  return path;
+}
 }  // namespace
 
 std::string DataProcessorService::makeTransformKey(std::string_view plugin_id, std::string_view id) {
@@ -305,21 +527,22 @@ std::string DataProcessorService::makeTransformKey(std::string_view plugin_id, s
 }
 
 std::optional<std::pair<TopicId, DatasetId>> DataProcessorService::resolveInputTopic(const std::string& name) const {
-  // No name->id index on the engine; scan live topics (retired ones are excluded
-  // from listTopics, which is what we want — a stale output never resolves).
+  const auto engine_lock = engine_.lockEngine();
+  std::vector<std::pair<TopicId, DatasetId>> matches;
   for (const DatasetId ds : engine_.listDatasets()) {
     for (const TopicId tid : engine_.listTopics(ds)) {
       const TopicStorage* storage = engine_.getTopicStorage(tid);
       if (storage != nullptr && storage->descriptor().name == name) {
-        return std::make_pair(tid, ds);
+        matches.emplace_back(tid, ds);
       }
     }
   }
-  return std::nullopt;
+  return matches.size() == 1 ? std::optional{matches.front()} : std::nullopt;
 }
 
 std::optional<DataProcessorService::ResolvedInput> DataProcessorService::resolveInputField(
     const std::string& name) const {
+  const auto engine_lock = engine_.lockEngine();
   // Exact whole-topic name → the topic's first leaf column.
   if (const auto topic = resolveInputTopic(name)) {
     return ResolvedInput{topic->first, topic->second, 0};
@@ -327,10 +550,7 @@ std::optional<DataProcessorService::ResolvedInput> DataProcessorService::resolve
   // Otherwise treat the name as "<topic>/<field-path>": find the LONGEST live topic
   // whose name prefixes `name` (topic names can themselves contain '/'), then map the
   // trailing field path to its flattened-leaf column index.
-  const TopicStorage* best_storage = nullptr;
-  TopicId best_tid = 0;
-  DatasetId best_ds = 0;
-  std::string best_field;
+  std::vector<ResolvedInput> matches;
   std::size_t best_topic_len = 0;
   for (const DatasetId ds : engine_.listDatasets()) {
     for (const TopicId tid : engine_.listTopics(ds)) {
@@ -340,49 +560,82 @@ std::optional<DataProcessorService::ResolvedInput> DataProcessorService::resolve
       }
       const std::string& tn = storage->descriptor().name;
       if (name.size() > tn.size() + 1 && name.compare(0, tn.size(), tn) == 0 && name[tn.size()] == '/' &&
-          tn.size() > best_topic_len) {
-        best_topic_len = tn.size();
-        best_storage = storage;
-        best_tid = tid;
-        best_ds = ds;
-        best_field = name.substr(tn.size() + 1);
-      }
-    }
-  }
-  if (best_storage == nullptr) {
-    return std::nullopt;
-  }
-  // Map the field path to its leaf column index. The dropped/display name separates
-  // nested fields with '/', but both the type tree (flattenFieldPaths) and the stored
-  // column descriptors use '.'-separated paths (e.g. "orientation.w"); normalize the
-  // queried field to '.' before matching so a nested input resolves, not just a flat
-  // one. The returned index is the engine's leaf-column order — exactly what
-  // add_mimo_transform reads per input.
-  std::string field_dotted = best_field;
-  std::replace(field_dotted.begin(), field_dotted.end(), '/', '.');
-  const auto matches = [&](const std::string& path) { return path == best_field || path == field_dotted; };
-
-  // Schema-bearing topics (e.g. ROS/CDR): resolve through the TypeRegistry tree.
-  const PJ::SchemaId schema_id = best_storage->descriptor().schema_id;
-  if (schema_id != 0) {
-    if (const PJ::TypeTreeNode* root = engine_.typeRegistry().lookup(schema_id)) {
-      const std::vector<std::string> paths = PJ::flattenFieldPaths(*root);
-      for (std::size_t i = 0; i < paths.size(); ++i) {
-        if (matches(paths[i])) {
-          return ResolvedInput{best_tid, best_ds, i};
+          tn.size() >= best_topic_len) {
+        const std::string wanted = normalizedFieldPath(name.substr(tn.size() + 1));
+        const std::vector<std::string> paths = inputFieldPaths(engine_, *storage);
+        bool ambiguous = false;
+        const std::optional<std::size_t> column = uniqueColumnForFieldPath(paths, wanted, ambiguous);
+        if (!column.has_value()) {
+          continue;  // no unique field on this topic — keep scanning candidates
         }
+        if (tn.size() > best_topic_len) {
+          matches.clear();
+          best_topic_len = tn.size();
+        }
+        matches.push_back(ResolvedInput{tid, ds, *column});
       }
     }
   }
-  // Schema-less topics (schema_id == 0, e.g. JSON scalar-only ingest): the leaf names
-  // live in the stored column descriptors, whose order is the engine column index.
-  const auto& columns = best_storage->columnDescriptors();
-  for (std::size_t i = 0; i < columns.size(); ++i) {
-    if (matches(columns[i].field_path)) {
-      return ResolvedInput{best_tid, best_ds, i};
+  return matches.size() == 1 ? std::optional{matches.front()} : std::nullopt;
+}
+
+Expected<DataProcessorService::ResolvedInput> DataProcessorService::resolveInputBinding(
+    const TransformInputBinding& binding) const {
+  if (binding.topic_name.empty()) {
+    return PJ::unexpected("pj.data_processors: qualified transform input is missing its topic name");
+  }
+  if (session_ == nullptr) {
+    return PJ::unexpected("pj.data_processors: qualified transform input requires session identity resolution");
+  }
+
+  const DatasetIdentityResolution dataset =
+      session_->resolveDatasetIdentity(binding.dataset_id, QString::fromStdString(binding.dataset_source), QString());
+  if (!dataset.id.has_value()) {
+    return PJ::unexpected(
+        dataset.ambiguous ? "pj.data_processors: transform input dataset source is ambiguous: " + binding.dataset_source
+                          : "pj.data_processors: transform input dataset source not found: " + binding.dataset_source);
+  }
+
+  const auto engine_lock = engine_.lockEngine();
+  std::vector<TopicId> topic_matches;
+  for (const TopicId topic_id : engine_.listTopics(*dataset.id)) {
+    const TopicStorage* storage = engine_.getTopicStorage(topic_id);
+    if (storage != nullptr && storage->descriptor().name == binding.topic_name) {
+      topic_matches.push_back(topic_id);
     }
   }
-  return std::nullopt;
+  if (topic_matches.size() != 1) {
+    return PJ::unexpected(
+        topic_matches.empty()
+            ? "pj.data_processors: transform input topic not found in qualified dataset: " + binding.topic_name
+            : "pj.data_processors: transform input topic is ambiguous in qualified dataset: " + binding.topic_name);
+  }
+  const TopicId topic_id = topic_matches.front();
+  const TopicStorage* storage = engine_.getTopicStorage(topic_id);
+  if (storage == nullptr) {
+    return PJ::unexpected("pj.data_processors: qualified transform input disappeared during restore");
+  }
+
+  std::size_t column = binding.column_index;
+  const std::vector<std::string> field_paths = inputFieldPaths(engine_, *storage);
+  if (!binding.field_path.empty()) {
+    bool ambiguous = false;
+    const std::optional<std::size_t> field_column =
+        uniqueColumnForFieldPath(field_paths, normalizedFieldPath(binding.field_path), ambiguous);
+    if (ambiguous) {
+      return PJ::unexpected(
+          "pj.data_processors: transform input field is ambiguous in qualified topic: " + binding.field_path);
+    }
+    if (!field_column.has_value()) {
+      return PJ::unexpected(
+          "pj.data_processors: transform input field not found in qualified topic: " + binding.field_path);
+    }
+    column = *field_column;
+  } else if (!field_paths.empty() && column >= field_paths.size()) {
+    return PJ::unexpected(
+        "pj.data_processors: transform input column is out of range for qualified topic: " + std::to_string(column));
+  }
+  return ResolvedInput{topic_id, *dataset.id, column};
 }
 
 bool DataProcessorService::outputNameInUse(const std::string& name, const std::string& except_key) const {
@@ -498,6 +751,11 @@ Expected<DataProcessorService::TransformRecipe> DataProcessorService::installTra
       return PJ::unexpected("pj.data_processors: transform output name must be non-empty");
     }
   }
+  const auto existing = transform_recipes_.find(recipe.key);
+  if (existing != transform_recipes_.end() && existing->second.ephemeral != recipe.ephemeral) {
+    return PJ::unexpected(
+        "pj.data_processors: an existing transform cannot change between persistent and ephemeral lifetime");
+  }
   // 2. Backend (also the missing/unavailable-backend diagnostic on restore).
   auto backend = inferTransformBackend(recipe.script);
   if (!backend.has_value()) {
@@ -510,13 +768,47 @@ Expected<DataProcessorService::TransformRecipe> DataProcessorService::installTra
       return PJ::unexpected("pj.data_processors: output topic name already in use: " + out_name);
     }
   }
-  // 4. Resolve every input by name; the output topics are created in the first input's dataset.
+  // 4. Resolve every input. Persisted bindings use the shared session identity
+  // resolver; legacy and plugin calls remain name-only until canonicalized.
+  if (!recipe.input_bindings.empty() && recipe.input_bindings.size() != recipe.inputs.size()) {
+    return PJ::unexpected("pj.data_processors: transform input binding count does not match input count");
+  }
+  const bool had_persisted_bindings = !recipe.input_bindings.empty();
   std::vector<TopicId> input_topic_ids;
   std::vector<std::size_t> input_columns;  // leaf column per input (field-level binding)
   input_topic_ids.reserve(recipe.inputs.size());
   input_columns.reserve(recipe.inputs.size());
-  for (const std::string& in_name : recipe.inputs) {
-    const auto resolved = resolveInputField(in_name);
+  for (std::size_t index = 0; index < recipe.inputs.size(); ++index) {
+    const std::string& in_name = recipe.inputs[index];
+    std::optional<ResolvedInput> resolved;
+    const TransformInputBinding* persisted = had_persisted_bindings ? &recipe.input_bindings[index] : nullptr;
+    const bool qualified = persisted != nullptr && (persisted->dataset_id != 0 || !persisted->dataset_source.empty());
+    if (qualified) {
+      auto exact = resolveInputBinding(*persisted);
+      if (!exact.has_value()) {
+        return PJ::unexpected(exact.error());
+      }
+      resolved = std::move(*exact);
+    } else {
+      resolved = resolveInputField(in_name);
+      if (resolved.has_value() && persisted != nullptr) {
+        TransformInputBinding local = *persisted;
+        const auto engine_lock = engine_.lockEngine();
+        const TopicStorage* storage = engine_.getTopicStorage(resolved->topic_id);
+        const DatasetInfo* dataset = engine_.getDataset(resolved->dataset_id);
+        if (storage == nullptr || dataset == nullptr) {
+          return PJ::unexpected("pj.data_processors: legacy transform input disappeared during restore");
+        }
+        local.dataset_id = resolved->dataset_id;
+        local.dataset_source = dataset->source_name;
+        local.topic_name = storage->descriptor().name;
+        auto rebound = resolveInputBinding(local);
+        if (!rebound.has_value()) {
+          return PJ::unexpected(rebound.error());
+        }
+        resolved = std::move(*rebound);
+      }
+    }
     if (!resolved.has_value()) {
       return PJ::unexpected("pj.data_processors: input topic/field not found: " + in_name);
     }
@@ -525,6 +817,40 @@ Expected<DataProcessorService::TransformRecipe> DataProcessorService::installTra
     }
     input_topic_ids.push_back(resolved->topic_id);
     input_columns.push_back(resolved->column);
+  }
+  if (!had_persisted_bindings && recipe.inputs.size() == 1 && recipe.input_column_index != 0) {
+    input_columns.front() = recipe.input_column_index;
+  }
+
+  std::vector<TransformInputBinding> canonical_bindings;
+  canonical_bindings.reserve(input_topic_ids.size());
+  {
+    const auto engine_lock = engine_.lockEngine();
+    for (std::size_t index = 0; index < input_topic_ids.size(); ++index) {
+      const TopicStorage* storage = engine_.getTopicStorage(input_topic_ids[index]);
+      const DatasetInfo* dataset = engine_.getDataset(storage != nullptr ? storage->descriptor().dataset_id : 0);
+      if (storage == nullptr || dataset == nullptr) {
+        return PJ::unexpected("pj.data_processors: resolved transform input disappeared before installation");
+      }
+      const std::vector<std::string> paths = inputFieldPaths(engine_, *storage);
+      std::string field_path;
+      if (input_columns[index] < paths.size()) {
+        field_path = paths[input_columns[index]];
+      }
+      canonical_bindings.push_back(
+          TransformInputBinding{
+              .dataset_id = dataset->id,
+              .dataset_source = dataset->source_name,
+              .topic_name = storage->descriptor().name,
+              .field_path = std::move(field_path),
+              .column_index = input_columns[index],
+          });
+    }
+  }
+  recipe.input_bindings = std::move(canonical_bindings);
+  recipe.input_topic_ids = input_topic_ids;
+  if (recipe.inputs.size() == 1) {
+    recipe.input_column_index = input_columns.front();
   }
   // Grouped output: a single structured "topic:f1,f2,..." entry collapses into ONE
   // multi-column topic (parsed host-side, explicit — no prefix guessing). A grouped
@@ -569,17 +895,39 @@ Expected<DataProcessorService::TransformRecipe> DataProcessorService::installTra
       return PJ::unexpected(mimo_op->error());
     }
   }
-  // 6. Replace in place: drop the old node now that the new script compiled.
-  if (transform_recipes_.count(recipe.key) > 0) {
-    (void)removeTransform(recipe.key);
+  // 6. Existing-key edits may exchange only the implementation. Keeping the
+  // exact graph identity preserves plot keys and downstream edges.
+  if (existing != transform_recipes_.end()) {
+    const TransformRecipe& old = existing->second;
+    std::vector<std::size_t> old_input_columns;
+    old_input_columns.reserve(old.input_bindings.size());
+    for (const TransformInputBinding& binding : old.input_bindings) {
+      old_input_columns.push_back(binding.column_index);
+    }
+    const auto [old_mimo_group, old_mimo_fields] = parseGroupedOutput(old.outputs);
+    (void)old_mimo_fields;
+    const bool old_is_siso = old.inputs.size() == 1 && old.outputs.size() == 1 && old_mimo_group.empty();
+    const bool topology_compatible = old.input_topic_ids == input_topic_ids && old_input_columns == input_columns &&
+                                     old.dataset_id == recipe.dataset_id && old.outputs == recipe.outputs &&
+                                     old_is_siso == is_siso;
+    if (!topology_compatible) {
+      return PJ::unexpected(
+          "pj.data_processors: structural replacement is not supported; remove the transform before changing "
+          "its inputs or outputs");
+    }
+    Status replaced = is_siso ? derived_->replaceSisoTransform(
+                                    old.node_id, std::make_unique<proc::ProcessorSisoAdapter>(std::move(siso_op)))
+                              : derived_->replaceMimoTransform(old.node_id, std::move(mimo_op));
+    if (!replaced.has_value()) {
+      return PJ::unexpected(replaced.error());
+    }
+    recipe.node_id = old.node_id;
+    recipe.output_topic_ids = old.output_topic_ids;
+    existing->second = recipe;
+    return recipe;
   }
   // 7. Install the eager node and run it over the committed input(s).
-  // SISO column: an explicit recipe.input_column_index (the field the editor's drag
-  // selected on a whole-topic input) takes precedence; otherwise fall back to the
-  // column resolved from a "topic/field" input name (the plugin path embeds the field
-  // in the name). The two are mutually exclusive in practice — only one caller sets a
-  // non-zero column.
-  const std::size_t siso_column = recipe.input_column_index != 0 ? recipe.input_column_index : input_columns.front();
+  const std::size_t siso_column = input_columns.front();
   // A grouped MIMO output materializes ONE topic (mimo_group) with mimo_fields as named
   // columns; otherwise each recipe.output is its own scalar topic.
   const std::vector<std::string>& mimo_output_names = grouped ? mimo_fields : recipe.outputs;
@@ -634,13 +982,106 @@ Status DataProcessorService::removeTransform(std::string_view namespaced_key) {
   if (it == transform_recipes_.end()) {
     return PJ::unexpected("pj.data_processors: unknown transform '" + std::string(namespaced_key) + "'");
   }
+  if (Status removed_dependents = removeProcessorsDependingOn(it->second.output_topic_ids);
+      !removed_dependents.has_value()) {
+    return removed_dependents;
+  }
+  return removeTransformOnly(namespaced_key);
+}
+
+Status DataProcessorService::removeTransformOnly(std::string_view namespaced_key) {
+  const auto it = transform_recipes_.find(std::string(namespaced_key));
+  if (it == transform_recipes_.end()) {
+    return PJ::unexpected("pj.data_processors: unknown transform '" + std::string(namespaced_key) + "'");
+  }
   const NodeId node = it->second.node_id;
   const std::vector<TopicId> outputs = it->second.output_topic_ids;
+  if (Status removed = derived_->removeNode(node); !removed.has_value()) {
+    return removed;
+  }
   transform_recipes_.erase(it);
-  (void)derived_->removeNode(node);
   // Retire the materialized output so the catalog drops it (removeNode alone leaves a zombie).
   for (const TopicId out : outputs) {
     engine_.retireTopic(out);
+  }
+  return PJ::okStatus();
+}
+
+void DataProcessorService::forEachDependentProcessor(
+    std::unordered_set<TopicId>& affected, bool include_ephemeral_transforms,
+    const std::function<void(TopicId, const FilterRecipe&)>& on_filter,
+    const std::function<void(const std::string&, const TransformRecipe&)>& on_transform) const {
+  std::unordered_set<NodeId> seen_filters;
+  std::unordered_set<std::string> seen_transforms;
+  bool grew = true;
+  while (grew) {
+    grew = false;
+    for (const auto& [output_topic_id, recipe] : recipes_) {
+      if (seen_filters.count(recipe.node_id) != 0 || affected.count(recipe.input_topic_id) == 0) {
+        continue;
+      }
+      seen_filters.insert(recipe.node_id);
+      affected.insert(output_topic_id);
+      on_filter(output_topic_id, recipe);
+      grew = true;
+    }
+    for (const auto& [key, recipe] : transform_recipes_) {
+      if (seen_transforms.count(key) != 0 || (!include_ephemeral_transforms && recipe.ephemeral)) {
+        continue;
+      }
+      const bool depends = std::any_of(
+          recipe.input_topic_ids.begin(), recipe.input_topic_ids.end(),
+          [&affected](TopicId input) { return affected.count(input) != 0; });
+      if (!depends) {
+        continue;
+      }
+      seen_transforms.insert(key);
+      affected.insert(recipe.output_topic_ids.begin(), recipe.output_topic_ids.end());
+      on_transform(key, recipe);
+      grew = true;
+    }
+  }
+}
+
+std::vector<TopicId> DataProcessorService::dependentProcessorOutputs(const std::vector<TopicId>& input_topics) const {
+  std::unordered_set<TopicId> affected(input_topics.begin(), input_topics.end());
+  std::vector<TopicId> outputs;
+  forEachDependentProcessor(
+      affected, /*include_ephemeral_transforms=*/true,
+      [&outputs](TopicId output_topic_id, const FilterRecipe&) { outputs.push_back(output_topic_id); },
+      [&outputs](const std::string&, const TransformRecipe& recipe) {
+        outputs.insert(outputs.end(), recipe.output_topic_ids.begin(), recipe.output_topic_ids.end());
+      });
+  return outputs;
+}
+
+Status DataProcessorService::removeProcessorsDependingOn(const std::vector<TopicId>& input_topics) {
+  struct Dependent {
+    enum class Kind { kFilter, kTransform } kind;
+    NodeId filter_node = 0;
+    std::string transform_key;
+  };
+
+  std::unordered_set<TopicId> affected(input_topics.begin(), input_topics.end());
+  std::vector<Dependent> dependents;
+  forEachDependentProcessor(
+      affected, /*include_ephemeral_transforms=*/true,
+      [&dependents](TopicId, const FilterRecipe& recipe) {
+        dependents.push_back(Dependent{.kind = Dependent::Kind::kFilter, .filter_node = recipe.node_id});
+      },
+      [&dependents](const std::string& key, const TransformRecipe&) {
+        dependents.push_back(Dependent{.kind = Dependent::Kind::kTransform, .transform_key = key});
+      });
+
+  // The visitor discovers parents before children (a processor is visited only
+  // after one of its inputs joined the affected set), so reverse order removes
+  // leaf-first — no dependent ever outlives one of its inputs' producers.
+  for (auto it = dependents.rbegin(); it != dependents.rend(); ++it) {
+    Status removed = it->kind == Dependent::Kind::kFilter ? removeFilterOnly(it->filter_node)
+                                                          : removeTransformOnly(it->transform_key);
+    if (!removed.has_value()) {
+      return removed;
+    }
   }
   return PJ::okStatus();
 }
@@ -721,6 +1162,52 @@ std::vector<DataProcessorService::TransformRecipe> DataProcessorService::transfo
   return out;
 }
 
+std::vector<std::pair<DatasetId, std::string>> DataProcessorService::sourceTopicsForOutput(
+    TopicId output_topic_id) const {
+  const auto engine_lock = engine_.lockEngine();
+  std::vector<std::pair<DatasetId, std::string>> sources;
+  std::unordered_set<TopicId> visited;
+  std::function<void(TopicId)> visit = [&](TopicId topic_id) {
+    if (!visited.insert(topic_id).second) {
+      return;
+    }
+    if (const auto filter = recipes_.find(topic_id); filter != recipes_.end()) {
+      visit(filter->second.input_topic_id);
+      return;
+    }
+    for (const auto& [key, recipe] : transform_recipes_) {
+      (void)key;
+      if (std::find(recipe.output_topic_ids.begin(), recipe.output_topic_ids.end(), topic_id) ==
+          recipe.output_topic_ids.end()) {
+        continue;
+      }
+      for (const TopicId input_topic_id : recipe.input_topic_ids) {
+        visit(input_topic_id);
+      }
+      return;
+    }
+    if (const TopicStorage* storage = engine_.getTopicStorage(topic_id); storage != nullptr) {
+      const DatasetId dataset_id = storage->descriptor().dataset_id;
+      const std::vector<TopicId> live_topics = engine_.listTopics(dataset_id);
+      if (std::find(live_topics.begin(), live_topics.end(), topic_id) != live_topics.end()) {
+        sources.emplace_back(dataset_id, storage->descriptor().name);
+      }
+    }
+  };
+  const bool is_filter_output = recipes_.find(output_topic_id) != recipes_.end();
+  const bool is_transform_output =
+      std::any_of(transform_recipes_.begin(), transform_recipes_.end(), [output_topic_id](const auto& entry) {
+        const auto& outputs = entry.second.output_topic_ids;
+        return std::find(outputs.begin(), outputs.end(), output_topic_id) != outputs.end();
+      });
+  if (is_filter_output || is_transform_output) {
+    visit(output_topic_id);
+  }
+  std::sort(sources.begin(), sources.end());
+  sources.erase(std::unique(sources.begin(), sources.end()), sources.end());
+  return sources;
+}
+
 std::unordered_set<TopicId> DataProcessorService::ephemeralOutputTopics() const {
   std::unordered_set<TopicId> out;
   for (const auto& [key, recipe] : transform_recipes_) {
@@ -732,56 +1219,27 @@ std::unordered_set<TopicId> DataProcessorService::ephemeralOutputTopics() const 
   return out;
 }
 
-std::vector<DataProcessorService::TransformRecipe> DataProcessorService::transformsDependingOn(
-    const std::vector<std::string>& removed_series) const {
-  // Two names "touch" if one is the other, or one is a topic and the other a
-  // "topic/field" under it (handles both topic-vs-field directions).
-  const auto touches = [](const std::string& a, const std::string& b) {
-    if (a == b) {
-      return true;
-    }
-    if (b.size() > a.size() && b.compare(0, a.size(), a) == 0 && b[a.size()] == '/') {
-      return true;
-    }
-    return a.size() > b.size() && a.compare(0, b.size(), b) == 0 && a[b.size()] == '/';
-  };
-
-  std::vector<std::string> affected(removed_series.begin(), removed_series.end());
-  std::vector<TransformRecipe> result;
-  std::unordered_set<std::string> seen_keys;
-
-  // Fixpoint: a transform is pulled in when an input touches any affected name;
-  // its own outputs then become affected, so children (derivative-of-derivative)
-  // are caught on a later pass. Bounded by the number of recipes.
-  bool grew = true;
-  while (grew) {
-    grew = false;
-    for (const auto& [key, recipe] : transform_recipes_) {
-      if (recipe.ephemeral || seen_keys.count(key) > 0) {
-        continue;
-      }
-      bool depends = false;
-      for (const auto& in : recipe.inputs) {
-        for (const auto& name : affected) {
-          if (touches(in, name)) {
-            depends = true;
-            break;
-          }
-        }
-        if (depends) {
-          break;
-        }
-      }
-      if (depends) {
-        result.push_back(recipe);
-        seen_keys.insert(key);
-        for (const auto& out : recipe.outputs) {
-          affected.push_back(out);
-        }
-        grew = true;
-      }
-    }
+std::unordered_set<TopicId> DataProcessorService::processorOutputTopics() const {
+  std::unordered_set<TopicId> outputs;
+  outputs.reserve(recipes_.size() + transform_recipes_.size());
+  for (const auto& [output_topic_id, recipe] : recipes_) {
+    (void)recipe;
+    outputs.insert(output_topic_id);
   }
+  for (const auto& [key, recipe] : transform_recipes_) {
+    (void)key;
+    outputs.insert(recipe.output_topic_ids.begin(), recipe.output_topic_ids.end());
+  }
+  return outputs;
+}
+
+std::vector<DataProcessorService::TransformRecipe> DataProcessorService::transformsDependingOn(
+    const std::vector<TopicId>& removed_topics) const {
+  std::unordered_set<TopicId> affected(removed_topics.begin(), removed_topics.end());
+  std::vector<TransformRecipe> result;
+  forEachDependentProcessor(
+      affected, /*include_ephemeral_transforms=*/false, [](TopicId, const FilterRecipe&) {},
+      [&result](const std::string&, const TransformRecipe& recipe) { result.push_back(recipe); });
   return result;
 }
 

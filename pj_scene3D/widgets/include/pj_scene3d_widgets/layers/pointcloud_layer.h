@@ -116,6 +116,12 @@ class PointCloudLayer : public Scene3DLayer {
   [[nodiscard]] bool invertLut() const {
     return invert_lut_;
   }
+  [[nodiscard]] float outsideRangeOpacity() const {
+    return outside_range_opacity_;
+  }
+  [[nodiscard]] bool outsideRangeVisible() const {
+    return outside_range_visible_;
+  }
   [[nodiscard]] bool autoRange() const {
     return auto_range_;
   }
@@ -134,6 +140,8 @@ class PointCloudLayer : public Scene3DLayer {
   void setSolidColor(QColor color);
   void setColormap(PointcloudRenderPass::Colormap cm);
   void setInvertLut(bool invert);
+  void setOutsideRangeOpacity(float opacity);
+  void setOutsideRangeVisible(bool visible);
   void setAutoRange(bool enable);
   void setManualRange(float min_value, float max_value);
 
@@ -240,6 +248,10 @@ class PointCloudLayer : public Scene3DLayer {
   // the just-restored saved range with the recomputed data range.
   void applyAutoRange(bool enable, bool seed_manual_from_world);
 
+  // Fold the opacity scrubber + visibility eye into the pass's single effective
+  // outside-range alpha (eye off -> 0). Called from both setters and construction.
+  void pushOutsideRangeAlpha();
+
   // --- Compressed-cloud async decode (Draco / Cloudini) ---
   // Compressed decode is CPU-heavy (~100ms for large Draco clouds), so it runs on the
   // Qt thread pool and never blocks the UI. requestDecode() records the request as
@@ -293,7 +305,7 @@ class PointCloudLayer : public Scene3DLayer {
   // values; the panel reads them on rebuild so a re-opened config widget
   // always reflects what the user picked.
   PointcloudRenderPass::Shape shape_ = PointcloudRenderPass::Shape::kSphere;
-  float size_meters_ = 0.01f;
+  float size_meters_ = 0.02f;
   float size_pixels_ = 2.0f;
   PointcloudRenderPass::ColorType color_type_ = PointcloudRenderPass::ColorType::kField;
   // True once the active cloud is known to carry a per-point colour field. Drives the
@@ -303,9 +315,11 @@ class PointCloudLayer : public Scene3DLayer {
   // pick), so populateColorFields() does NOT override it with the colour-present RGB
   // default on the next decoded sample. Cleared state = "pick a smart default".
   bool color_choice_explicit_ = false;
-  QColor solid_color_{255, 255, 255};
+  QColor solid_color_{255, 0, 0};
   PointcloudRenderPass::Colormap colormap_ = PointcloudRenderPass::Colormap::kTurbo;
   bool invert_lut_ = false;
+  float outside_range_opacity_ = 1.0f;
+  bool outside_range_visible_ = true;
   bool auto_range_ = true;
   float manual_range_min_ = 0.0f;
   float manual_range_max_ = 1.0f;

@@ -1,7 +1,7 @@
 # PlotJuggler Marketplace — Requirements
 
 > **Version:** 1.0.0
-> **Last Updated:** 2026-05-19
+> **Last Updated:** 2026-07-17
 > **Purpose:** Define WHAT the application should do, not HOW
 
 ---
@@ -40,10 +40,11 @@ PlotJuggler has grown significantly, evolving from an internal tool to a de fact
 |                    | Automatic backup     | Backup of previous version before updating                    |
 | **Uninstallation** | Clean removal        | Directory deletion + installed cache refresh                  |
 |                    | Confirmation         | Confirmation dialog before uninstalling                       |
+|                    | Core lock            | Core (bundled) extensions cannot be uninstalled in default sessions (see §4.4) |
 | **Management**     | Backup diagnostics   | Report retained backup paths when an update install fails     |
 |                    | Persistent state     | Installed state derived from plugin DSOs; each embedded plugin manifest is the source of truth |
-|                    | Registry URL settings | Configure registry URL at runtime via ⚙ settings dialog; rejects URLs with non-http(s)/file scheme; change triggers immediate refresh |
-|                    | Registry URL persistence | Last configured registry URL saved and restored between sessions |
+|                    | Core (bundled) extensions | Extensions shipped with the application are seeded into the extensions dir at startup, kept at least at the shipped version, locked against uninstall, and offer "Downgrade to bundled" when updated above the shipped version (see §4.4) |
+|                    | Registry URL setting | Edited in the host's Preferences → Plugins page (validated http(s)/file scheme; empty restores the built-in default) and persisted in the host's QSettings (`Marketplace/registryUrl`). The host resolves the URL and passes it in each time the marketplace opens; the window never reads registry settings itself |
 |                    | Unified diagnostics  | All lifecycle events (install / staged-promotion / quarantine / uninstall failures, registry-fetch errors) are surfaced through `ExtensionManager::diagnosticReported`, the in-memory ring buffer, AND an optional `PJ::DiagnosticSink` so embedding hosts can fold marketplace events into their own diagnostic stream |
 | **UI/UX**          | Download progress    | Progress bar in status bar                                    |
 |                    | Notifications        | Status messages and available update alerts                   |
@@ -89,6 +90,9 @@ PlotJuggler has grown significantly, evolving from an internal tool to a de fact
 | **Plugin SDK** | Abstract library (no Qt) that plugins use for UI and data access. |
 | **Artifact** | Compiled binary of an extension for a specific platform. |
 | **Embedded manifest** | JSON string exported by each plugin DSO describing the installed plugin. |
+| **Bundled (share) dir** | `<prefix>/lib/plotjuggler/plugins`, shipped inside an installed build or AppImage. A seed source only — never scanned as a load path. |
+| **Core (bundled) extension** | An extension whose id ships in the bundled dir. Seeded into the extensions dir, uninstall-locked in default sessions. |
+| **Seed** | The startup sync of bundled plugins into the extensions dir (copy when absent, refresh when the bundled version is newer). |
 
 ---
 
@@ -123,14 +127,13 @@ elsewhere in the host application:
 | F-07 | Extract ZIP to extensions directory | ZIP contents are extracted to correct location |
 | F-08 | Register installed extension | Installed state is derived from disk by scanning extension DSOs and reading each embedded plugin manifest |
 | F-09 | Detect updates (local vs registry version) | User sees "Update available" badge when registry is newer, and "Local newer" when the installed version is ahead |
-| F-10 | Uninstall extension | User can remove installed extensions |
+| F-10 | Uninstall extension | User can remove installed extensions (except core extensions in default sessions — see F-28) |
 
 ### 4.2 P1 — Robustness
 
 | ID | Requirement | Acceptance Criteria |
 |----|-------------|---------------------|
-| F-24 | Configure registry URL via settings dialog | User can open ⚙ settings, enter a custom URL, and the marketplace immediately fetches from the new URL |
-| F-25 | Persist registry URL between sessions | The last configured registry URL is saved and automatically restored on next launch |
+| F-24 | Configurable, persisted registry URL | Preferences → Plugins offers a default/custom mode switch: default shows the built-in URL read-only, custom enables the field. On edit-finish the value is validated — http(s)/file scheme, plus a reachability probe when the system is online (skipped offline) — and the text renders red while the check fails (advisory, never blocking). On OK a valid custom URL persists in QSettings (`Marketplace/registryUrl`; default mode stores "no override") and the marketplace fetches from it on next open |
 | F-11 | Local registry cache with TTL *(deferred)* | Not implemented today — `RegistryManager` always fetches fresh. Would be reintroduced only if a clear caching need emerges (see [TODO.md](TODO.md)). |
 | F-12 | Backup previous version on updates | Old version saved before overwriting |
 | F-13 | Automatic rollback if plugin fails | Deferred; backups may exist, but automatic restore is not implemented |
@@ -148,6 +151,21 @@ elsewhere in the host application:
 | F-21 | Metrics (downloads, rating) | Extension cards show popularity metrics |
 | F-22 | Notification: "N updates available" | User notified of available updates |
 | F-23 | Multiple registry URLs | Support for private/enterprise registries |
+
+### 4.4 Bundled (core) extensions and plugin folders
+
+The host application (via `pj_runtime`'s `ExtensionCatalogService`) syncs bundled
+plugins into the extensions dir and decides which folders are scanned; the
+marketplace enforces the core-extension policy on top. Requirements on the
+combined behavior:
+
+| ID | Requirement | Acceptance Criteria |
+|----|-------------|---------------------|
+| F-26 | Seed bundled plugins at startup, in every mode | Each bundled id absent from (or unreadable in) the extensions dir is copied there before the plugin scan — including in `--plugin-dir` sessions. The bundled dir itself is never scanned as a load path. |
+| F-27 | Keep seeded extensions at least at the shipped version | When the bundled version is newer than the installed one, the installed copy is replaced (staged copy + swap: a failed refresh keeps the old working copy and retries next launch). An installed version equal to or newer than the bundled one is never touched — equal versions never re-copy (shipping a change requires a version bump), and a user install ahead of the bundled version is never downgraded automatically. |
+| F-28 | Lock uninstall of core extensions (default sessions only) | In a default session the Uninstall action is unavailable for bundled ids. In a `--plugin-dir` session nothing is core: the managed folder is user-owned, so same-id copies there remain uninstallable. |
+| F-29 | Offer "Downgrade to bundled" | When a core extension was updated above the bundled version, the user can revert to the shipped version (staged, applied on restart). |
+| F-30 | Plugin folder precedence | Folders are scanned in this priority order, duplicates resolved by plugin id: the `--plugin-dir` override, then the custom folders from Preferences → Plugins, then the extensions dir. The first two tiers are user-explicit and win **version-blind** (an explicitly given folder wins even with an older build); within the extensions dir, compatibility then higher version decide. |
 
 ---
 
@@ -205,7 +223,7 @@ elsewhere in the host application:
 ### UC-03: User Uninstalls Extension
 
 **Actor:** PlotJuggler User
-**Preconditions:** Extension installed
+**Preconditions:** Extension installed; not a core (bundled) extension (those are uninstall-locked, see UC-08)
 **Flow:**
 1. User opens Marketplace
 2. User navigates to installed extensions
@@ -245,6 +263,54 @@ elsewhere in the host application:
 8. Extension appears in marketplace
 
 **Postconditions:** Extension available to all users
+
+### UC-06: First Launch of an Install with Bundled Plugins
+
+**Actor:** System
+**Preconditions:** Installed build or AppImage shipping plugins in the bundled dir; fresh user profile
+**Flow:**
+1. PlotJuggler starts
+2. System seeds each bundled plugin into the extensions dir (one subfolder per id)
+3. System scans the extensions dir and loads the seeded plugins
+4. Marketplace shows them as installed core extensions (no Uninstall action)
+
+**Postconditions:** Bundled plugins behave like normal installed extensions, managed from the extensions dir
+
+### UC-07: Application Upgrade Ships Newer Core Plugins
+
+**Actor:** System
+**Preconditions:** Extensions dir holds core extensions seeded by an older application version; the new application bundles newer versions
+**Flow:**
+1. User launches the upgraded application
+2. Seed compares each bundled version against the installed copy
+3. Installed copies older than the bundled version are replaced (staged copy, then swap); an info diagnostic records old → new
+4. Installed copies equal or newer are left untouched
+
+**Postconditions:** Core extensions are at least at the shipped version; user installs ahead of it survive
+
+### UC-08: User Updates a Core Extension Above the Bundled Version
+
+**Actor:** PlotJuggler User
+**Preconditions:** Core extension installed; registry offers a newer version
+**Flow:**
+1. User opens Marketplace and updates the core extension (normal update flow)
+2. On later launches the seed leaves the newer copy untouched
+3. Marketplace offers "Downgrade to bundled" instead of Uninstall
+4. If the user downgrades, the shipped version is restored (staged, applied on restart)
+
+**Postconditions:** User controls the version within [bundled, latest]; the id can never disappear
+
+### UC-09: Developer Overrides Plugins with --plugin-dir
+
+**Actor:** Plugin Developer
+**Preconditions:** Freshly built plugin DSOs in a local folder
+**Flow:**
+1. Developer launches `plotjuggler4 --plugin-dir <build-output>`
+2. Seed still syncs bundled plugins into the extensions dir (never into the override folder)
+3. Scan loads the override folder as the top, version-blind tier; the developer's build wins every id conflict — even against a newer marketplace or custom-folder copy
+4. Marketplace manages the override folder; nothing is treated as core there
+
+**Postconditions:** Developer builds shadow same-id plugins for the session; the user profile keeps its core extensions
 
 ---
 
@@ -305,6 +371,18 @@ elsewhere in the host application:
 | Plugin incompatible with current SDK | Clear error message, don't load |
 | Embedded manifest missing or invalid | Reject install or staged promotion with diagnostics |
 | Marketplace opens in a host app | Seed the initial UI from the host's loaded-plugin snapshot, then reconcile with disk refreshes on demand |
+
+### 8.6 Bundled (core) extensions and folder precedence
+
+| Scenario | Expected Behavior |
+|----------|-------------------|
+| Bundled version equals the installed one but the files differ (rebuilt without a version bump) | No refresh — the comparison is version-only. Shipping a change requires bumping the plugin version. |
+| Extension folder exists but holds no loadable plugin (gutted or half-written copy) | Treated as absent: the seed re-copies the bundled payload. |
+| Refresh fails mid-way (disk full, locked files) | The previous working copy is kept or restored; a warning diagnostic is emitted and the seed retries next launch. |
+| Seed cannot write the extensions dir (read-only profile) | Bundled plugins are unavailable that session; warning diagnostic, retried next launch. |
+| Staged marketplace update pending at startup | The staged install is promoted first; the seed compares against the promoted version, so it never clobbers a just-applied upgrade. |
+| User wants to hold a core extension below the bundled version | Not possible through the marketplace (the seed lifts it back). Escape hatch: place the older build in a custom Preferences folder — user-explicit tiers win version-blind. |
+| User adds the bundled dir itself as a custom folder | It is then scanned like any custom folder (user-explicit choice); plugins may appear loaded-but-not-installed, and for an AppImage the mount path changes every run. |
 
 ---
 

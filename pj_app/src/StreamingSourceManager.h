@@ -4,10 +4,13 @@
 
 #include <QObject>
 #include <QString>
+#include <functional>
 #include <memory>
 #include <unordered_map>
+#include <vector>
 
 #include "pj_base/types.hpp"
+#include "pj_widgets/ChromeMetrics.h"
 
 QT_BEGIN_NAMESPACE
 class QThread;
@@ -16,11 +19,13 @@ QT_END_NAMESPACE
 
 namespace PJ {
 
+struct AdvertisedTopic;
 class CatalogModel;
 class DataEngine;
 class ExtensionCatalogService;
 class ObjectStore;
 class SessionManager;
+class TopicDemandTracker;
 
 // Drives the streaming-source path: pick a stream plugin from the catalog,
 // build a per-session ingest host (mirrors FileLoader's flow), run the
@@ -34,12 +39,22 @@ class StreamingSourceManager : public QObject {
   Q_OBJECT
  public:
   StreamingSourceManager(
-      SessionManager& session, ExtensionCatalogService& extensions, CatalogModel& catalog, QWidget* dialog_parent,
-      QObject* parent = nullptr);
+      SessionManager& session, ExtensionCatalogService& extensions, CatalogModel& catalog,
+      TopicDemandTracker& topic_demand_tracker, QWidget* dialog_parent, QObject* parent = nullptr);
   ~StreamingSourceManager() override;
 
   StreamingSourceManager(const StreamingSourceManager&) = delete;
   StreamingSourceManager& operator=(const StreamingSourceManager&) = delete;
+
+  // Supplies the app's live chrome metrics so a plugin's stream dialog sizes its
+  // SectionHeaderBands to the canonical band height (matching the toolboxes).
+  // Injected by the shell to keep this manager free of a MainWindow link — same
+  // pattern as FileLoader::setFilePicker. Read at dialog-show time, so it always
+  // reflects the current icon-size preference. Unset -> bands keep default size.
+  using ChromeMetricsProvider = std::function<ChromeMetrics()>;
+  void setChromeMetricsProvider(ChromeMetricsProvider provider) {
+    chrome_metrics_provider_ = std::move(provider);
+  }
 
   // True iff any session is currently live.
   bool hasActiveSession() const;
@@ -107,6 +122,12 @@ class StreamingSourceManager : public QObject {
   // Posted by the worker thread via QueuedConnection on loop exit.
   void onWorkerFinished(DatasetId dataset_id);
 
+  // Wired to TopicDemandTracker::activeTopicsChanged (GUI thread, direct
+  // connection — the tracker lives on the same thread). Capability-gated: a
+  // no-op unless the session's source advertises kCapabilityPerTopicPause, so
+  // a non-supporting source behaves exactly as before this feature existed.
+  void onActiveTopicsChanged(DatasetId dataset_id, const std::vector<QString>& active_topics);
+
  private:
   struct StreamingSession;
 
@@ -120,6 +141,20 @@ class StreamingSourceManager : public QObject {
   // the atomic on their next iteration and exit; final teardown happens in
   // onWorkerFinished().
   void requestStopAll(const QString& reason);
+
+  // Pushes `active_topics` through the "pj.topic_subscription.v1" extension
+  // (DataSourceHandle::setActiveTopics), gated on kCapabilityPerTopicPause —
+  // a no-op for a non-supporting source. Shared by the initial post-start()
+  // push (usually empty, so a demand-capable source truly starts paused) and
+  // every activeTopicsChanged re-push.
+  void pushActiveTopics(StreamingSession& session, const std::vector<QString>& active_topics);
+
+  // GUI-thread continuation of one notify_available_topics callback (see
+  // DataSourceRuntimeHost::on_available_topics): merges the classified set into
+  // CatalogModel::setAdvertisedTopics and hands the FrameTransforms/CameraInfo-
+  // classified subset to TopicDemandTracker::setInfrastructureTopics. A no-op if
+  // the session already tore down before the QueuedConnection marshal landed.
+  void applyAdvertisedTopics(DatasetId dataset_id, std::vector<AdvertisedTopic> topics);
 
   // Worker thread body. Looks the session up by dataset_id (the map is only
   // mutated on the UI thread, so reads from the worker are safe as long as
@@ -143,7 +178,9 @@ class StreamingSourceManager : public QObject {
   SessionManager& session_manager_;
   ExtensionCatalogService& extensions_;
   CatalogModel& catalog_;
+  TopicDemandTracker& topic_demand_tracker_;
   QWidget* dialog_parent_;
+  ChromeMetricsProvider chrome_metrics_provider_;
 
   QString selected_plugin_;
   int retention_seconds_ = 5;

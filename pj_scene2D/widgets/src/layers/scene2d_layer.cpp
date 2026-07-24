@@ -15,6 +15,7 @@
 #include "pj_base/time.hpp"  // PJ::fromRaw, PJ::toRaw
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene2d_core/media_source.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -104,7 +105,7 @@ QWidget* Scene2DLayer::createConfigWidget(QWidget* parent) {
 }
 
 QDomElement Scene2DLayer::xmlSaveState(QDomDocument& doc) const {
-  QDomElement element = doc.createElement(QStringLiteral("scene2d_layer"));
+  QDomElement element = doc.createElement(u"scene2d_layer"_s);
   saveOptions(element);
   return element;
 }
@@ -112,6 +113,9 @@ QDomElement Scene2DLayer::xmlSaveState(QDomDocument& doc) const {
 bool Scene2DLayer::xmlLoadState(const QDomElement& element) {
   if (element.isNull()) {
     return true;
+  }
+  if (element.tagName() != u"scene2d_layer"_s) {
+    return false;
   }
   return loadOptions(element);
 }

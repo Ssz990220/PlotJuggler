@@ -11,7 +11,6 @@
 #include <deque>
 #include <functional>
 #include <memory>
-#include <unordered_map>
 
 #include "pj_base/types.hpp"
 
@@ -113,13 +112,15 @@ class FileLoader : public QObject {
     transform_service_ = service;
   }
 
-  // Full filesystem path the given dataset was loaded from, or empty if this
-  // loader did not create it (e.g. a streaming or test dataset, or an id it has
-  // since forgotten). The shell uses this to translate a DatasetId back to the
-  // SessionManager loaded-source entry when a dataset is removed.
+  // Normalized full filesystem path the given dataset was loaded from, or empty
+  // if this loader did not create it (e.g. a streaming or test dataset, or an id
+  // it has since forgotten). Reads through SessionManager's source-path registry
+  // (the single owner of dataset->path identity). The shell uses this to
+  // translate a DatasetId back to the loaded-source entry when a dataset is
+  // removed.
   [[nodiscard]] QString sourcePathForDataset(DatasetId dataset_id) const;
-  // Drop the dataset->path association after the dataset is removed, so the map
-  // does not retain ids the engine no longer has. Safe to call for unknown ids.
+  // Drop the session's dataset->path association after dataset removal. Safe to
+  // call for unknown ids.
   void untrackDataset(DatasetId dataset_id);
 
   // Configure the object-ingest policy every load uses: scalars eager, objects
@@ -132,6 +133,11 @@ class FileLoader : public QObject {
   static void applyDefaultIngestPolicies(PJ::sdk::ObjectIngestPolicyResolver& resolver);
 
  signals:
+  /// A same-source fan-out replacement is about to retire a DatasetId. The
+  /// shell captures path-qualified workspace state before the old catalog item
+  /// is hidden, then rebinds it after fileLoaded exposes the reminted datasets.
+  void sourceReplacementAboutToCommit(const QString& path);
+
   void fileLoaded(
       const QString& path, const QString& prefix, const QString& plugin_id, const QString& plugin_config_json);
   void fileLoadFailed(const QString& path, const QString& reason);
@@ -180,6 +186,9 @@ class FileLoader : public QObject {
   // pre-reload data (start-fail / discard / shutdown), reflect the restored data in
   // the catalog and rebuild the per-dataset TF buffer. The guard restores the data +
   // re-notifies adapters; this refreshes the catalog tree + scene TF on top.
+  /// Failure exit for a replacing reload: roll the refill back (guard dtor),
+  /// refresh the catalog/UI to the restored state, and emit fileLoadFailed.
+  void failReplacingLoad(DatasetId dataset_id, const QString& path, const QString& reason);
   void refreshAfterReplacingRollback(DatasetId dataset_id);
 
   SessionManager& session_;
@@ -187,12 +196,6 @@ class FileLoader : public QObject {
   CatalogModel& catalog_;
   FilePicker file_picker_;
   pj::scene3d::TransformService* transform_service_ = nullptr;
-  // Full path each loaded dataset came from. The engine identifies datasets by
-  // basename (DatasetInfo::source_name) only, so the same-source match below
-  // consults this to keep two different files that share a basename distinct
-  // instead of aliasing the second onto the first. DatasetIds are monotonic and
-  // never recycled, so a stale entry for a removed id can never mis-resolve.
-  std::unordered_map<DatasetId, QString> dataset_source_path_;
 
   // --- Sequential async load queue (single-instance loads run on a worker) ---
   std::deque<LoadRequest> queue_;

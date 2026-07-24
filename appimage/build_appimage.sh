@@ -25,57 +25,67 @@
 #                                                    #   from the plugin registry,
 #                                                    #   verify checksums, unpack
 #
-# Bundled plugins land at usr/lib/plotjuggler/plugins, which the app auto-discovers
-# as a built-in search path (no --plugin-dir needed). Marketplace installs go to
-# the writable per-user extensions dir, which the app also scans — so installing
-# from within the AppImage works and is kept separate from the read-only bundle.
+# Bundled plugins land at usr/lib/plotjuggler/plugins. The app never scans that
+# dir directly — at startup it seeds its contents into the writable per-user
+# extensions dir (copying new ids, refreshing ones whose bundled version is
+# newer) and loads everything from there, so marketplace installs/uninstalls
+# work normally and the read-only bundle stays a seed source.
 set -euo pipefail
-
-ARCH="x86_64"
-QT_VERSION="6.11.1"
-PLATFORM="linux-${ARCH}"   # registry artifact key (registry.json platforms.<key>)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+source "${ROOT}/versions.env"
+
+ARCH="${PJ_APPIMAGE_ARCH}"
+QT_VERSION="${PJ_QT_VERSION}"
+PLATFORM="linux-${ARCH}"   # registry artifact key (registry.json platforms.<key>)
+
 BUILD="${ROOT}/build"
 QT_DIR="${ROOT}/.qt/${QT_VERSION}/gcc_64"
 APPDIR="${BUILD}/AppDir"
-VERSION="4.0.0-dev"   # keep in sync with pj_app/src/main.cpp setApplicationVersion()
+VERSION="${PJ_VERSION:-${PJ_APP_VERSION}}"
 
-# Bundled plugins go where the installed app looks by default: <prefix>/lib/
-# plotjuggler/plugins, which plotjuggler4 resolves relative to itself (usr/bin ->
-# ../lib/plotjuggler/plugins). Kept OUT of usr/plugins on purpose —
+# Bundled plugins go where the installed app expects its seed source: <prefix>/
+# lib/plotjuggler/plugins, which plotjuggler4 resolves relative to itself
+# (usr/bin -> ../lib/plotjuggler/plugins). Kept OUT of usr/plugins on purpose —
 # linuxdeploy-plugin-qt deploys Qt's own platform/imageformat plugins there, and
-# the app's plugin scanner must never try to dlopen those as PlotJuggler plugins.
+# the seed's plugin scan must never try to dlopen those as PlotJuggler plugins.
 PJ_PLUGINS_REL="usr/lib/plotjuggler/plugins"
 
-# The plugin registry to resolve --plugins-registry against. Tracks main (latest
-# published plugin versions); override with the optional --plugins-registry <url>
-# argument to pin a specific ref.
-REGISTRY_URL="https://raw.githubusercontent.com/PlotJuggler/pj-plugin-registry/main/registry.json"
+# The plugin registry to resolve --plugins-registry against. `development` is
+# the registry repo's default (and only long-lived) branch — the same ref the
+# Windows installer resolves against; override with the optional
+# --plugins-registry <url> argument to pin a specific ref.
+REGISTRY_URL="https://raw.githubusercontent.com/PlotJuggler/pj-plugin-registry/refs/heads/development/registry.json"
 
 # Curated set of registry extension ids bundled by --plugins-registry. The
 # registry lists every official extension; this is the subset that ships in the
-# AppImage. Excluded by request: toolbox-colormap, toolbox-reactive-scripts-editor.
-# Not yet bundle-able (absent from the registry): toolbox-mosaico,
-# toolbox-transform-editor.
+# AppImage. Keep in lockstep with $PluginIds in
+# installer/build_windows_installer.ps1 (same set, plus the Linux-only
+# ros2-topic-subscriber). Excluded by request: toolbox-colormap,
+# toolbox-reactive-scripts-editor.
 BUNDLE_IDS=(
   csv-loader
   mcap-loader
   parquet-loader
+  ulog-loader
+  mp4-loader
+  pointcloud-3d-loader
   dummy-streamer
   foxglove-bridge
   plotjuggler-bridge
+  webrtc-client
   ros-parser
   protobuf-parser
   json-parser
+  data-tamer-parser
   toolbox-quaternion
-  # ros2-stream  # <-- multi-distro ROS 2 subscriber. Uncomment once it is
-  #                 published to a release + indexed in pj-plugin-registry (see
-  #                 "Follow-up: multi-distro ROS 2" in README.md). The single
-  #                 linux-x86_64 zip carries the distro-agnostic proxy + per-distro
-  #                 inners under dist/<distro>/; registry-mode unpacks it verbatim,
-  #                 so no special handling is needed here once the entry exists.
+  toolbox-transform-editor
+  toolbox-mosaico
+  # Multi-distro ROS 2 subscriber: the single linux-x86_64 zip carries the
+  # distro-agnostic proxy + per-distro inners under dist/<distro>/;
+  # registry-mode unpacks it verbatim, no special handling needed.
+  ros2-topic-subscriber
 )
 
 PLUGINS_MODE="none"        # none | local | registry
@@ -115,9 +125,14 @@ command -v wget >/dev/null              || { echo "wget required"; exit 1; }
 cd "${SCRIPT_DIR}"
 LD="linuxdeploy-${ARCH}.AppImage"
 LDQT="linuxdeploy-plugin-qt-${ARCH}.AppImage"
+# appimagetool packages the finished AppDir into the AppImage. We invoke it
+# directly (instead of linuxdeploy's --output appimage) so plugins can be copied
+# in AFTER linuxdeploy has deployed the app's dependency closure — see step 5.
+AT="appimagetool-${ARCH}.AppImage"
 [[ -f "${LD}" ]]   || wget -q "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/${LD}"
 [[ -f "${LDQT}" ]] || wget -q "https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/${LDQT}"
-chmod +x "${LD}" "${LDQT}"
+[[ -f "${AT}" ]]   || wget -q "https://github.com/AppImage/appimagetool/releases/download/continuous/${AT}"
+chmod +x "${LD}" "${LDQT}" "${AT}"
 
 # ---------------------------------------------------------------------------
 # 2. Assemble the AppDir skeleton
@@ -127,21 +142,22 @@ mkdir -p "${APPDIR}/usr/bin" "${APPDIR}/${PJ_PLUGINS_REL}"
 # plotjuggler4 itself is installed by linuxdeploy via --executable below (it copies
 # the binary into usr/bin and deploys its Qt + Conan dependency closure).
 
-# Icon: rasterize the app SVG (linuxdeploy wants a PNG named like the desktop Icon=).
-ICON_PNG="${SCRIPT_DIR}/plotjuggler4.png"
-if [[ ! -f "${ICON_PNG}" ]]; then
-  if command -v convert >/dev/null; then
-    convert -background none -resize 256x256 "${ROOT}/resources/svg/plotjuggler.svg" "${ICON_PNG}"
-  else
-    echo "WARNING: 'convert' not found and ${ICON_PNG} missing — provide an icon manually."; exit 1
-  fi
-fi
+# Icon: committed 256x256 raster (resources/svg/plotjuggler4.png), rendered once
+# from resources/svg/plotjuggler.svg with the pinned Qt6Svg. No host rasterizer
+# (ImageMagick/rsvg/inkscape) is required at build time.
+ICON_PNG="${ROOT}/resources/svg/plotjuggler4.png"
+[[ -f "${ICON_PNG}" ]] || { echo "ERROR: committed icon ${ICON_PNG} is missing"; exit 1; }
 
 # ---------------------------------------------------------------------------
-# 3. Bundle plugins (per the selected mode) into per-id subdirs of
-#    ${PJ_PLUGINS_REL}. The app scans this tree recursively. Published plugins
+# 3. Plugin-bundling helpers (per the selected mode), copying into per-id subdirs
+#    of ${PJ_PLUGINS_REL}. The app scans this tree recursively. Published plugins
 #    are self-contained (heavy deps static-linked), so no dependency deployment
-#    is needed — a plain copy/unpack is the install.
+#    is needed — a plain copy/unpack is the install. These run AFTER linuxdeploy
+#    (step 5), never before: linuxdeploy would otherwise try to resolve every
+#    bundled .so's dependency closure and abort on a plugin whose deps are
+#    intentionally external — e.g. the ROS 2 subscriber's per-distro inner under
+#    dist/<distro>/, which binds to the user's *sourced* system ROS and must NOT
+#    be self-contained.
 # ---------------------------------------------------------------------------
 collect_plugins_local() {
   [[ -d "${PLUGINS_LOCAL_DIR}" ]] || { echo "ERROR: --plugins-dir '${PLUGINS_LOCAL_DIR}' is not a directory"; exit 1; }
@@ -187,18 +203,23 @@ PY
 
     dest="${APPDIR}/${PJ_PLUGINS_REL}/${id}"
     mkdir -p "${dest}"
-    unzip -oq "${zip}" -d "${dest}"
-    rm -f "${zip}"
+    unpack="$(mktemp -d)"
+    unzip -oq "${zip}" -d "${unpack}"
+    # Official archives carry one top-level <id>/ directory. Normalize it away
+    # (same as the Windows installer) so the bundled layout is always
+    # plugins/<id>/{manifest.json,...} — the layout the release CI's glibc
+    # audit expects when it exempts ros2-topic-subscriber/dist/<distro>/.
+    payload="${unpack}"
+    entries=( "${unpack}"/* )
+    if [[ ${#entries[@]} -eq 1 && -d "${entries[0]}" ]]; then
+      payload="${entries[0]}"
+    fi
+    cp -a "${payload}/." "${dest}/"
+    rm -rf "${unpack}" "${zip}"
   done
   rm -f "${registry_json}"
   echo "Plugins: bundled ${#BUNDLE_IDS[@]} extension(s) from the registry for ${PLATFORM}"
 }
-
-case "${PLUGINS_MODE}" in
-  local)    collect_plugins_local ;;
-  registry) collect_plugins_registry ;;
-  none)     echo "Plugins: none (app-only AppImage; pass --plugins-dir or --plugins-registry to bundle)" ;;
-esac
 
 # ---------------------------------------------------------------------------
 # 4. Runtime env so linuxdeploy resolves Qt (from ./.qt) and Conan deps.
@@ -212,20 +233,59 @@ export PATH="${QT_DIR}/bin:${PATH}"
 export LD_LIBRARY_PATH="${QT_DIR}/lib:${LD_LIBRARY_PATH:-}"
 
 # ---------------------------------------------------------------------------
-# 5. Package. Bundled plugins are self-contained, so they are not handed to
-#    linuxdeploy (no --deploy-deps-only) — it would otherwise try to process the
-#    .so closures and could collide with Qt's own deployed plugins.
+# 5. Deploy, then bundle plugins, then package — in that order.
+#
+#    linuxdeploy populates the AppDir with the app binary plus its Qt + Conan
+#    dependency closure (and installs the custom AppRun / desktop / icon), but is
+#    NOT given --output appimage. Plugins are copied in only AFTER that deploy, so
+#    linuxdeploy never walks their .so closures: self-contained plugins need no
+#    deployment, and a plugin with intentionally-external deps (the ROS 2 inner)
+#    would make linuxdeploy abort trying to resolve ROS libs that must come from
+#    the user's sourced system ROS at runtime. appimagetool then packages the
+#    finished AppDir verbatim without re-scanning dependencies.
 # ---------------------------------------------------------------------------
 cd "${SCRIPT_DIR}"
-OUTPUT="PlotJuggler-${VERSION}-${ARCH}.AppImage" \
-  "./${LD}" \
-    --appdir "${APPDIR}" \
-    --executable "${BUILD}/pj_app/plotjuggler4" \
-    --desktop-file "${SCRIPT_DIR}/plotjuggler4.desktop" \
-    --icon-file "${ICON_PNG}" \
-    --custom-apprun "${SCRIPT_DIR}/AppRun.sh" \
-    --plugin qt \
-    --output appimage
+"./${LD}" \
+  --appdir "${APPDIR}" \
+  --executable "${BUILD}/pj_app/plotjuggler4" \
+  --desktop-file "${SCRIPT_DIR}/plotjuggler4.desktop" \
+  --icon-file "${ICON_PNG}" \
+  --custom-apprun "${SCRIPT_DIR}/AppRun.sh" \
+  --plugin qt
+
+case "${PLUGINS_MODE}" in
+  local)    collect_plugins_local ;;
+  registry) collect_plugins_registry ;;
+  none)     echo "Plugins: none (app-only AppImage; pass --plugins-dir or --plugins-registry to bundle)" ;;
+esac
+
+# ---------------------------------------------------------------------------
+# 5b. Bundle the embedded CPython stdlib for the Python Data Processor backend.
+#     The app bakes PYTHONHOME to the BUILD host's Conan cpython path
+#     (PJ_PYTHON_HOME), which does not exist on any other machine, so CPython
+#     fails to find its stdlib (encodings, …) and Python filters die with
+#     "Failed to init CPython". AppRun overrides PYTHONHOME to <AppDir>/usr, so
+#     ship the stdlib at usr/lib/pythonX.Y. pj_scripting/CMakeLists.txt records
+#     the prefix in build/pj_python_home.txt.
+# ---------------------------------------------------------------------------
+PY_HOME_FILE="${BUILD}/pj_python_home.txt"
+if [[ -f "${PY_HOME_FILE}" ]]; then
+  py_prefix="$(head -n1 "${PY_HOME_FILE}")"
+  py_stdlib="$(ls -d "${py_prefix}"/lib/python3.* 2>/dev/null | head -n1)"
+  if [[ -n "${py_stdlib}" && -d "${py_stdlib}" ]]; then
+    py_ver="$(basename "${py_stdlib}")"   # e.g. python3.12
+    echo "Python: bundling stdlib ${py_stdlib} -> usr/lib/${py_ver}"
+    mkdir -p "${APPDIR}/usr/lib"
+    cp -a "${py_stdlib}" "${APPDIR}/usr/lib/${py_ver}"
+  else
+    echo "WARNING: Python stdlib not found under '${py_prefix}/lib/python3.*' — Python Data Processors will fail at runtime" >&2
+  fi
+else
+  echo "WARNING: ${PY_HOME_FILE} missing — cannot bundle Python stdlib (Python Data Processors will fail)" >&2
+fi
+
+OUTPUT="${SCRIPT_DIR}/PlotJuggler-${VERSION}-${ARCH}.AppImage"
+ARCH="${ARCH}" "./${AT}" "${APPDIR}" "${OUTPUT}"
 
 echo ""
-echo "Done: ${SCRIPT_DIR}/PlotJuggler-${VERSION}-${ARCH}.AppImage"
+echo "Done: ${OUTPUT}"

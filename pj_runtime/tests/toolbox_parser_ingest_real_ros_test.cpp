@@ -22,6 +22,7 @@
 #include <string_view>
 #include <vector>
 
+#include "hermetic_catalog.h"
 #include "pj_base/sdk/data_source_host_views.hpp"
 #include "pj_base/sdk/platform.hpp"
 #include "pj_base/sdk/plugin_data_api.hpp"
@@ -34,6 +35,7 @@
 #include "pj_plugins/host/service_registry_builder.hpp"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/ToolboxRuntimeHost.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -129,8 +131,9 @@ TEST(ToolboxParserIngestRealRos, TfMessageBecomesFrameTransformsObjectTopic) {
   if (!dir) {
     GTEST_SKIP() << "PJ_REAL_ROS_PARSER_DIR not set (directory containing the built parser_ros .so)";
   }
-  PJ::ExtensionCatalogService catalog{QString::fromUtf8(dir->c_str())};
-  if (catalog.findParserByEncoding(QStringLiteral("ros2msg")) == nullptr) {
+  PJ::test::HermeticCatalog catalog_box(QString::fromUtf8(dir->c_str()));
+  PJ::ExtensionCatalogService& catalog = catalog_box.service;
+  if (catalog.findParserByEncoding(u"ros2msg"_s) == nullptr) {
     GTEST_SKIP() << "no ros2msg parser found in " << *dir;
   }
 

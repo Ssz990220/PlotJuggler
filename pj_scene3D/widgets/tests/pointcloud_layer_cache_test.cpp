@@ -38,6 +38,7 @@
 #include "pj_scene3d_core/tf/transform.h"
 #include "pj_scene3d_widgets/layers/pointcloud_layer.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -110,7 +111,7 @@ TEST(PointCloudLayerReload, DatasetReplaceClearsSampleIdentityCaches) {
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session;
-  pj::scene3d::PointCloudLayer layer(topic_id, QStringLiteral("cloud"), PJ::sdk::BuiltinObjectType::kPointCloud);
+  pj::scene3d::PointCloudLayer layer(topic_id, u"cloud"_s, PJ::sdk::BuiltinObjectType::kPointCloud);
   ASSERT_TRUE(layer.attach(ctx));
   ASSERT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{100}) << "attach did not render the first sample";
 
@@ -159,7 +160,7 @@ TEST(PointCloudLayerRenderKey, TracksActiveSampleStamp) {
 
   pj::scene3d::Scene3DLayerContext ctx;  // no tf_buffer: renderKey reduces to the sample stamp
   ctx.session = &session;
-  pj::scene3d::PointCloudLayer layer(topic_id, QStringLiteral("cloud"), PJ::sdk::BuiltinObjectType::kPointCloud);
+  pj::scene3d::PointCloudLayer layer(topic_id, u"cloud"_s, PJ::sdk::BuiltinObjectType::kPointCloud);
   ASSERT_TRUE(layer.attach(ctx));
 
   const uint64_t k_150 = layer.renderKey(PJ::fromRaw(150));  // sample @100 active
@@ -207,9 +208,9 @@ TEST(PointCloudLayerRenderKey, FoldsFixedFromSourceTransform) {
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session;
   ctx.tf_buffer = tf;
-  pj::scene3d::PointCloudLayer layer(topic_id, QStringLiteral("cloud"), PJ::sdk::BuiltinObjectType::kPointCloud);
+  pj::scene3d::PointCloudLayer layer(topic_id, u"cloud"_s, PJ::sdk::BuiltinObjectType::kPointCloud);
   ASSERT_TRUE(layer.attach(ctx));  // source_frame_ = "lidar" (the cloud's frame_id)
-  layer.setFixedFrame(QStringLiteral("world"));
+  layer.setFixedFrame(u"world"_s);
 
   const uint64_t k_t150 = layer.renderKey(PJ::fromRaw(150));  // TF@100 (x=1)
   const uint64_t k_t180 = layer.renderKey(PJ::fromRaw(180));  // still TF@100 → stable
@@ -235,12 +236,12 @@ TEST(PointCloudLayerTimestampZero, AttachAndRefreshRenderFirstSampleAtStampZero)
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session;
-  pj::scene3d::PointCloudLayer layer(topic_id, QStringLiteral("cloud"), PJ::sdk::BuiltinObjectType::kPointCloud);
+  pj::scene3d::PointCloudLayer layer(topic_id, u"cloud"_s, PJ::sdk::BuiltinObjectType::kPointCloud);
   ASSERT_TRUE(layer.attach(ctx));
   EXPECT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{0}) << "attach treated stamp 0 as 'no data'";
 
   const int calls_before = g_zero_stamp_parser_calls.load();
-  layer.setColorField(QStringLiteral("y"));  // triggers refreshNow() before any tracker tick
+  layer.setColorField(u"y"_s);  // triggers refreshNow() before any tracker tick
   EXPECT_GT(g_zero_stamp_parser_calls.load(), calls_before) << "refreshNow() treated stamp 0 as 'no data'";
 }
 
@@ -263,7 +264,7 @@ TEST(PointCloudLayerMixedMode, StaleCompressedDecodeDoesNotClobberNewerSample) {
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session;
-  pj::scene3d::PointCloudLayer layer(topic_id, QStringLiteral("cloud"), PJ::sdk::BuiltinObjectType::kPointCloud);
+  pj::scene3d::PointCloudLayer layer(topic_id, u"cloud"_s, PJ::sdk::BuiltinObjectType::kPointCloud);
   ASSERT_TRUE(layer.attach(ctx));
   ASSERT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{100});
 

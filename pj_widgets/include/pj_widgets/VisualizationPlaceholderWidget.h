@@ -2,6 +2,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <QColor>
 #include <QString>
 #include <QStringList>
 #include <QWidget>
@@ -16,6 +17,7 @@ class QDragMoveEvent;
 class QDropEvent;
 class QEvent;
 class QObject;
+class QPaintEvent;
 class QPoint;
 class QToolButton;
 
@@ -56,6 +58,11 @@ class VisualizationPlaceholderWidget : public QWidget {
   void visualizationRequested(VisualizationKind kind);
 
  protected:
+  // Fills the widget with the Data Backdrop surface for the active theme. Self-
+  // painted (not autoFillBackground/QSS) because the app stylesheet's
+  // QStyleSheetStyle can clobber a widget palette; painting reads the framework
+  // colour cached by onStylesheetChanged directly.
+  void paintEvent(QPaintEvent* event) override;
   void contextMenuEvent(QContextMenuEvent* event) override;
   bool eventFilter(QObject* watched, QEvent* event) override;
   void dragEnterEvent(QDragEnterEvent* event) override;
@@ -74,6 +81,8 @@ class VisualizationPlaceholderWidget : public QWidget {
   QAction* action_split_vertical_ = nullptr;
   QAction* action_paste_ = nullptr;
   std::vector<IconButton> icon_buttons_;
+  // Data Backdrop fill, refreshed per theme by onStylesheetChanged.
+  QColor backdrop_color_;
 };
 
 }  // namespace PJ

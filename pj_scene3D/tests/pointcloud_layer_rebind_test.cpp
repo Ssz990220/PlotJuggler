@@ -33,6 +33,7 @@
 #include "pj_runtime/Time.h"
 #include "pj_scene3d_widgets/layers/pointcloud_layer.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -82,7 +83,7 @@ TEST(PointCloudLayerRebind, ReloadSwapsParserWithoutTouchingStaleOne) {
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session;
-  pj::scene3d::PointCloudLayer layer(*topic_id, QStringLiteral("cloud"), PJ::sdk::BuiltinObjectType::kPointCloud);
+  pj::scene3d::PointCloudLayer layer(*topic_id, u"cloud"_s, PJ::sdk::BuiltinObjectType::kPointCloud);
   ASSERT_TRUE(layer.attach(ctx));
   // attach() decodes the bootstrap sample (field discovery) AND renders the first
   // sample, so the first parser ran at least once.

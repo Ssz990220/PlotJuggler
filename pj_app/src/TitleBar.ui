@@ -79,7 +79,7 @@
      </property>
     </widget>
    </item>
-   <item>
+   <item alignment="Qt::AlignmentFlag::AlignVCenter">
     <widget class="QMenuBar" name="menuBar">
      <property name="sizePolicy">
       <sizepolicy hsizetype="Maximum" vsizetype="Fixed">
@@ -106,13 +106,13 @@
       <item>
        <spacer name="centerLeftSpacer">
         <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
-        <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+        <property name="sizeHint" stdset="0"><size><width>16</width><height>20</height></size></property>
        </spacer>
       </item>
       <item>
        <spacer name="centerRightSpacer">
         <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
-        <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+        <property name="sizeHint" stdset="0"><size><width>16</width><height>20</height></size></property>
        </spacer>
       </item>
      </layout>
@@ -121,7 +121,7 @@
    <item>
     <layout class="QHBoxLayout" name="rightClusterLayout">
      <property name="spacing">
-      <number>1</number>
+      <number>2</number>
      </property>
      <item>
       <widget class="QToolButton" name="buttonNotifications">
@@ -163,13 +163,13 @@
     <spacer name="windowControlsSpacer">
      <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
      <property name="sizeType"><enum>QSizePolicy::Fixed</enum></property>
-     <property name="sizeHint" stdset="0"><size><width>12</width><height>20</height></size></property>
+     <property name="sizeHint" stdset="0"><size><width>16</width><height>20</height></size></property>
     </spacer>
    </item>
    <item>
     <layout class="QHBoxLayout" name="windowControlsLayout">
      <property name="spacing">
-      <number>1</number>
+      <number>2</number>
      </property>
      <item>
       <widget class="QToolButton" name="buttonMinimize">

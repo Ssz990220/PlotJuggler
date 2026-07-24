@@ -71,6 +71,7 @@ class RobotModelLayer : public Scene3DLayer {
   // renders in the COLLISION group so the Collision opacity/visibility toggle
   // controls it rather than overlaying the visuals as an unhideable solid.
   enum class DisplayMode { kAuto, kVisual, kCollision };
+  enum class XmlLoadResult { kRestored, kDeferred, kInvalid };
 
   RobotModelLayer(PJ::ObjectTopicId topic_id, QString display_name, QObject* parent = nullptr);
   ~RobotModelLayer() override;
@@ -81,6 +82,7 @@ class RobotModelLayer : public Scene3DLayer {
   [[nodiscard]] QString sourceFrame() const override;
   QDomElement xmlSaveState(QDomDocument& doc) const override;
   bool xmlLoadState(const QDomElement& element) override;
+  [[nodiscard]] XmlLoadResult xmlLoadStateResult(const QDomElement& element);
 
   bool attach(const PJ::SceneLayerContext& ctx) override;
   void detach() override;

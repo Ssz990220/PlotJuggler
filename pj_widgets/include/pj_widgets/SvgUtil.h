@@ -14,6 +14,8 @@
 #include <QSvgRenderer>
 #include <map>
 
+#include "pj_widgets/FrameworkTokens.h"
+
 namespace PJ {
 
 constexpr const char* kThemeSettingsKey = "StyleSheet::theme";
@@ -22,29 +24,60 @@ inline QString currentTheme() {
   return QSettings().value(kThemeSettingsKey, "light").toString();
 }
 
-// Recolour every visible stroke/fill in an SVG document to the active
-// theme's ink. Handles three common shapes:
-//   1. Icons baked with the PJ4 palette (`#3D3D3D` for light theme,
-//      `#E0E0E0` for dark) by the download/derive pipeline — the two
-//      palette colors are swapped so the icon renders in the active
-//      theme regardless of which one it was authored for.
-//   2. Legacy black/white SVGs (the app logo, hand-edited snippets) —
-//      `#000000` / `#ffffff` are folded onto the palette so they flip
-//      with the theme too.
+// Asset-encoding contract for monochrome SVGs (the "find" side of recolorSvgInk).
+//
+// These are NOT theme values — they are the literal colors our .svg source files
+// are painted with on disk. recolorSvgInk() scans the raw bytes for them and
+// folds them onto the active framework ink (theme::iconInk, the "replace" side).
+// Any icon that should follow the theme MUST be authored with one of these inks.
+//
+// End state (roadmap): re-author assets with `fill="currentColor"` and set the
+// colour at render time, which removes string replacement entirely.
+namespace svg_ink {
+// Canonical PJ4 icon ink — every theme-agnostic app icon is drawn with it.
+// Authored uppercase; the lowercase form is covered too since the swap is
+// case-sensitive.
+inline constexpr const char* kChrome = "#3D3D3D";
+inline constexpr const char* kChromeLower = "#3d3d3d";
+// Legacy PJ3 monochrome inks (hand-edited snippets, the app logo): pure
+// black is dark ink, pure white is the opposite (light) ink.
+inline constexpr const char* kLegacyDark = "#000000";
+inline constexpr const char* kLegacyLight = "#ffffff";
+}  // namespace svg_ink
+
+// Recolour every visible stroke/fill in an SVG document to the active theme's
+// framework ink. The source colours it recognises are the svg_ink authoring
+// contract above. Handles three shapes:
+//   1. Palette swap — an SVG already carrying the opposite theme's ink is
+//      flipped to the active one (covers re-theming an already-inked asset).
+//   2. Authoring inks (svg_ink::*) — folded onto the active ink. The PJ4
+//      chrome ink maps to `ink`; legacy black→`ink`, white→`opposite`. Note
+//      #E0E0E0 (the light-on-dark ink) is deliberately NOT folded: it lives
+//      only in static *_dark.svg variants used raw, so folding it would invert
+//      them.
 //   3. Material Symbols SVGs without any explicit fill — we inject a
 //      `fill="..."` on the root `<svg>` so paths inherit the theme ink.
 inline void recolorSvgInk(QByteArray& svg_data, bool light_theme) {
-  // PJ4 theme palette: light = Jet, dark = Platinum.
-  const QByteArray ink = light_theme ? QByteArray("#3D3D3D") : QByteArray("#E0E0E0");
-  const QByteArray opposite = light_theme ? QByteArray("#E0E0E0") : QByteArray("#3D3D3D");
+  const QByteArray ink = theme::iconInk(theme::themeFor(light_theme)).name(QColor::HexRgb).toUtf8();
+  const QByteArray opposite = theme::iconInk(theme::themeFor(!light_theme)).name(QColor::HexRgb).toUtf8();
 
-  // (1) Palette swap.
-  svg_data.replace(opposite, ink);
-
-  // (2) Legacy black/white — fold onto the palette so monochrome assets
-  // (PJ3 icons, the logo) flip with the active theme.
-  svg_data.replace("#000000", ink);
-  svg_data.replace("#ffffff", opposite);
+  // All source->target mappings go through unique placeholders and are applied
+  // in ONE logical pass: sequential in-place replaces cascade whenever a
+  // target ink equals a later rule's source (e.g. dark theme black->white
+  // followed by white->dark-ink collapsed black-and-white artwork onto a
+  // single color). Authoring inks are matched before the palette swap so a
+  // legacy #ffffff is classified as the legacy light ink, not as "the
+  // opposite theme's ink" when they coincide.
+  constexpr const char* kInkPh = "\x01PJ_INK\x01";
+  constexpr const char* kOppPh = "\x01PJ_OPP\x01";
+  svg_data.replace(svg_ink::kLegacyDark, kInkPh);
+  svg_data.replace(svg_ink::kLegacyLight, kOppPh);
+  svg_data.replace(svg_ink::kChrome, kInkPh).replace(svg_ink::kChromeLower, kInkPh);
+  // Palette swap — an SVG already carrying the opposite theme's ink flips to
+  // the active one (no-op if that byte pattern was consumed as a legacy ink).
+  svg_data.replace(opposite, kInkPh);
+  svg_data.replace(kInkPh, ink);
+  svg_data.replace(kOppPh, opposite);
 
   // (3) Root-tag fill injection: if the SVG has no `fill` on its root
   // element, give it one so any per-path-fill-less children inherit it.
@@ -64,13 +97,20 @@ inline void recolorSvgInk(QByteArray& svg_data, bool light_theme) {
   svg_data.insert(tag_end, fill_attr);
 }
 
+// True when `style_name` denotes the light theme. The single source of truth for
+// theme polarity, shared by the recolor pipeline and by callers that tint their
+// own composites to match the recolored glyphs.
+inline bool isLightTheme(const QString& style_name) {
+  return style_name.contains(QLatin1String("light"));
+}
+
 // Load an SVG from a resource path, recoloring monochrome content (#000000 /
 // #ffffff) for the requested theme. Results are cached per (path, theme).
 // Caller must use this on the GUI thread only — the cache maps are not locked.
 inline const QPixmap& loadSvg(const QString& filename, const QString& style_name = "light") {
   static std::map<QString, QPixmap> light_images;
   static std::map<QString, QPixmap> dark_images;
-  const bool light_theme = style_name.contains("light");
+  const bool light_theme = isLightTheme(style_name);
 
   auto* stored_images = light_theme ? &light_images : &dark_images;
 

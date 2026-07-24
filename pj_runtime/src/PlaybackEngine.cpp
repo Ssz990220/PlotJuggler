@@ -135,6 +135,16 @@ void PlaybackEngine::play() {
   if (playing_) {
     return;
   }
+  // Rewind-on-play: pressing Play while the cursor already sits at (or past) the end
+  // of a finite range would otherwise do nothing — the first onTick computes
+  // next > range_max, clampTickTime reports reached_end, and onTick pauses again
+  // before the cursor moves (the button just flickers). Snap back to the start so
+  // Play replays from the beginning, like any media player. Skipped while holding at
+  // the live tip (streaming) and when looping (which wraps on its own).
+  if (!hold_at_range_max_ && !looping_ && range_max_ > range_min_ && current_time_ >= range_max_) {
+    current_time_ = range_min_;
+    emit currentTimeChanged(current_time_);
+  }
   playing_ = true;
   elapsed_.restart();
   timer_.start();

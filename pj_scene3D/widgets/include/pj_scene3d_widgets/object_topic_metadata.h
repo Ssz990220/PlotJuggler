@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
+#include <optional>
+#include <string_view>
+
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_datastore/object_store.hpp"
 
@@ -12,5 +15,14 @@ namespace pj::scene3d {
 /// field is absent, not a string, or unrecognised. Single decoder so the dock
 /// and any layer config widget share one parse path and can't silently diverge.
 [[nodiscard]] PJ::sdk::BuiltinObjectType builtinObjectTypeFor(const PJ::ObjectTopicDescriptor& descriptor);
+
+struct UniqueObjectTopicResolution {
+  std::optional<PJ::ObjectTopicId> topic_id;
+  bool ambiguous = false;
+};
+
+/// Resolves an unqualified topic only when name and type identify one live entry.
+[[nodiscard]] UniqueObjectTopicResolution resolveUniqueObjectTopic(
+    PJ::ObjectStore& store, std::string_view topic_name, PJ::sdk::BuiltinObjectType object_type);
 
 }  // namespace pj::scene3d

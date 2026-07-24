@@ -3,6 +3,16 @@
 # ---------------------------------------------------------------------------
 
 find_package(libjpeg-turbo REQUIRED)
+# Conan's config exposes the umbrella target libjpeg-turbo::libjpeg-turbo;
+# upstream's own config exports per-API targets instead (::jpeg, ::turbojpeg).
+# Bridge to the turbojpeg API — the only one this module uses (<turbojpeg.h>).
+# GLOBAL: pj_scene2D/tools is a sibling add_subdirectory (not a descendant of
+# this one) and links this same target name directly — a non-GLOBAL IMPORTED
+# target would be invisible there.
+if(NOT TARGET libjpeg-turbo::libjpeg-turbo)
+  add_library(libjpeg-turbo::libjpeg-turbo INTERFACE IMPORTED GLOBAL)
+  target_link_libraries(libjpeg-turbo::libjpeg-turbo INTERFACE libjpeg-turbo::turbojpeg)
+endif()
 find_package(PNG REQUIRED)
 include("${CMAKE_CURRENT_LIST_DIR}/../cmake/PjScene2DFfmpeg.cmake")
 pj_scene2d_find_ffmpeg(PJ_SCENE2D_HAS_FFMPEG PJ_SCENE2D_FFMPEG_TARGETS PJ_SCENE2D_FFMPEG_SOURCE)

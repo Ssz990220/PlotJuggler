@@ -70,6 +70,19 @@ target_link_libraries(dock_fullscreen_test PRIVATE
 
 add_test(NAME DockFullscreenTest COMMAND dock_fullscreen_test)
 
+add_executable(tabbed_widget_tab_test
+    tabbed_widget_tab_test.cpp
+)
+
+target_compile_options(tabbed_widget_tab_test PRIVATE ${PJ_WARNING_FLAGS})
+target_link_libraries(tabbed_widget_tab_test PRIVATE
+    pj_plotting
+    pj_widgets
+    GTest::gtest
+)
+
+add_test(NAME TabbedWidgetTabTest COMMAND tabbed_widget_tab_test)
+
 add_executable(plot_widget_replace_curve_test
     plot_widget_replace_curve_test.cpp
 )
@@ -94,8 +107,21 @@ target_link_libraries(plot_widget_snapshot_test PRIVATE
 
 add_test(NAME PlotWidgetSnapshotTest COMMAND plot_widget_snapshot_test)
 
+add_executable(plot_scale_draw_test
+    plot_scale_draw_test.cpp
+)
+
+target_compile_options(plot_scale_draw_test PRIVATE ${PJ_WARNING_FLAGS})
+target_link_libraries(plot_scale_draw_test PRIVATE
+    pj_plotting
+    GTest::gtest
+)
+
+add_test(NAME PlotScaleDrawTest COMMAND plot_scale_draw_test)
+
 add_executable(plot_widget_default_style_test
     plot_widget_default_style_test.cpp
+    ${CMAKE_SOURCE_DIR}/resources/resources.qrc  # framework token palette (DataBackdrop test)
 )
 
 target_compile_options(plot_widget_default_style_test PRIVATE ${PJ_WARNING_FLAGS})
@@ -103,8 +129,69 @@ target_link_libraries(plot_widget_default_style_test PRIVATE
     pj_plotting
     GTest::gtest
 )
+set_target_properties(plot_widget_default_style_test PROPERTIES AUTORCC ON)
 
 add_test(NAME PlotWidgetDefaultStyleTest COMMAND plot_widget_default_style_test)
+
+add_executable(plot_widget_xy_marker_test
+    plot_widget_xy_marker_test.cpp
+)
+
+target_compile_options(plot_widget_xy_marker_test PRIVATE ${PJ_WARNING_FLAGS})
+target_link_libraries(plot_widget_xy_marker_test PRIVATE
+    pj_plotting
+    GTest::gtest
+)
+
+add_test(NAME PlotWidgetXyMarkerTest COMMAND plot_widget_xy_marker_test)
+
+add_executable(legend_text_diagnostics_test
+    legend_text_diagnostics_test.cpp
+)
+
+target_compile_options(legend_text_diagnostics_test PRIVATE ${PJ_WARNING_FLAGS})
+target_link_libraries(legend_text_diagnostics_test PRIVATE
+    pj_plotting
+    GTest::gtest
+)
+
+add_test(NAME LegendTextDiagnosticsTest COMMAND legend_text_diagnostics_test)
+
+add_executable(plot_canvas_context_recreation_gl_test
+    plot_canvas_context_recreation_gl_test.cpp
+)
+
+target_compile_options(plot_canvas_context_recreation_gl_test PRIVATE ${PJ_WARNING_FLAGS})
+target_link_libraries(plot_canvas_context_recreation_gl_test PRIVATE
+    pj_plotting
+    GTest::gtest
+)
+
+add_test(NAME PlotCanvasContextRecreationGlTest COMMAND plot_canvas_context_recreation_gl_test)
+
+add_executable(raster_text_engine_test
+    raster_text_engine_test.cpp
+)
+
+target_compile_options(raster_text_engine_test PRIVATE ${PJ_WARNING_FLAGS})
+target_link_libraries(raster_text_engine_test PRIVATE
+    pj_plotting
+    GTest::gtest
+)
+
+add_test(NAME RasterTextEngineTest COMMAND raster_text_engine_test)
+
+add_executable(raster_text_gl_test
+    raster_text_gl_test.cpp
+)
+
+target_compile_options(raster_text_gl_test PRIVATE ${PJ_WARNING_FLAGS})
+target_link_libraries(raster_text_gl_test PRIVATE
+    pj_plotting
+    GTest::gtest
+)
+
+add_test(NAME RasterTextGlTest COMMAND raster_text_gl_test)
 
 add_executable(plot_widget_range_offset_test
     plot_widget_range_offset_test.cpp
@@ -117,6 +204,54 @@ target_link_libraries(plot_widget_range_offset_test PRIVATE
 )
 
 add_test(NAME PlotWidgetRangeOffsetTest COMMAND plot_widget_range_offset_test)
+
+add_executable(plot_widget_max_zoom_offset_test
+    plot_widget_max_zoom_offset_test.cpp
+)
+
+target_compile_options(plot_widget_max_zoom_offset_test PRIVATE ${PJ_WARNING_FLAGS})
+target_link_libraries(plot_widget_max_zoom_offset_test PRIVATE
+    pj_plotting
+    GTest::gtest
+)
+
+add_test(NAME PlotWidgetMaxZoomOffsetTest COMMAND plot_widget_max_zoom_offset_test)
+
+add_executable(plot_widget_flat_curve_range_test
+    plot_widget_flat_curve_range_test.cpp
+)
+
+target_compile_options(plot_widget_flat_curve_range_test PRIVATE ${PJ_WARNING_FLAGS})
+target_link_libraries(plot_widget_flat_curve_range_test PRIVATE
+    pj_plotting
+    GTest::gtest
+)
+
+add_test(NAME PlotWidgetFlatCurveRangeTest COMMAND plot_widget_flat_curve_range_test)
+
+add_executable(plot_magnifier_clamp_test
+    plot_magnifier_clamp_test.cpp
+)
+
+target_compile_options(plot_magnifier_clamp_test PRIVATE ${PJ_WARNING_FLAGS})
+target_link_libraries(plot_magnifier_clamp_test PRIVATE
+    pj_plotting
+    GTest::gtest
+)
+
+add_test(NAME PlotMagnifierClampTest COMMAND plot_magnifier_clamp_test)
+
+add_executable(plot_state_transaction_test
+    plot_state_transaction_test.cpp
+)
+
+target_compile_options(plot_state_transaction_test PRIVATE ${PJ_WARNING_FLAGS})
+target_link_libraries(plot_state_transaction_test PRIVATE
+    pj_plotting
+    GTest::gtest
+)
+
+add_test(NAME PlotStateTransactionTest COMMAND plot_state_transaction_test)
 
 # Compiles resources.qrc into the executable so :/filters/builtin_filters.luau is
 # embedded — SessionManager reads it to install the Luau filter catalogue (AUTORCC

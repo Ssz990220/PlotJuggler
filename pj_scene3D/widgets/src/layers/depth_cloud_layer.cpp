@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#include "layer_xml_validation.h"
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/builtin/camera_info.hpp"
 #include "pj_base/builtin/image.hpp"
@@ -26,6 +27,8 @@
 #include "pj_scene3d_widgets/parse_locked.h"
 #include "pj_widgets/ComboBox.h"
 #include "pj_widgets/DoubleScrubber.h"
+#include "pj_widgets/FrameworkTokens.h"
+using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
 
@@ -61,7 +64,7 @@ PJ::SceneLayerInfo DepthCloudLayer::info() const {
       .topic_id = topic_id_,
       .object_type = object_type_,
       .display_name = display_name_,
-      .family_name = QStringLiteral("DepthCloud"),
+      .family_name = u"DepthCloud"_s,
       .visible = visible_,
   };
 }
@@ -167,6 +170,7 @@ void DepthCloudLayer::setColormap(PointcloudRenderPass::Colormap cm) {
   }
   colormap_ = cm;
   cloud_pass_.setColormap(colormap_);
+  emit configurationChanged();
   emit repaintRequested();
 }
 
@@ -176,6 +180,7 @@ void DepthCloudLayer::setPointSizePixels(float pixels) {
   }
   point_size_px_ = pixels;
   cloud_pass_.setSizePixels(point_size_px_);
+  emit configurationChanged();
   emit repaintRequested();
 }
 
@@ -185,6 +190,7 @@ void DepthCloudLayer::setMinDepth(float metres) {
   }
   min_depth_m_ = metres;
   last_pushed_id_ = {};
+  emit configurationChanged();
   refreshNow();
 }
 
@@ -194,81 +200,95 @@ void DepthCloudLayer::setMaxDepth(float metres) {
   }
   max_depth_m_ = metres;
   last_pushed_id_ = {};
+  emit configurationChanged();
   refreshNow();
 }
 
 QDomElement DepthCloudLayer::xmlSaveState(QDomDocument& doc) const {
-  QDomElement el = doc.createElement(QStringLiteral("depthcloud"));
+  QDomElement el = doc.createElement(u"depthcloud"_s);
   auto colormap_str = [&]() -> QString {
     switch (colormap_) {
       case PointcloudRenderPass::Colormap::kTurbo:
-        return QStringLiteral("turbo");
+        return u"turbo"_s;
       case PointcloudRenderPass::Colormap::kViridis:
-        return QStringLiteral("viridis");
+        return u"viridis"_s;
       case PointcloudRenderPass::Colormap::kPlasma:
-        return QStringLiteral("plasma");
+        return u"plasma"_s;
       case PointcloudRenderPass::Colormap::kGrayscale:
-        return QStringLiteral("grayscale");
+        return u"grayscale"_s;
     }
-    return QStringLiteral("turbo");
+    return u"turbo"_s;
   }();
-  el.setAttribute(QStringLiteral("colormap"), colormap_str);
-  el.setAttribute(QStringLiteral("point_size_px"), QString::number(static_cast<double>(point_size_px_), 'g', 6));
-  el.setAttribute(QStringLiteral("min_depth"), QString::number(static_cast<double>(min_depth_m_), 'g', 6));
-  el.setAttribute(QStringLiteral("max_depth"), QString::number(static_cast<double>(max_depth_m_), 'g', 6));
+  el.setAttribute(u"colormap"_s, colormap_str);
+  el.setAttribute(u"point_size_px"_s, QString::number(static_cast<double>(point_size_px_), 'g', 6));
+  el.setAttribute(u"min_depth"_s, QString::number(static_cast<double>(min_depth_m_), 'g', 6));
+  el.setAttribute(u"max_depth"_s, QString::number(static_cast<double>(max_depth_m_), 'g', 6));
   return el;
 }
 
 bool DepthCloudLayer::xmlLoadState(const QDomElement& element) {
-  if (element.isNull() || element.tagName() != QStringLiteral("depthcloud")) {
+  if (element.isNull() || element.tagName() != "depthcloud"_L1) {
     return false;
   }
-  const QString cm_str = element.attribute(QStringLiteral("colormap"), QStringLiteral("turbo"));
-  if (cm_str == QStringLiteral("viridis")) {
-    setColormap(PointcloudRenderPass::Colormap::kViridis);
-  } else if (cm_str == QStringLiteral("plasma")) {
-    setColormap(PointcloudRenderPass::Colormap::kPlasma);
-  } else if (cm_str == QStringLiteral("grayscale")) {
-    setColormap(PointcloudRenderPass::Colormap::kGrayscale);
+  if (!detail::isLeafPayload(element)) {
+    return false;
+  }
+  const QString colormap_text = element.attribute(u"colormap"_s, u"turbo"_s);
+  PointcloudRenderPass::Colormap restored_colormap;
+  if (colormap_text == "turbo"_L1) {
+    restored_colormap = PointcloudRenderPass::Colormap::kTurbo;
+  } else if (colormap_text == "viridis"_L1) {
+    restored_colormap = PointcloudRenderPass::Colormap::kViridis;
+  } else if (colormap_text == "plasma"_L1) {
+    restored_colormap = PointcloudRenderPass::Colormap::kPlasma;
+  } else if (colormap_text == "grayscale"_L1) {
+    restored_colormap = PointcloudRenderPass::Colormap::kGrayscale;
   } else {
-    setColormap(PointcloudRenderPass::Colormap::kTurbo);
+    return false;
   }
-  bool ok = false;
-  const float ps = element.attribute(QStringLiteral("point_size_px"), QStringLiteral("2")).toFloat(&ok);
-  if (ok) {
-    setPointSizePixels(ps);
+  float restored_point_size = 0.0f;
+  float restored_min_depth = 0.0f;
+  float restored_max_depth = 0.0f;
+  if (!detail::parseFiniteFloat(element, "point_size_px", 2.0f, 1.0f, 32.0f, restored_point_size) ||
+      !detail::parseFiniteFloat(element, "min_depth", 0.0f, 0.0f, 1000.0f, restored_min_depth) ||
+      !detail::parseFiniteFloat(element, "max_depth", 0.0f, 0.0f, 1000.0f, restored_max_depth) ||
+      (restored_max_depth > 0.0f && restored_min_depth > restored_max_depth)) {
+    return false;
   }
-  const float nd = element.attribute(QStringLiteral("min_depth"), QStringLiteral("0")).toFloat(&ok);
-  if (ok) {
-    setMinDepth(nd);
-  }
-  const float fd = element.attribute(QStringLiteral("max_depth"), QStringLiteral("0")).toFloat(&ok);
-  if (ok) {
-    setMaxDepth(fd);
-  }
+  setColormap(restored_colormap);
+  setPointSizePixels(restored_point_size);
+  setMinDepth(restored_min_depth);
+  setMaxDepth(restored_max_depth);
   return true;
 }
 
 QWidget* DepthCloudLayer::createConfigWidget(QWidget* parent) {
   auto* container = new QWidget(parent);
   auto* outer = new QVBoxLayout(container);
-  outer->setContentsMargins(0, 0, 0, 0);
-  outer->setSpacing(6);
+  outer->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
+  outer->setSpacing(PJ::theme::space(PJ::theme::Space::Snug));
   auto* form = new QFormLayout();
-  form->setContentsMargins(0, 0, 0, 0);
-  form->setSpacing(6);
+  form->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
+  // Match the Grid / Transforms section grids in Scene3DConfigPanel: comfortable
+  // label↔field gap, snug row pitch — so the panel keeps one consistent rhythm.
+  form->setHorizontalSpacing(PJ::theme::space(PJ::theme::Space::Comfortable));
+  form->setVerticalSpacing(PJ::theme::space(PJ::theme::Space::Snug));
   outer->addLayout(form);
 
   auto* colormap_combo = new PJ::ComboBox(container);
-  colormap_combo->addItem(QStringLiteral("turbo"), static_cast<int>(PointcloudRenderPass::Colormap::kTurbo));
-  colormap_combo->addItem(QStringLiteral("viridis"), static_cast<int>(PointcloudRenderPass::Colormap::kViridis));
-  colormap_combo->addItem(QStringLiteral("plasma"), static_cast<int>(PointcloudRenderPass::Colormap::kPlasma));
-  colormap_combo->addItem(QStringLiteral("grayscale"), static_cast<int>(PointcloudRenderPass::Colormap::kGrayscale));
+  colormap_combo->addItem(u"turbo"_s, static_cast<int>(PointcloudRenderPass::Colormap::kTurbo));
+  colormap_combo->addItem(u"viridis"_s, static_cast<int>(PointcloudRenderPass::Colormap::kViridis));
+  colormap_combo->addItem(u"plasma"_s, static_cast<int>(PointcloudRenderPass::Colormap::kPlasma));
+  colormap_combo->addItem(u"grayscale"_s, static_cast<int>(PointcloudRenderPass::Colormap::kGrayscale));
   colormap_combo->setCurrentIndex(static_cast<int>(colormap_));
   form->addRow(tr("Colormap:"), colormap_combo);
 
   auto* size_spin = new PJ::DoubleScrubber(container);
-  size_spin->setSuffix(QStringLiteral(" px"));
+  size_spin->setSuffix(u" px"_s);
   size_spin->setDecimals(1);
   size_spin->setSingleStep(0.5);
   size_spin->setRange(1.0, 32.0);
@@ -276,7 +296,7 @@ QWidget* DepthCloudLayer::createConfigWidget(QWidget* parent) {
   form->addRow(tr("Point size:"), size_spin);
 
   auto* min_spin = new PJ::DoubleScrubber(container);
-  min_spin->setSuffix(QStringLiteral(" m"));
+  min_spin->setSuffix(u" m"_s);
   min_spin->setDecimals(2);
   min_spin->setSingleStep(0.1);
   min_spin->setRange(0.0, 1000.0);
@@ -284,7 +304,7 @@ QWidget* DepthCloudLayer::createConfigWidget(QWidget* parent) {
   form->addRow(tr("Min depth:"), min_spin);
 
   auto* max_spin = new PJ::DoubleScrubber(container);
-  max_spin->setSuffix(QStringLiteral(" m"));
+  max_spin->setSuffix(u" m"_s);
   max_spin->setDecimals(2);
   max_spin->setSingleStep(0.1);
   max_spin->setRange(0.0, 1000.0);  // 0 = no far clip

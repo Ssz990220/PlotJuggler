@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <unordered_map>
 #include <vector>
 
 #include "pj_base/builtin/builtin_object.hpp"
@@ -35,6 +36,10 @@ class Scene2DDockWidget : public SceneDockWidget {
  public:
   explicit Scene2DDockWidget(QWidget* parent = nullptr);
   ~Scene2DDockWidget() override;
+
+  /// Saves/restores the base layer stack plus the 2D canvas zoom/pan viewport.
+  QDomElement xmlSaveState(QDomDocument& doc) const override;
+  bool xmlLoadState(const QDomElement& element) override;
 
   /// Stores a non-owning SessionManager pointer in the base and reconnects the
   /// live-sample follow connection. Replacing the session drops the old connection.
@@ -64,6 +69,7 @@ class Scene2DDockWidget : public SceneDockWidget {
  protected:
   /// Workspace XML tag for the 2D scene dock.
   [[nodiscard]] QString xmlTag() const override;
+  [[nodiscard]] bool acceptsStateChildTag(const QString& tag) const override;
   /// Builds the QRhi bootstrap child plus the real MediaViewerWidget, fronted by
   /// a stacked empty-state placeholder shown until the first layer arrives.
   QWidget* createSceneView() override;
@@ -78,8 +84,17 @@ class Scene2DDockWidget : public SceneDockWidget {
   void syncViewLayers(const std::vector<ISceneLayer*>& ordered_layers) override;
   /// Repaints only the viewer; the layer list UI is owned by the base dock.
   void refreshView() override;
+  /// Re-applies an explicit saved Image-vs-Depth concrete kind when a deferred
+  /// kImage topic finally becomes available.
+  bool restoreOnePending(const QDomElement& element) override;
 
  private:
+  enum class ImageLayerKind { kImage, kDepth };
+
+  /// Resolves saved layer identities that are already available and primes the
+  /// encoding-aware factory with their explicit concrete kind.
+  void primeRestoreLayerKinds(const QDomElement& root);
+  void primeRestoreLayerKind(const QDomElement& layer_element);
   /// Builds the centered, greyed image-SVG placeholder shown while the dock is
   /// empty (a nicer "drop a topic here" affordance than a blank GPU surface).
   QWidget* makeEmptyPlaceholder(QWidget* parent);
@@ -120,6 +135,7 @@ class Scene2DDockWidget : public SceneDockWidget {
   // Visible topic ids in the exact order pushed into composite_; testing reads it
   // to verify layer reorder/add/remove reconciliation.
   std::vector<ObjectTopicId> composite_topic_order_;
+  std::unordered_map<int64_t, ImageLayerKind> restore_image_layer_kinds_;
 };
 
 }  // namespace PJ

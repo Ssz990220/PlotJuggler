@@ -7,6 +7,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace PJ {
 
@@ -90,10 +91,6 @@ Status ObjectStore::pushOwned(ObjectTopicId id, Timestamp timestamp, std::vector
   }
 
   std::unique_lock lock(series->mutex);
-  if (!series->entry_timestamps.empty() && timestamp < series->entry_timestamps.back()) {
-    return unexpected("timestamp not monotonically non-decreasing");
-  }
-
   const size_t payload_size = payload.size();
 
   auto shared_data = std::make_shared<const std::vector<uint8_t>>(std::move(payload));
@@ -102,11 +99,19 @@ Status ObjectStore::pushOwned(ObjectTopicId id, Timestamp timestamp, std::vector
   entry.timestamp = timestamp;
   entry.sequential_uid = SequentialUID::getNext();
   entry.payload = std::move(shared_data);
-  series->entries.push_back(std::move(entry));
-  series->entry_timestamps.push_back(timestamp);
+  const auto push_order = series->ordered.push(std::move(entry));
   series->memory_bytes += payload_size;
 
-  applyRetention(*series, timestamp);
+  // A mid-stream (out-of-order) insert can change an at-or-before lookup that
+  // landed on the entry just after it, so drop the warm cache (keyed by uid).
+  if (push_order == OrderedEntries::PushOrder::kOutOfOrderInsert) {
+    std::lock_guard cache_guard(series->cache_mutex);
+    series->cached_latest.reset();
+  }
+
+  // Retention is anchored to the newest sample retained, not the just-pushed
+  // timestamp (which may be older on an out-of-order insert).
+  applyRetention(*series, series->ordered.backTimestamp());
   return {};
 }
 
@@ -118,18 +123,18 @@ Status ObjectStore::pushLazy(ObjectTopicId id, Timestamp timestamp, LazyCallback
   }
 
   std::unique_lock lock(series->mutex);
-  if (!series->entry_timestamps.empty() && timestamp < series->entry_timestamps.back()) {
-    return unexpected("timestamp not monotonically non-decreasing");
-  }
-
   ObjectEntry entry;
   entry.timestamp = timestamp;
   entry.sequential_uid = SequentialUID::getNext();
   entry.payload = std::move(fetch);
-  series->entries.push_back(std::move(entry));
-  series->entry_timestamps.push_back(timestamp);
+  const auto push_order = series->ordered.push(std::move(entry));
 
-  applyRetention(*series, timestamp);
+  if (push_order == OrderedEntries::PushOrder::kOutOfOrderInsert) {
+    std::lock_guard cache_guard(series->cache_mutex);
+    series->cached_latest.reset();
+  }
+
+  applyRetention(*series, series->ordered.backTimestamp());
   return {};
 }
 
@@ -143,17 +148,11 @@ std::optional<ResolvedObjectEntry> ObjectStore::latestAt(ObjectTopicId id, Times
   }
 
   std::shared_lock lock(series->mutex);
-  if (series->entry_timestamps.empty()) {
+  const auto idx = series->ordered.indexAtOrBefore(timestamp);
+  if (!idx.has_value()) {
     return std::nullopt;
   }
-
-  auto it = std::upper_bound(series->entry_timestamps.begin(), series->entry_timestamps.end(), timestamp);
-  if (it == series->entry_timestamps.begin()) {
-    return std::nullopt;
-  }
-  --it;
-  auto idx = static_cast<size_t>(it - series->entry_timestamps.begin());
-  const ObjectEntry& entry = series->entries[idx];
+  const ObjectEntry& entry = series->ordered.entryAt(*idx);
 
   // Warm cache: a ~60 Hz reader landing on the same sample as last time is served
   // without re-invoking the (possibly decompressing/file-backed) lazy fetcher.
@@ -184,10 +183,11 @@ std::optional<ResolvedObjectEntry> ObjectStore::at(ObjectTopicId id, size_t inde
   }
 
   std::shared_lock lock(series->mutex);
-  if (index >= series->entries.size()) {
+  const ObjectEntry* entry = series->ordered.atIndex(index);
+  if (entry == nullptr) {
     return std::nullopt;
   }
-  return resolveEntry(series->entries[index]);
+  return resolveEntry(*entry);
 }
 
 std::optional<ResolvedObjectEntry> ObjectStore::at(ObjectTopicId id, SequentialUID sequential_uid) const {
@@ -202,23 +202,11 @@ std::optional<ResolvedObjectEntry> ObjectStore::at(ObjectTopicId id, SequentialU
   }
 
   std::shared_lock lock(series->mutex);
-  if (series->entries.empty()) {
+  const ObjectEntry* entry = series->ordered.atUid(sequential_uid);
+  if (entry == nullptr) {
     return std::nullopt;
   }
-
-  const SequentialUID first = series->entries.front().sequential_uid;
-  const SequentialUID last = series->entries.back().sequential_uid;
-  if (sequential_uid < first || sequential_uid > last) {
-    return std::nullopt;
-  }
-
-  const auto it = std::lower_bound(
-      series->entries.begin(), series->entries.end(), sequential_uid,
-      [](const ObjectEntry& entry, SequentialUID uid) { return entry.sequential_uid < uid; });
-  if (it == series->entries.end() || it->sequential_uid != sequential_uid) {
-    return std::nullopt;
-  }
-  return resolveEntry(*it);
+  return resolveEntry(*entry);
 }
 
 std::optional<size_t> ObjectStore::indexAt(ObjectTopicId id, Timestamp timestamp) const {
@@ -229,16 +217,7 @@ std::optional<size_t> ObjectStore::indexAt(ObjectTopicId id, Timestamp timestamp
   }
 
   std::shared_lock lock(series->mutex);
-  if (series->entry_timestamps.empty()) {
-    return std::nullopt;
-  }
-
-  auto it = std::upper_bound(series->entry_timestamps.begin(), series->entry_timestamps.end(), timestamp);
-  if (it == series->entry_timestamps.begin()) {
-    return std::nullopt;
-  }
-  --it;
-  return static_cast<size_t>(it - series->entry_timestamps.begin());
+  return series->ordered.indexAtOrBefore(timestamp);
 }
 
 SequentialUID ObjectStore::firstSequentialUID(ObjectTopicId id) const {
@@ -249,27 +228,60 @@ SequentialUID ObjectStore::firstSequentialUID(ObjectTopicId id) const {
   }
 
   std::shared_lock lock(series->mutex);
-  if (series->entries.empty()) {
-    return {};
-  }
-  return series->entries.front().sequential_uid;
+  return series->ordered.firstUid();
 }
 
-SequentialUID ObjectStore::nextUIDAfter(ObjectTopicId id, SequentialUID after) const {
+std::vector<ResolvedObjectEntry> ObjectStore::drainNewSince(ObjectTopicId id, SequentialUID& cursor) const {
+  // Collect the UIDs of unconsumed arrivals under one brief shared lock, then resolve
+  // each afterwards via at() — each resolve takes its own short per-entry lock rather
+  // than one lock held across the whole batch (matching the old per-step re-resolve).
+  // An entry evicted between the walk and the resolve is simply skipped, but its UID
+  // still advances the cursor so it is never revisited.
+  std::vector<SequentialUID> uids;
+  {
+    std::shared_lock store_lock(store_mutex_);
+    const auto* series = findSeries(id);
+    if (series == nullptr) {
+      return {};
+    }
+    std::shared_lock lock(series->mutex);
+    for (SequentialUID uid = series->ordered.nextUidAfter(cursor); uid.valid();
+         uid = series->ordered.nextUidAfter(uid)) {
+      uids.push_back(uid);
+    }
+  }
+  std::vector<ResolvedObjectEntry> out;
+  out.reserve(uids.size());
+  for (const SequentialUID uid : uids) {
+    cursor = uid;
+    if (auto entry = at(id, uid); entry.has_value()) {
+      out.push_back(std::move(*entry));
+    }
+  }
+  return out;
+}
+
+SequentialUID ObjectStore::maxUidAtOrBefore(ObjectTopicId id, Timestamp t) const {
   std::shared_lock store_lock(store_mutex_);
   const auto* series = findSeries(id);
   if (series == nullptr) {
     return {};
   }
-
   std::shared_lock lock(series->mutex);
-  const auto it = std::upper_bound(
-      series->entries.begin(), series->entries.end(), after,
-      [](SequentialUID uid, const ObjectEntry& entry) { return uid < entry.sequential_uid; });
-  if (it == series->entries.end()) {
+  return series->ordered.maxUidAtOrBefore(t);
+}
+
+std::vector<ObjectStore::TimeRangeEntry> ObjectStore::rangeByTime(ObjectTopicId id, Timestamp lo, Timestamp hi) const {
+  if (hi <= lo) {
+    return {};  // empty window (also rejects a reversed lo/hi), before taking any lock
+  }
+  std::shared_lock store_lock(store_mutex_);
+  const auto* series = findSeries(id);
+  if (series == nullptr) {
     return {};
   }
-  return it->sequential_uid;
+  std::shared_lock lock(series->mutex);
+  return series->ordered.rangeByTime(lo, hi);
 }
 
 size_t ObjectStore::entryCount(ObjectTopicId id) const {
@@ -280,7 +292,7 @@ size_t ObjectStore::entryCount(ObjectTopicId id) const {
   }
 
   std::shared_lock lock(series->mutex);
-  return series->entries.size();
+  return series->ordered.size();
 }
 
 std::pair<Timestamp, Timestamp> ObjectStore::timeRange(ObjectTopicId id) const {
@@ -291,10 +303,10 @@ std::pair<Timestamp, Timestamp> ObjectStore::timeRange(ObjectTopicId id) const {
   }
 
   std::shared_lock lock(series->mutex);
-  if (series->entry_timestamps.empty()) {
+  if (series->ordered.empty()) {
     return {0, 0};
   }
-  return {series->entry_timestamps.front(), series->entry_timestamps.back()};
+  return {series->ordered.frontTimestamp(), series->ordered.backTimestamp()};
 }
 
 EntryTimestampsView ObjectStore::entryTimestamps(ObjectTopicId id) const {
@@ -305,7 +317,7 @@ EntryTimestampsView ObjectStore::entryTimestamps(ObjectTopicId id) const {
   }
 
   std::shared_lock lock(series->mutex);
-  return {std::move(lock), &series->entry_timestamps};
+  return {std::move(lock), &series->ordered.timestamps()};
 }
 
 // --- Retention ---
@@ -349,7 +361,7 @@ void ObjectStore::evictBefore(ObjectTopicId id, Timestamp threshold) {
     return;
   }
   std::unique_lock lock(series->mutex);
-  while (!series->entries.empty() && series->entry_timestamps.front() < threshold) {
+  while (!series->ordered.empty() && series->ordered.frontTimestamp() < threshold) {
     evictFront(*series);
   }
 }
@@ -358,7 +370,7 @@ void ObjectStore::evictAllBefore(Timestamp threshold) {
   std::shared_lock store_lock(store_mutex_);
   for (auto& [tid, series] : topics_) {
     std::unique_lock lock(series->mutex);
-    while (!series->entries.empty() && series->entry_timestamps.front() < threshold) {
+    while (!series->ordered.empty() && series->ordered.frontTimestamp() < threshold) {
       evictFront(*series);
     }
   }
@@ -387,7 +399,7 @@ Status ObjectStore::flushTo(ObjectStore& dst) {
   plan.reserve(topics_.size());
 
   for (auto& [src_id, src_series] : topics_) {
-    if (src_series->entry_timestamps.empty()) {
+    if (src_series->ordered.empty()) {
       continue;
     }
     ObjectSeries* dst_series = nullptr;
@@ -403,8 +415,7 @@ Status ObjectStore::flushTo(ObjectStore& dst) {
           "flushTo: destination has no topic '" + src_series->descriptor.topic_name + "' for dataset " +
           std::to_string(src_series->descriptor.dataset_id));
     }
-    if (!dst_series->entry_timestamps.empty() &&
-        src_series->entry_timestamps.front() < dst_series->entry_timestamps.back()) {
+    if (!dst_series->ordered.empty() && src_series->ordered.frontTimestamp() < dst_series->ordered.backTimestamp()) {
       return unexpected("flushTo: monotonicity violation for topic '" + src_series->descriptor.topic_name + "'");
     }
     plan.push_back({src_series.get(), dst_series});
@@ -417,16 +428,10 @@ Status ObjectStore::flushTo(ObjectStore& dst) {
   for (auto& step : plan) {
     drainSeriesReaders(*step.src);
     drainSeriesReaders(*step.dst);
-    for (auto& entry : step.src->entries) {
-      entry.sequential_uid = SequentialUID::getNext();
-      step.dst->entries.push_back(std::move(entry));
-    }
-    step.dst->entry_timestamps.insert(
-        step.dst->entry_timestamps.end(), step.src->entry_timestamps.begin(), step.src->entry_timestamps.end());
+    // Re-UID the moved entries into dst, append them, extend timestamps, rebuild
+    // dst's uid_order (dst keeps its own UIDs stable), and empty src's triple.
+    step.dst->ordered.appendReuidFrom(step.src->ordered);
     step.dst->memory_bytes += step.src->memory_bytes;
-
-    step.src->entries.clear();
-    step.src->entry_timestamps.clear();
     step.src->memory_bytes = 0;
     // src's entries were moved out (and re-UIDed into dst); its warm cache now
     // refers to entries it no longer owns. dst keeps its cache: its pre-existing
@@ -437,7 +442,7 @@ Status ObjectStore::flushTo(ObjectStore& dst) {
       step.src->cached_latest.reset();
     }
 
-    const Timestamp newest = step.dst->entry_timestamps.empty() ? 0 : step.dst->entry_timestamps.back();
+    const Timestamp newest = step.dst->ordered.empty() ? 0 : step.dst->ordered.backTimestamp();
     applyRetention(*step.dst, newest);
   }
 
@@ -500,20 +505,19 @@ Expected<ObjectDatasetReplaceResult> ObjectStore::replaceDatasetFrom(
     // primary_series has no readers yet, so its drain is uncontended.
     drainSeriesReaders(*primary_series);
     drainSeriesReaders(*staged_series);
-    primary_series->entries = std::move(staged_series->entries);
-    for (auto& entry : primary_series->entries) {
-      entry.sequential_uid = SequentialUID::getNext();
-    }
-    primary_series->entry_timestamps = std::move(staged_series->entry_timestamps);
-    primary_series->memory_bytes = staged_series->memory_bytes;
-    result.remapped.emplace_back(sid, primary_tid);
-    staged_series->memory_bytes = 0;  // entries/timestamps already moved-from
-    // Both series' warm caches now refer to replaced/moved-from entries (the
-    // primary's entries are wholly new, with fresh UIDs); drop them.
+    // Adopt the staged entries + timestamps, mint fresh ascending identity UIDs
+    // (the moved staged entries are timestamp-sorted, so UID order == array order),
+    // and empty the staged triple.
+    primary_series->ordered.adoptReuidFrom(staged_series->ordered);
+    // The primary's entries are wholly new, with fresh UIDs, so drop its warm cache.
     {
       std::lock_guard primary_cache(primary_series->cache_mutex);
       primary_series->cached_latest.reset();
     }
+    primary_series->memory_bytes = staged_series->memory_bytes;
+    result.remapped.emplace_back(sid, primary_tid);
+    staged_series->memory_bytes = 0;  // entries/timestamps already moved-from
+    // The staged series' warm cache still refers to moved-from entries; drop it.
     {
       std::lock_guard staged_cache(staged_series->cache_mutex);
       staged_series->cached_latest.reset();
@@ -618,7 +622,7 @@ Expected<ObjectDatasetMergeReport> ObjectStore::mergeDatasets(
   for (Group& group : groups) {
     bool has_source_entries = false;
     for (const Contributor& contributor : group.sources) {
-      if (!contributor.series->entries.empty()) {
+      if (!contributor.series->ordered.empty()) {
         has_source_entries = true;
         break;
       }
@@ -633,65 +637,68 @@ Expected<ObjectDatasetMergeReport> ObjectStore::mergeDatasets(
 
     drainSeriesReaders(*group.destination);
     if (group.destination_needs_reparent) {
-      shiftSeriesLocked(*group.destination, group.destination_shift);
+      if (group.destination->ordered.shift(group.destination_shift)) {
+        std::lock_guard cache_guard(group.destination->cache_mutex);
+        group.destination->cached_latest.reset();
+      }
       group.destination->descriptor.dataset_id = anchor_id;
     }
 
     std::vector<Contributor> non_empty_sources;
     non_empty_sources.reserve(group.sources.size());
     for (const Contributor& contributor : group.sources) {
-      if (contributor.series->entries.empty()) {
+      if (contributor.series->ordered.empty()) {
         continue;
       }
       drainSeriesReaders(*contributor.series);
-      shiftSeriesLocked(*contributor.series, contributor.shift);
+      if (contributor.series->ordered.shift(contributor.shift)) {
+        std::lock_guard cache_guard(contributor.series->cache_mutex);
+        contributor.series->cached_latest.reset();
+      }
       non_empty_sources.push_back(contributor);
     }
 
     if (non_empty_sources.empty()) {
-      reuidSeriesLocked(*group.destination);
-      const Timestamp newest =
-          group.destination->entry_timestamps.empty() ? 0 : group.destination->entry_timestamps.back();
+      group.destination->ordered.reuidAll();
+      {
+        std::lock_guard cache_guard(group.destination->cache_mutex);
+        group.destination->cached_latest.reset();
+      }
+      const Timestamp newest = group.destination->ordered.empty() ? 0 : group.destination->ordered.backTimestamp();
       applyRetention(*group.destination, newest);
       continue;
     }
 
     std::vector<ObjectEntry> merged;
-    merged.reserve(group.destination->entries.size());
+    merged.reserve(group.destination->ordered.size());
     for (const Contributor& contributor : non_empty_sources) {
-      merged.reserve(merged.capacity() + contributor.series->entries.size());
+      merged.reserve(merged.capacity() + contributor.series->ordered.size());
     }
 
     size_t merged_memory = group.destination->memory_bytes;
-    for (ObjectEntry& entry : group.destination->entries) {
-      merged.push_back(std::move(entry));
-    }
+    group.destination->ordered.moveEntriesInto(merged);
     for (const Contributor& contributor : non_empty_sources) {
       merged_memory += contributor.series->memory_bytes;
-      for (ObjectEntry& entry : contributor.series->entries) {
-        merged.push_back(std::move(entry));
-      }
+      contributor.series->ordered.moveEntriesInto(merged);
     }
     std::stable_sort(merged.begin(), merged.end(), [](const ObjectEntry& lhs, const ObjectEntry& rhs) {
       return lhs.timestamp < rhs.timestamp;
     });
 
-    group.destination->entries.clear();
-    group.destination->entry_timestamps.clear();
-    group.destination->entry_timestamps.reserve(merged.size());
-    for (ObjectEntry& entry : merged) {
-      group.destination->entry_timestamps.push_back(entry.timestamp);
-      group.destination->entries.push_back(std::move(entry));
-    }
+    // Reseat the destination from the sorted pool with fresh ascending identity
+    // UIDs; its entries are all new, so drop its warm cache.
+    group.destination->ordered.assignSortedReuid(std::move(merged));
     group.destination->memory_bytes = merged_memory;
-    reuidSeriesLocked(*group.destination);
+    {
+      std::lock_guard cache_guard(group.destination->cache_mutex);
+      group.destination->cached_latest.reset();
+    }
 
     for (const Contributor& contributor : non_empty_sources) {
       clearEntriesLocked(*contributor.series);
     }
 
-    const Timestamp newest =
-        group.destination->entry_timestamps.empty() ? 0 : group.destination->entry_timestamps.back();
+    const Timestamp newest = group.destination->ordered.empty() ? 0 : group.destination->ordered.backTimestamp();
     applyRetention(*group.destination, newest);
   }
 
@@ -751,8 +758,8 @@ ObjectStore::ObjectDatasetSnapshot ObjectStore::detachDataset(DatasetId dataset_
     snapshot.prior_object_topic_ids.push_back(tid);
     drainSeriesReaders(*series);
     ObjectDatasetSnapshot::SeriesSnapshot series_snapshot;
-    series_snapshot.entries = std::move(series->entries);
-    series_snapshot.entry_timestamps = std::move(series->entry_timestamps);
+    // Move entries + timestamps out (uid_order is derivable — reattach rebuilds it).
+    series->ordered.detachInto(series_snapshot.entries, series_snapshot.entry_timestamps);
     series_snapshot.budget = series->budget;
     series_snapshot.memory_bytes = series->memory_bytes;
     // Normalize the now-empty series in place (memory accounting + warm cache),
@@ -806,8 +813,9 @@ void ObjectStore::reattachDataset(DatasetId dataset_id, ObjectDatasetSnapshot&& 
     if (series == nullptr) {
       continue;  // defensive: a prior series vanished (should not happen)
     }
-    series->entries = std::move(series_snapshot.entries);
-    series->entry_timestamps = std::move(series_snapshot.entry_timestamps);
+    // Restored entries may carry preserved out-of-order UID inversions, so
+    // restoreRebuild sorts uid_order from them rather than assuming identity.
+    series->ordered.restoreRebuild(std::move(series_snapshot.entries), std::move(series_snapshot.entry_timestamps));
     series->budget = series_snapshot.budget;
     series->memory_bytes = series_snapshot.memory_bytes;
   }
@@ -815,35 +823,10 @@ void ObjectStore::reattachDataset(DatasetId dataset_id, ObjectDatasetSnapshot&& 
 }
 
 void ObjectStore::clearEntriesLocked(ObjectSeries& series) {
-  series.entries.clear();
-  series.entry_timestamps.clear();
+  series.ordered.clear();
   series.memory_bytes = 0;
   // The warm cache now refers to dropped entries; reset it under its own lock
   // (mirrors the matched-series clear in flushTo / replaceDatasetFrom).
-  std::lock_guard cache_guard(series.cache_mutex);
-  series.cached_latest.reset();
-}
-
-void ObjectStore::shiftSeriesLocked(ObjectSeries& series, Timestamp shift) {
-  if (shift == 0 || series.entries.empty()) {
-    return;
-  }
-  for (size_t i = 0; i < series.entries.size(); ++i) {
-    series.entries[i].timestamp += shift;
-    series.entry_timestamps[i] = series.entries[i].timestamp;
-    // Slide the store clock AND remember the slide for payload-embedded stamps:
-    // the payload bytes (a serialized canonical object or a wire message) are not
-    // rewritten, so a consumer reading their inner timestamps must add this delta.
-    series.entries[i].payload_stamp_shift += shift;
-  }
-  std::lock_guard cache_guard(series.cache_mutex);
-  series.cached_latest.reset();
-}
-
-void ObjectStore::reuidSeriesLocked(ObjectSeries& series) {
-  for (ObjectEntry& entry : series.entries) {
-    entry.sequential_uid = SequentialUID::getNext();
-  }
   std::lock_guard cache_guard(series.cache_mutex);
   series.cached_latest.reset();
 }
@@ -895,11 +878,11 @@ ResolvedObjectEntry ObjectStore::resolveEntry(const ObjectEntry& entry) {
 }
 
 void ObjectStore::evictFront(ObjectSeries& series) {
-  if (series.entries.empty()) {
+  if (series.ordered.empty()) {
     return;
   }
 
-  const auto& front = series.entries.front();
+  const ObjectEntry& front = series.ordered.frontEntry();
   // Drop the warm cache if it holds the entry being evicted, so its bytes are
   // released with the entry rather than pinned past its lifetime.
   {
@@ -912,19 +895,19 @@ void ObjectStore::evictFront(ObjectSeries& series) {
     series.memory_bytes -= (*owned)->size();
   }
 
-  series.entries.pop_front();
-  series.entry_timestamps.erase(series.entry_timestamps.begin());
+  // Pop the front from the triple (entries + timestamps + uid_order maintenance).
+  series.ordered.evictFront();
 }
 
 void ObjectStore::applyRetention(ObjectSeries& series, Timestamp newest_ts) {
   if (series.budget.time_window_ns > 0) {
     Timestamp threshold = newest_ts - series.budget.time_window_ns;
-    while (!series.entries.empty() && series.entry_timestamps.front() < threshold) {
+    while (!series.ordered.empty() && series.ordered.frontTimestamp() < threshold) {
       evictFront(series);
     }
   }
   if (series.budget.max_memory_bytes > 0) {
-    while (!series.entries.empty() && series.memory_bytes > series.budget.max_memory_bytes) {
+    while (!series.ordered.empty() && series.memory_bytes > series.budget.max_memory_bytes) {
       evictFront(series);
     }
   }

@@ -8,11 +8,12 @@
 #include <QTest>
 
 #include "pj_widgets/DualOptionsWidget.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
 TEST(DualOptionsWidgetTest, DefaultsToFirstOption) {
-  PJ::DualOptionsWidget widget(QStringLiteral("Frame"), QStringLiteral("Arrow"));
+  PJ::DualOptionsWidget widget(u"Frame"_s, u"Arrow"_s);
 
   EXPECT_EQ(widget.selectedIndex(), 0);
   EXPECT_TRUE(widget.isFirstSelected());
@@ -20,7 +21,7 @@ TEST(DualOptionsWidgetTest, DefaultsToFirstOption) {
 }
 
 TEST(DualOptionsWidgetTest, SetterChangesSelectionAndEmitsOnce) {
-  PJ::DualOptionsWidget widget(QStringLiteral("Frame"), QStringLiteral("Arrow"));
+  PJ::DualOptionsWidget widget(u"Frame"_s, u"Arrow"_s);
   QSignalSpy spy(&widget, &PJ::DualOptionsWidget::selectionChanged);
 
   widget.setSelectedIndex(1);
@@ -35,7 +36,7 @@ TEST(DualOptionsWidgetTest, SetterChangesSelectionAndEmitsOnce) {
 }
 
 TEST(DualOptionsWidgetTest, IgnoresInvalidSelection) {
-  PJ::DualOptionsWidget widget(QStringLiteral("Frame"), QStringLiteral("Arrow"));
+  PJ::DualOptionsWidget widget(u"Frame"_s, u"Arrow"_s);
   QSignalSpy spy(&widget, &PJ::DualOptionsWidget::selectionChanged);
 
   widget.setSelectedIndex(-1);
@@ -46,7 +47,7 @@ TEST(DualOptionsWidgetTest, IgnoresInvalidSelection) {
 }
 
 TEST(DualOptionsWidgetTest, MouseClickSelectsHalf) {
-  PJ::DualOptionsWidget widget(QStringLiteral("Frame"), QStringLiteral("Arrow"));
+  PJ::DualOptionsWidget widget(u"Frame"_s, u"Arrow"_s);
   widget.resize(widget.sizeHint());
   widget.show();
   ASSERT_TRUE(QTest::qWaitForWindowExposed(&widget));
@@ -60,7 +61,7 @@ TEST(DualOptionsWidgetTest, MouseClickSelectsHalf) {
 }
 
 TEST(DualOptionsWidgetTest, KeyboardChangesSelection) {
-  PJ::DualOptionsWidget widget(QStringLiteral("Frame"), QStringLiteral("Arrow"));
+  PJ::DualOptionsWidget widget(u"Frame"_s, u"Arrow"_s);
   widget.resize(widget.sizeHint());
   widget.show();
   ASSERT_TRUE(QTest::qWaitForWindowExposed(&widget));
@@ -77,11 +78,58 @@ TEST(DualOptionsWidgetTest, KeyboardChangesSelection) {
 }
 
 TEST(DualOptionsWidgetTest, SizeHintGrowsWithText) {
-  PJ::DualOptionsWidget short_widget(QStringLiteral("F"), QStringLiteral("A"));
-  PJ::DualOptionsWidget long_widget(QStringLiteral("Frame"), QStringLiteral("Longer arrow label"));
+  PJ::DualOptionsWidget short_widget(u"F"_s, u"A"_s);
+  PJ::DualOptionsWidget long_widget(u"Frame"_s, u"Longer arrow label"_s);
 
   EXPECT_GT(long_widget.sizeHint().width(), short_widget.sizeHint().width());
   EXPECT_GT(short_widget.sizeHint().height(), 0);
+}
+
+TEST(DualOptionsWidgetTest, SupportsThreeOptions) {
+  PJ::DualOptionsWidget widget(QStringList{u"Contains"_s, u"Wildcard"_s, u"RegExp"_s});
+  QSignalSpy spy(&widget, &PJ::DualOptionsWidget::selectionChanged);
+
+  EXPECT_EQ(widget.optionCount(), 3);
+  widget.setSelectedIndex(2);
+  EXPECT_EQ(widget.selectedIndex(), 2);
+  widget.setSelectedIndex(3);
+  EXPECT_EQ(widget.selectedIndex(), 2);
+  ASSERT_EQ(spy.count(), 1);
+  EXPECT_EQ(spy.takeFirst().at(0).toInt(), 2);
+}
+
+TEST(DualOptionsWidgetTest, MouseClickSelectsThird) {
+  PJ::DualOptionsWidget widget(QStringList{u"Contains"_s, u"Wildcard"_s, u"RegExp"_s});
+  widget.resize(widget.sizeHint());
+  widget.show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(&widget));
+
+  QTest::mouseClick(&widget, Qt::LeftButton, Qt::NoModifier, QPoint(widget.width() - 2, widget.height() / 2));
+  EXPECT_EQ(widget.selectedIndex(), 2);
+
+  QTest::mouseClick(&widget, Qt::LeftButton, Qt::NoModifier, QPoint(widget.width() / 2, widget.height() / 2));
+  EXPECT_EQ(widget.selectedIndex(), 1);
+}
+
+TEST(DualOptionsWidgetTest, KeyboardStepsThroughThreeOptions) {
+  PJ::DualOptionsWidget widget(QStringList{u"Contains"_s, u"Wildcard"_s, u"RegExp"_s});
+  widget.resize(widget.sizeHint());
+  widget.show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(&widget));
+  widget.setFocus();
+
+  QTest::keyClick(&widget, Qt::Key_Right);
+  EXPECT_EQ(widget.selectedIndex(), 1);
+  QTest::keyClick(&widget, Qt::Key_Right);
+  EXPECT_EQ(widget.selectedIndex(), 2);
+  QTest::keyClick(&widget, Qt::Key_Right);
+  EXPECT_EQ(widget.selectedIndex(), 2) << "Right clamps at the last segment";
+  QTest::keyClick(&widget, Qt::Key_Left);
+  EXPECT_EQ(widget.selectedIndex(), 1);
+  QTest::keyClick(&widget, Qt::Key_Space);
+  EXPECT_EQ(widget.selectedIndex(), 2) << "Space cycles to the next segment";
+  QTest::keyClick(&widget, Qt::Key_Space);
+  EXPECT_EQ(widget.selectedIndex(), 0) << "Space wraps around after the last segment";
 }
 
 }  // namespace

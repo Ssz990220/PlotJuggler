@@ -3,7 +3,9 @@
 
 #include "pj_runtime/SessionManager.h"
 
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QLoggingCategory>
 #include <QString>
 #include <QThread>
@@ -19,24 +21,35 @@
 #include "pj_runtime/DataProcessorService.h"
 #include "pj_scripting/filter_catalogue.h"
 #include "pj_scripting/script_engine.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
 namespace {
 Q_LOGGING_CATEGORY(lcSession, "pj.runtime.session")
+
 }  // namespace
+
+QString SessionManager::normalizedSourcePath(const QString& path) {
+  if (path.isEmpty()) {
+    return {};
+  }
+  const QFileInfo info(path);
+  const QString canonical = info.canonicalFilePath();
+  return QDir::cleanPath(canonical.isEmpty() ? info.absoluteFilePath() : canonical);
+}
 
 SessionManager::SessionManager(QObject* parent) : QObject(parent) {
   // data_engine_ is already alive (member init precedes the ctor body), so the
   // processor service can bind its DerivedEngine to it.
-  processor_service_ = std::make_unique<DataProcessorService>(data_engine_);
+  processor_service_ = std::make_unique<DataProcessorService>(*this);
 
   // Install the bundled Luau filter catalogue so applied/restored filters resolve
   // to Luau classes. The resource is embedded in the app; it is absent only in a
   // headless unit test, where that binary installs its own catalogue if it needs
   // filters (there is no native C++ builtin fallback after M9).
   auto catalogue = std::make_shared<scripting::FilterCatalogue>(scripting::makeLuauEngine());
-  if (QFile f(QStringLiteral(":/filters/builtin_filters.luau")); f.open(QIODevice::ReadOnly)) {
+  if (QFile f(u":/filters/builtin_filters.luau"_s); f.open(QIODevice::ReadOnly)) {
     if (auto added = catalogue->addBundledSource(f.readAll().toStdString(), "bundled"); !added.has_value()) {
       qCWarning(lcSession) << "filter catalogue load failed:" << QString::fromStdString(added.error());
     }
@@ -52,6 +65,86 @@ SessionManager::~SessionManager() = default;
 
 DataReader SessionManager::createReader() const {
   return data_engine_.createReader();
+}
+
+void SessionManager::setDatasetSourcePath(DatasetId dataset_id, QString path) {
+  path = normalizedSourcePath(path);
+  if (path.isEmpty()) {
+    dataset_source_paths_.erase(dataset_id);
+  } else {
+    dataset_source_paths_.insert_or_assign(dataset_id, std::move(path));
+  }
+}
+
+QString SessionManager::datasetSourcePath(DatasetId dataset_id) const {
+  const auto it = dataset_source_paths_.find(dataset_id);
+  return it != dataset_source_paths_.end() ? it->second : QString{};
+}
+
+DatasetIdentityResolution SessionManager::resolveDatasetIdentity(
+    DatasetId saved_id, const QString& saved_source, const QString& saved_path) const {
+  // normalizedSourcePath canonicalizes an existing file but falls back to the
+  // cleaned-absolute form once the file is gone. For a plain (non-symlinked) path
+  // both forms coincide, so a deleted-on-disk source still compares equal to its
+  // registered path here. (A source under a symlinked directory that is stored
+  // canonical and later deleted cannot be reconciled by string comparison — see the
+  // note on resolveSeriesPath; that residual corner is out of scope.)
+  const QString normalized_saved_path = normalizedSourcePath(saved_path);
+  const auto source_matches = [&saved_source](const DatasetInfo* info) {
+    return info != nullptr && (saved_source.isEmpty() || QString::fromStdString(info->source_name) == saved_source);
+  };
+  const auto path_matches = [this, &normalized_saved_path](DatasetId id) {
+    return normalized_saved_path.isEmpty() || datasetSourcePath(id) == normalized_saved_path;
+  };
+
+  if (saved_id != 0) {
+    const DatasetInfo* exact = data_engine_.getDataset(saved_id);
+    if (source_matches(exact) && path_matches(saved_id)) {
+      return DatasetIdentityResolution{.id = saved_id};
+    }
+  }
+
+  // No portable qualifier means there is no safe remint fallback. This keeps a
+  // legacy numeric-only identity same-session-only.
+  if (normalized_saved_path.isEmpty() && saved_source.isEmpty()) {
+    return {};
+  }
+
+  std::optional<DatasetId> match;
+  for (const DatasetId candidate : data_engine_.listDatasets()) {
+    const DatasetInfo* info = data_engine_.getDataset(candidate);
+    if (!source_matches(info) || !path_matches(candidate)) {
+      continue;
+    }
+    if (match.has_value()) {
+      return DatasetIdentityResolution{.id = std::nullopt, .ambiguous = true};
+    }
+    match = candidate;
+  }
+  return DatasetIdentityResolution{.id = match};
+}
+
+DatasetIdentityResolution SessionManager::resolveObjectDatasetIdentity(
+    DatasetId saved_id, const QString& saved_source, const QString& saved_path,
+    const QString& object_topic_name) const {
+  const DatasetIdentityResolution ordinary = resolveDatasetIdentity(saved_id, saved_source, saved_path);
+  if (ordinary.id.has_value() || saved_path.isEmpty() || object_topic_name.isEmpty()) {
+    return ordinary;
+  }
+  const QString normalized_path = normalizedSourcePath(saved_path);
+  std::optional<DatasetId> match;
+  for (const ObjectTopicId topic_id : object_store_.listTopics()) {
+    const ObjectTopicDescriptor descriptor = object_store_.descriptor(topic_id);
+    if (QString::fromStdString(descriptor.topic_name) != object_topic_name ||
+        datasetSourcePath(descriptor.dataset_id) != normalized_path) {
+      continue;
+    }
+    if (match.has_value() && *match != descriptor.dataset_id) {
+      return DatasetIdentityResolution{.id = std::nullopt, .ambiguous = true};
+    }
+    match = descriptor.dataset_id;
+  }
+  return DatasetIdentityResolution{.id = match, .ambiguous = ordinary.ambiguous && !match.has_value()};
 }
 
 Timestamp SessionManager::datasetDomainDisplayOffset(DatasetId dataset_id) const {
@@ -95,14 +188,23 @@ Timestamp SessionManager::globalTimeReference() const {
     Timestamp global_min = std::numeric_limits<Timestamp>::max();
     bool found = false;
     for (const DatasetId dataset_id : data_engine_.listDatasets()) {
-      // rememberDatasetMinTimestamp pins the earliest-ever min in a single scan
-      // (the current raw min only moves forward under retention, never below it).
-      const auto bounds = datasetRawBounds(dataset_id);
-      if (!bounds.has_value()) {
-        continue;
+      // Trust the warm per-dataset pin: consult dataset_min_cache_ first so a
+      // dataset just refreshed by refreshDatasetMinTimestampsForTopics resolves to
+      // a hash-map hit, and an untouched dataset is never rescanned. This whole
+      // loop trusts the pins: any path that can RAISE a dataset's min
+      // (removeDataset/evict/clear/refill/refreshDatasetTimeReference) must
+      // invalidate that dataset's pin AND reset this global memo, or the recompute
+      // would read a stale-low origin.
+      if (const auto it = dataset_min_cache_.find(dataset_id); it != dataset_min_cache_.end()) {
+        global_min = std::min(global_min, it->second);
+        found = true;
+      } else if (const auto bounds = datasetRawBounds(dataset_id); bounds.has_value()) {
+        // Genuinely cold (unpinned) dataset: pin it in this one scan (rememberDataset-
+        // MinTimestamp only lowers, matching the pin's monotone-down invariant). An
+        // empty dataset (no bounds) never contributes a spurious 0 origin.
+        global_min = std::min(global_min, rememberDatasetMinTimestamp(dataset_id, bounds->first));
+        found = true;
       }
-      global_min = std::min(global_min, rememberDatasetMinTimestamp(dataset_id, bounds->first));
-      found = true;
     }
     global_min_cache_ = found ? global_min : 0;
   }
@@ -208,6 +310,20 @@ void SessionManager::setUseTimeOffset(bool use) {
   // (curve adapters, scenes, the playback seed, the Timeline) to re-resolve. This
   // global frame change uses the no-arg overload; the per-dataset overload is
   // reserved for single-source Timeline edits.
+  // A boolean frame flip is observable even when the session is empty and the
+  // numerical reference is zero (timeline formatting still changes), so this
+  // always emits — record the current origin so the change-detecting notify
+  // below does not re-emit for the same value on the next ingest.
+  last_notified_global_reference_ = globalTimeReference();
+  emit displayOffsetChanged();
+}
+
+void SessionManager::notifyGlobalTimeReferenceIfChanged() {
+  const Timestamp current = globalTimeReference();
+  if (current == last_notified_global_reference_) {
+    return;
+  }
+  last_notified_global_reference_ = current;
   emit displayOffsetChanged();
 }
 
@@ -264,15 +380,22 @@ std::vector<TopicId> SessionManager::commitChunks(std::vector<std::pair<TopicId,
     ids.push_back(id);
   }
   refreshDatasetMinTimestampsForTopics(ids);  // also resets global_min_cache_
+  // Freshly committed samples can lower the cross-dataset origin (a file loaded
+  // later but starting earlier). Reframe surviving adapters before the per-topic
+  // signal, which never covers a pure origin shift.
+  notifyGlobalTimeReferenceIfChanged();
   emit samplesIngested(std::move(ids), /*live=*/false);
   return changed;
 }
 
 void SessionManager::notifyIngest(QVector<TopicId> ids, bool live) {
+  refreshDatasetMinTimestampsForTopics(ids);  // also resets global_min_cache_
+  // Object-only ingest legitimately carries no scalar TopicIds; recompute the
+  // global origin before the empty/non-live samples signal is suppressed.
+  notifyGlobalTimeReferenceIfChanged();
   if (ids.isEmpty() && !live) {
     return;
   }
-  refreshDatasetMinTimestampsForTopics(ids);  // also resets global_min_cache_
   emit samplesIngested(std::move(ids), live);
 }
 
@@ -294,6 +417,13 @@ RefillGuard::RefillGuard(SessionManager& session, DatasetId dataset_id) : sessio
   // Capture the prior topic id sets BEFORE detaching: scalars for the empty-state
   // notify, object ids so rollback can tell which object topics a failed refill added.
   const std::vector<TopicId> scalar_topics = session.dataEngine().listTopics(dataset_id);
+  processor_output_topic_ids_ = session.dataProcessorService().processorOutputTopics();
+  replaced_source_topic_ids_.reserve(scalar_topics.size());
+  for (const TopicId topic_id : scalar_topics) {
+    if (processor_output_topic_ids_.count(topic_id) == 0) {
+      replaced_source_topic_ids_.push_back(topic_id);
+    }
+  }
   prior_object_topic_ids_ = session.objectStore().listTopics(dataset_id);
 
   // (1) Adapters drop cached TopicChunk* before any deque is moved (same ordering
@@ -313,6 +443,8 @@ RefillGuard::RefillGuard(RefillGuard&& other) noexcept
       scalar_snapshot_(std::move(other.scalar_snapshot_)),
       object_snapshot_(std::move(other.object_snapshot_)),
       prior_object_topic_ids_(std::move(other.prior_object_topic_ids_)),
+      replaced_source_topic_ids_(std::move(other.replaced_source_topic_ids_)),
+      processor_output_topic_ids_(std::move(other.processor_output_topic_ids_)),
       committed_(other.committed_) {
   other.session_ = nullptr;  // the moved-from guard must not roll back
   other.committed_ = true;
@@ -328,6 +460,8 @@ RefillGuard& RefillGuard::operator=(RefillGuard&& other) noexcept {
     scalar_snapshot_ = std::move(other.scalar_snapshot_);
     object_snapshot_ = std::move(other.object_snapshot_);
     prior_object_topic_ids_ = std::move(other.prior_object_topic_ids_);
+    replaced_source_topic_ids_ = std::move(other.replaced_source_topic_ids_);
+    processor_output_topic_ids_ = std::move(other.processor_output_topic_ids_);
     committed_ = other.committed_;
     other.session_ = nullptr;
     other.committed_ = true;
@@ -346,6 +480,22 @@ void RefillGuard::commit() {
   scalar_snapshot_ = {};  // free the held-aside prior data; the refilled data is kept
   object_snapshot_ = {};
   prior_object_topic_ids_.clear();
+  replaced_source_topic_ids_.clear();
+  processor_output_topic_ids_.clear();
+}
+
+Status RefillGuard::recomputeProcessors() {
+  if (session_ == nullptr || replaced_source_topic_ids_.empty()) {
+    return PJ::okStatus();
+  }
+  auto outputs = session_->dataProcessorService().rebindAndRecomputeForReplacedSources(replaced_source_topic_ids_);
+  if (!outputs.has_value()) {
+    return PJ::unexpected(outputs.error());
+  }
+  if (!outputs->empty()) {
+    session_->notifyIngest(QVector<TopicId>(outputs->begin(), outputs->end()), /*live=*/false);
+  }
+  return PJ::okStatus();
 }
 
 void RefillGuard::pruneVanishedTopics() {
@@ -359,6 +509,9 @@ void RefillGuard::pruneVanishedTopics() {
   {
     auto lock = session_->dataEngine().lockEngine();
     for (const TopicId topic_id : scalar_snapshot_.prior_topic_ids) {
+      if (processor_output_topic_ids_.count(topic_id) != 0) {
+        continue;
+      }
       const TopicStorage* storage = session_->dataEngine().getTopicStorage(topic_id);
       if (storage != nullptr && storage->empty()) {
         vanished_scalar.push_back(topic_id);
@@ -406,7 +559,14 @@ void RefillGuard::rollback() {
   }
   // (d) Object: move the prior entries back into the stable ids.
   session_->objectStore().reattachDataset(dataset_id_, std::move(object_snapshot_));
-  // (e) UI: reflect the restored topic set (non-live).
+  // (e) A failed tentative replay may have reset stateful operator internals.
+  // Replaying over the byte-for-byte restored raw snapshot repairs that state.
+  if (auto replayed = session_->dataProcessorService().rebindAndRecomputeForReplacedSources(replaced_source_topic_ids_);
+      !replayed.has_value()) {
+    qCWarning(lcSession).noquote() << "RefillGuard rollback processor replay failed:"
+                                   << QString::fromStdString(replayed.error());
+  }
+  // (f) UI: reflect the restored topic set (non-live).
   const std::vector<TopicId> current = session_->dataEngine().listTopics(dataset_id_);
   session_->notifyIngest(QVector<TopicId>(current.begin(), current.end()), /*live=*/false);
 }
@@ -474,10 +634,14 @@ void SessionManager::replaceDataset(
   // input chunks wholesale, so the derived output must be reset+replayed (not
   // appended). Notify those outputs too, so plots showing filtered curves refresh.
   if (processor_service_ && !changed.isEmpty()) {
-    const std::vector<TopicId> outputs =
-        processor_service_->recomputeForReplacedSources(std::vector<TopicId>(changed.begin(), changed.end()));
-    for (const TopicId out : outputs) {
-      changed.push_back(out);
+    auto outputs =
+        processor_service_->rebindAndRecomputeForReplacedSources(std::vector<TopicId>(changed.begin(), changed.end()));
+    if (outputs.has_value()) {
+      for (const TopicId out : *outputs) {
+        changed.push_back(out);
+      }
+    } else {
+      qCWarning(lcSession).noquote() << "replaceDataset (processors):" << QString::fromStdString(outputs.error());
     }
   }
 
@@ -628,9 +792,11 @@ std::shared_ptr<std::mutex> SessionManager::parserMutexForObjectTopic(ObjectTopi
 }
 
 void SessionManager::recordLoadedSource(QString path, QString prefix, QString plugin_id, QString plugin_config_json) {
-  LoadedSource source{std::move(path), std::move(prefix), std::move(plugin_id), std::move(plugin_config_json)};
-  // Dedup by path: a reload of an already-tracked file updates its entry in
-  // place (keeping list order) rather than appending a duplicate.
+  LoadedSource source{
+      normalizedSourcePath(path), std::move(prefix), std::move(plugin_id), std::move(plugin_config_json)};
+  // Dedup by physical path (matching datasetSourcePath's normalization): a reload
+  // — including a symlink/relative alias — updates its entry in place (keeping
+  // list order) rather than appending a duplicate.
   const auto it = std::find_if(loaded_sources_.begin(), loaded_sources_.end(), [&source](const LoadedSource& existing) {
     return existing.path == source.path;
   });
@@ -645,7 +811,47 @@ void SessionManager::evictDatasetObjects(DatasetId dataset_id) {
   evictObjectTopics(object_store_.listTopics(dataset_id));
 }
 
+void SessionManager::removeDataset(DatasetId dataset_id) {
+  data_engine_.removeDataset(dataset_id);
+  dataset_source_paths_.erase(dataset_id);
+  // The engine no longer holds this dataset; drop its pinned earliest-sample and
+  // the memoized cross-dataset origin so globalTimeReference() re-scans the
+  // survivors (removing the earliest dataset must re-base the display origin).
+  invalidateDatasetMinTimestamp(dataset_id);
+  // If that re-base actually moved the origin, every surviving curve adapter now
+  // holds a stale display offset — no per-topic samplesIngested covers a pure
+  // origin shift, so signal the global reframe. No-op when "Use time offset" is
+  // off (globalTimeReference() is 0 both times).
+  notifyGlobalTimeReferenceIfChanged();
+}
+
+void SessionManager::refreshDatasetTimeReference(DatasetId dataset_id) {
+  // Drop the pinned min so globalTimeReference() re-scans this dataset's current
+  // data (the terminal flush may have committed data earlier than the running pin).
+  invalidateDatasetMinTimestamp(dataset_id);
+  notifyGlobalTimeReferenceIfChanged();
+}
+
+std::unordered_set<DatasetId> SessionManager::datasetsOwningObjectTopics(
+    const std::vector<ObjectTopicId>& topic_ids) const {
+  std::unordered_set<DatasetId> affected_datasets;
+  affected_datasets.reserve(topic_ids.size());
+  for (const ObjectTopicId topic_id : topic_ids) {
+    const DatasetId dataset_id = object_store_.descriptor(topic_id).dataset_id;
+    if (dataset_id != 0) {
+      affected_datasets.insert(dataset_id);
+    }
+  }
+  return affected_datasets;
+}
+
 void SessionManager::evictObjectTopics(const std::vector<ObjectTopicId>& topic_ids) {
+  // Object samples participate in the cross-dataset raw origin. Remember every
+  // affected dataset BEFORE its descriptor disappears, then invalidate their
+  // pinned minima after removal (invalidating only these keeps unrelated
+  // retention pins intact).
+  const std::unordered_set<DatasetId> affected_datasets = datasetsOwningObjectTopics(topic_ids);
+
   // removeTopic touches the ObjectStore, not the parser map, so keep it out of
   // the parser lock. Erased slots are collected and destroyed after the lock
   // releases: a slot dtor may run plugin teardown (dlclose), which must not run
@@ -661,10 +867,18 @@ void SessionManager::evictObjectTopics(const std::vector<ObjectTopicId>& topic_i
       object_topic_parsers_.erase(it);
     }
   }
+  for (const DatasetId dataset_id : affected_datasets) {
+    invalidateDatasetMinTimestamp(dataset_id);
+  }
+  notifyGlobalTimeReferenceIfChanged();
   // erased_slots destructs here, after the last unlock.
 }
 
 void SessionManager::clearAllObjects() {
+  // Same origin concern as evictObjectTopics: collect every dataset that owned an
+  // object topic before the store is cleared, so their pinned minima can be
+  // invalidated and the global origin re-scanned over the survivors.
+  const std::unordered_set<DatasetId> affected_datasets = datasetsOwningObjectTopics(object_store_.listTopics());
   object_store_.clear();
   // Swap the map into a local under the lock, then let it destruct after the
   // lock releases — slot dtors may run plugin teardown (dlclose).
@@ -673,6 +887,10 @@ void SessionManager::clearAllObjects() {
     std::unique_lock lock(object_parsers_mutex_);
     drained.swap(object_topic_parsers_);
   }
+  for (const DatasetId dataset_id : affected_datasets) {
+    invalidateDatasetMinTimestamp(dataset_id);
+  }
+  notifyGlobalTimeReferenceIfChanged();
   // drained destructs here, after the lock is released.
 }
 

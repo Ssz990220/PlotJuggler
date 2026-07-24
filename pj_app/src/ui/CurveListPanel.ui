@@ -23,28 +23,11 @@
       <property name="bottomMargin"><number>0</number></property>
       <item><widget class="QLabel" name="labelTimeseries"><property name="text"><string>Datasets</string></property></widget></item>
       <item>
-       <spacer name="searchTimeseriesGap">
+       <spacer name="datasetsHeaderStretch">
         <property name="orientation"><enum>Qt::Horizontal</enum></property>
-        <property name="sizeType"><enum>QSizePolicy::Fixed</enum></property>
-        <property name="sizeHint" stdset="0"><size><width>2</width><height>1</height></size></property>
+        <property name="sizeType"><enum>QSizePolicy::Expanding</enum></property>
+        <property name="sizeHint" stdset="0"><size><width>0</width><height>1</height></size></property>
        </spacer>
-      </item>
-      <item>
-       <widget class="QToolButton" name="buttonSearchTimeseries">
-        <property name="minimumSize"><size><width>20</width><height>20</height></size></property>
-        <property name="maximumSize"><size><width>20</width><height>20</height></size></property>
-        <property name="iconSize"><size><width>20</width><height>20</height></size></property>
-        <property name="text"><string/></property>
-        <property name="autoRaise"><bool>true</bool></property>
-        <property name="focusPolicy"><enum>Qt::FocusPolicy::NoFocus</enum></property>
-       </widget>
-      </item>
-      <item>
-       <widget class="QLineEdit" name="lineEditFilter">
-        <property name="placeholderText"><string>Filter...</string></property>
-        <property name="minimumSize"><size><width>0</width><height>24</height></size></property>
-        <property name="maximumSize"><size><width>16777215</width><height>24</height></size></property>
-       </widget>
       </item>
       <item>
        <widget class="QToolButton" name="buttonDatasetsMenu">
@@ -53,6 +36,70 @@
         <property name="maximumSize"><size><width>24</width><height>24</height></size></property>
         <property name="iconSize"><size><width>20</width><height>20</height></size></property>
         <property name="text"><string/></property>
+        <property name="autoRaise"><bool>true</bool></property>
+        <property name="focusPolicy"><enum>Qt::FocusPolicy::NoFocus</enum></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QWidget" name="widgetSearchTimeseries" native="true">
+     <property name="minimumSize"><size><width>0</width><height>24</height></size></property>
+     <property name="maximumSize"><size><width>16777215</width><height>24</height></size></property>
+     <layout class="QHBoxLayout" name="searchTimeseriesLayout">
+      <property name="spacing"><number>0</number></property>
+      <property name="leftMargin"><number>0</number></property>
+      <property name="topMargin"><number>0</number></property>
+      <property name="rightMargin"><number>0</number></property>
+      <property name="bottomMargin"><number>0</number></property>
+      <item>
+       <widget class="PJ::Search" name="filterTimeseries">
+        <property name="placeholder"><string>Filter...</string></property>
+       </widget>
+      </item>
+      <item>
+       <spacer name="searchFilterGap">
+        <property name="orientation"><enum>Qt::Horizontal</enum></property>
+        <property name="sizeType"><enum>QSizePolicy::Fixed</enum></property>
+        <property name="sizeHint" stdset="0"><size><width>8</width><height>1</height></size></property>
+       </spacer>
+      </item>
+      <item>
+       <widget class="QToolButton" name="buttonFilterPlot">
+        <property name="toolTip"><string>Show/hide plot series</string></property>
+        <property name="minimumSize"><size><width>24</width><height>24</height></size></property>
+        <property name="maximumSize"><size><width>24</width><height>24</height></size></property>
+        <property name="iconSize"><size><width>20</width><height>20</height></size></property>
+        <property name="text"><string/></property>
+        <property name="checkable"><bool>true</bool></property>
+        <property name="checked"><bool>true</bool></property>
+        <property name="autoRaise"><bool>true</bool></property>
+        <property name="focusPolicy"><enum>Qt::FocusPolicy::NoFocus</enum></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QToolButton" name="buttonFilterScene2D">
+        <property name="toolTip"><string>Show/hide 2D image topics</string></property>
+        <property name="minimumSize"><size><width>24</width><height>24</height></size></property>
+        <property name="maximumSize"><size><width>24</width><height>24</height></size></property>
+        <property name="iconSize"><size><width>20</width><height>20</height></size></property>
+        <property name="text"><string/></property>
+        <property name="checkable"><bool>true</bool></property>
+        <property name="checked"><bool>true</bool></property>
+        <property name="autoRaise"><bool>true</bool></property>
+        <property name="focusPolicy"><enum>Qt::FocusPolicy::NoFocus</enum></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QToolButton" name="buttonFilterScene3D">
+        <property name="toolTip"><string>Show/hide 3D scene topics</string></property>
+        <property name="minimumSize"><size><width>24</width><height>24</height></size></property>
+        <property name="maximumSize"><size><width>24</width><height>24</height></size></property>
+        <property name="iconSize"><size><width>20</width><height>20</height></size></property>
+        <property name="text"><string/></property>
+        <property name="checkable"><bool>true</bool></property>
+        <property name="checked"><bool>true</bool></property>
         <property name="autoRaise"><bool>true</bool></property>
         <property name="focusPolicy"><enum>Qt::FocusPolicy::NoFocus</enum></property>
        </widget>
@@ -99,20 +146,8 @@
            </spacer>
           </item>
           <item>
-           <widget class="QToolButton" name="buttonSearchCustom">
-            <property name="minimumSize"><size><width>20</width><height>20</height></size></property>
-            <property name="maximumSize"><size><width>20</width><height>20</height></size></property>
-            <property name="iconSize"><size><width>20</width><height>20</height></size></property>
-            <property name="text"><string/></property>
-            <property name="autoRaise"><bool>true</bool></property>
-            <property name="focusPolicy"><enum>Qt::FocusPolicy::NoFocus</enum></property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QLineEdit" name="lineEditCustomFilter">
-            <property name="placeholderText"><string>Filter...</string></property>
-            <property name="minimumSize"><size><width>0</width><height>24</height></size></property>
-            <property name="maximumSize"><size><width>16777215</width><height>24</height></size></property>
+           <widget class="PJ::Search" name="filterCustom">
+            <property name="placeholder"><string>Filter...</string></property>
            </widget>
           </item>
           <item>
@@ -160,6 +195,11 @@
   </layout>
  </widget>
  <customwidgets>
+  <customwidget>
+   <class>PJ::Search</class>
+   <extends>QWidget</extends>
+   <header>pj_widgets/Search.h</header>
+  </customwidget>
   <customwidget>
    <class>PJ::CurveTreeView</class>
    <extends>QTreeWidget</extends>

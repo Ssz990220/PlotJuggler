@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/versions.env"
 
 # aqtinstall lays Qt out under a host-specific subdir: linux uses gcc_64, macOS
 # uses macos (arch-neutral universal), windows uses msvc2022_64. Pick by uname so
@@ -9,7 +10,7 @@ case "$(uname -s)" in
   Darwin) QT_HOST_DIR="macos" ;;
   *)      QT_HOST_DIR="gcc_64" ;;
 esac
-QT_DIR="${SCRIPT_DIR}/.qt/6.11.1/${QT_HOST_DIR}"
+QT_DIR="${SCRIPT_DIR}/.qt/${PJ_QT_VERSION}/${QT_HOST_DIR}"
 
 # nproc is coreutils-only; macOS provides the count via sysctl.
 nproc() { command nproc 2>/dev/null || sysctl -n hw.ncpu; }
@@ -21,15 +22,17 @@ nproc() { command nproc 2>/dev/null || sysctl -n hw.ncpu; }
 # RelWithDebInfo configure, so the Conan dependency closure is reused as-is (no
 # Debug rebuild) and only our own sources are instrumented.
 TSAN=0
+SKIP_CONAN_INSTALL=0
 for arg in "$@"; do
   case "$arg" in
     --tsan) TSAN=1 ;;
-    *) echo "unknown argument: $arg (supported: --tsan)" >&2; exit 2 ;;
+    --skip-conan-install) SKIP_CONAN_INSTALL=1 ;;
+    *) echo "unknown argument: $arg (supported: --tsan, --skip-conan-install)" >&2; exit 2 ;;
   esac
 done
 
 if [[ ! -d "$QT_DIR" ]]; then
-  echo "Qt 6.11.1 not found at ${QT_DIR}."
+  echo "Qt ${PJ_QT_VERSION} not found at ${QT_DIR}."
   echo "Install it with: ./install_qt6.sh"
   exit 1
 fi
@@ -39,6 +42,30 @@ if command -v ccache &>/dev/null; then
   CMAKE_CCACHE_ARGS+=("-DCMAKE_C_COMPILER_LAUNCHER=ccache" "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache")
 fi
 
+# Release/packaging pipelines export these to skip building the test suite
+# and the scene3D dev demos (neither ships, and no release flow runs ctest).
+PJ_FLAG_ARGS=()
+[[ -n "${PJ_BUILD_TESTS:-}" ]] && PJ_FLAG_ARGS+=("-DPJ_BUILD_TESTS=${PJ_BUILD_TESTS}")
+[[ -n "${PJ_BUILD_DEMOS:-}" ]] && PJ_FLAG_ARGS+=("-DPJ_BUILD_DEMOS=${PJ_BUILD_DEMOS}")
+
+# CI can opt into PlotJuggler's authenticated Artifactory remote while local
+# builds and untrusted pull requests remain reproducible against ConanCenter.
+# Keep the remotes explicit so unrelated developer remotes can never shadow the
+# stock recipes. Artifactory is a binary/recipe cache; ConanCenter remains the
+# fallback for anything that has not been mirrored yet.
+CONAN_REMOTE_ARGS=(-r conancenter)
+if [[ "${PJ_USE_JFROG:-false}" == "true" ]]; then
+  CONAN_REMOTE_ARGS=(-r plotjuggler-conan -r conancenter)
+fi
+
+# Committed lockfile pins every recipe revision so local and CI builds resolve
+# the exact graph JFrog holds binaries for (rebuilds happen only when the lock
+# moves). --lockfile-partial keeps platform-only additions resolvable.
+CONAN_LOCKFILE_ARGS=()
+if [[ -f "${SCRIPT_DIR}/conan.lock" ]]; then
+  CONAN_LOCKFILE_ARGS=(--lockfile="${SCRIPT_DIR}/conan.lock" --lockfile-partial)
+fi
+
 # Foundation concurrency tests exercised under ThreadSanitizer. Keep in sync with
 # the `tsan` job in .github/workflows/linux-ci.yml.
 TSAN_TESTS=(engine_thread_safety_test engine_concurrency_test)
@@ -46,8 +73,13 @@ TSAN_TESTS=(engine_thread_safety_test engine_concurrency_test)
 if [[ "$TSAN" == "1" ]]; then
   BUILD_DIR="${SCRIPT_DIR}/build-tsan"
 
-  conan install "$SCRIPT_DIR" --output-folder="$BUILD_DIR" --build=missing \
-    -s build_type=RelWithDebInfo -s compiler.cppstd=20 -r conancenter
+  if [[ "$SKIP_CONAN_INSTALL" == "0" ]]; then
+    conan install "$SCRIPT_DIR" --output-folder="$BUILD_DIR" --build=missing "${CONAN_LOCKFILE_ARGS[@]}" \
+      -s build_type=RelWithDebInfo -s compiler.cppstd=20 "${CONAN_REMOTE_ARGS[@]}"
+  elif [[ ! -f "$BUILD_DIR/conan_toolchain.cmake" ]]; then
+    echo "Missing $BUILD_DIR/conan_toolchain.cmake; run Conan install first." >&2
+    exit 1
+  fi
 
   # PJ4_BUILD_APP=OFF + building only the foundation test targets keeps Qt out of
   # the picture entirely (no Qt code is compiled), even though configure still
@@ -58,7 +90,7 @@ if [[ "$TSAN" == "1" ]]; then
     -DCMAKE_PREFIX_PATH="${QT_DIR}" \
     -DPJ_ENABLE_TSAN=ON \
     -DPJ4_BUILD_APP=OFF \
-    "${CMAKE_CCACHE_ARGS[@]+"${CMAKE_CCACHE_ARGS[@]}"}"
+    "${CMAKE_CCACHE_ARGS[@]+"${CMAKE_CCACHE_ARGS[@]}"}" "${PJ_FLAG_ARGS[@]+"${PJ_FLAG_ARGS[@]}"}"
 
   cmake --build "$BUILD_DIR" --target "${TSAN_TESTS[@]}" -j "$(nproc)"
 
@@ -73,17 +105,27 @@ fi
 
 BUILD_DIR="${SCRIPT_DIR}/build"
 
-# Pin resolution to conancenter. A developer machine may have private org remotes
-# (e.g. an Artifactory) listed ahead of conancenter that host forked recipes under
-# a user channel — those would shadow the stock recipes and drag a whole `@<org>`
-# dependency subtree into the graph. conancenter carries every PJ4 dependency.
-conan install "$SCRIPT_DIR" --output-folder="$BUILD_DIR" --build=missing \
-  -s build_type=RelWithDebInfo -s compiler.cppstd=20 -r conancenter
+# Pin resolution to the explicit remote list selected above. A developer machine
+# may have unrelated private remotes that host forked recipes under a user
+# channel; those must never shadow PJ4's intended dependency graph.
+if [[ "$SKIP_CONAN_INSTALL" == "0" ]]; then
+  conan install "$SCRIPT_DIR" --output-folder="$BUILD_DIR" --build=missing "${CONAN_LOCKFILE_ARGS[@]}" \
+    -s build_type=RelWithDebInfo -s compiler.cppstd=20 "${CONAN_REMOTE_ARGS[@]}"
+elif [[ ! -f "$BUILD_DIR/conan_toolchain.cmake" ]]; then
+  echo "Missing $BUILD_DIR/conan_toolchain.cmake; run Conan install first." >&2
+  exit 1
+fi
 
 cmake -S "$SCRIPT_DIR" -B "$BUILD_DIR" \
   -DCMAKE_TOOLCHAIN_FILE="$BUILD_DIR/conan_toolchain.cmake" \
   -DCMAKE_BUILD_TYPE=RelWithDebInfo \
   -DCMAKE_PREFIX_PATH="${QT_DIR}" \
-  "${CMAKE_CCACHE_ARGS[@]+"${CMAKE_CCACHE_ARGS[@]}"}"
+  -DPJ_VERSION="${PJ_VERSION:-${PJ_APP_VERSION}}" \
+  "${CMAKE_CCACHE_ARGS[@]+"${CMAKE_CCACHE_ARGS[@]}"}" "${PJ_FLAG_ARGS[@]+"${PJ_FLAG_ARGS[@]}"}"
+
+# Surface the compile DB (CMAKE_EXPORT_COMPILE_COMMANDS writes it under build/) at
+# the repo root so clangd/editors resolve includes without extra config. The root
+# path is gitignored; the relative target survives a worktree move.
+ln -sf "build/compile_commands.json" "$SCRIPT_DIR/compile_commands.json"
 
 cmake --build "$BUILD_DIR" -j "$(nproc)"

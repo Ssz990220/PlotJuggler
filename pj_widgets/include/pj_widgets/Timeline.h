@@ -8,6 +8,7 @@
 #include <QList>
 #include <QPoint>
 #include <QString>
+#include <QTimer>
 #include <QWidget>
 #include <QtGlobal>
 #include <set>
@@ -231,6 +232,8 @@ class Timeline : public QWidget {
   /// pan/scroll position, expressed in data terms so it survives a zoom change
   /// and re-maps correctly when the same data reloads. 0 when there is no data.
   [[nodiscard]] qint64 viewportLeftDisplayNs() const;
+  /// Vertical row-scroll position in pixels.
+  [[nodiscard]] int viewportTopOffsetPx() const;
   /// Current width (px) of the left name column (the splitter's first pane).
   [[nodiscard]] int nameColumnWidth() const;
 
@@ -353,6 +356,7 @@ class Timeline : public QWidget {
   /// start/end snaps to a neighbouring bar's start/end within a pixel threshold
   /// (a guide line marks the alignment); dragging further releases the snap.
   void setSnapEnabled(bool enabled);
+  [[nodiscard]] bool snapEnabled() const;
   /// Put the timeline into a read-only "frozen" state. When locked, the view is fully
   /// inert: every user manipulation gesture is suppressed — bar-offset drags, name-row
   /// reorder + selection, the Align button, the merge prompt — as is needle SEEKING (dragging
@@ -371,6 +375,8 @@ class Timeline : public QWidget {
   /// Scroll so `display_ns` sits at the visible viewport's left edge (clamped to
   /// the scrollable range). Apply after setZoom and after the tracks are loaded.
   void setViewportLeftDisplayNs(qint64 display_ns);
+  /// Restore vertical row scrolling after the track order is settled.
+  void setViewportTopOffsetPx(int offset_px);
   /// Enable/disable auto-zoom (default on). When on, the view re-fits the largest
   /// extent on new data and on fitToContents(); enabling it re-fits immediately.
   void setAutoZoomEnabled(bool enabled);
@@ -386,6 +392,8 @@ class Timeline : public QWidget {
  signals:
   /// Live during a bar drag: the new absolute display offset (ns) for a source.
   void offsetChangeRequested(quint64 id, qint64 offset_ns);
+  /// A bar-offset drag ended after changing at least one source.
+  void offsetChangeCommitted();
   /// The Align button was pressed.
   void alignRequested();
   /// The user dragged the playhead / clicked the ruler to a new display-seconds.
@@ -405,6 +413,8 @@ class Timeline : public QWidget {
   /// remembers it so the column keeps that width across rebuilds / panel toggles
   /// (it is otherwise re-pinned to the playback-aligned floor) and persists it.
   void nameColumnWidthChanged(int width_px);
+  /// A user zoom/pan/scroll gesture ended with changed view chrome.
+  void viewStateChangeCommitted();
 
  protected:
   void wheelEvent(QWheelEvent* event) override;
@@ -603,6 +613,10 @@ class Timeline : public QWidget {
   };
   std::vector<DragMember> drag_group_;
   double drag_start_scene_x_ = 0.0;
+  bool bar_drag_changed_ = false;
+  // Coalesces per-event view-chrome changes (wheel ticks, name-column drags)
+  // into one viewStateChangeCommitted after the gesture goes quiet.
+  QTimer view_state_commit_debounce_;
   bool auto_zoom_ = true;           // re-fit the largest extent on new data / fitToContents()
   bool fit_pending_ = false;        // a fitToContents()/enable requested a fit on the next rebuild
   bool force_fit_pending_ = false;  // zoomToFit() requested a fit ignoring the auto-zoom preference

@@ -136,7 +136,7 @@ class PosesInFrameLayer : public Scene3DLayer {
   float gizmo_opacity_ = 1.0f;
   bool x_arrow_only_ = false;
   bool override_color_enabled_ = false;
-  QColor override_color_ = QColor::fromRgbF(0.95f, 0.30f, 0.30f);  // default X red
+  QColor override_color_{255, 0, 0};  // red, the panel-wide override/solid default
   int style_revision_ = 0;
 
   // Identity of the sample + style currently staged, so a scrub within one

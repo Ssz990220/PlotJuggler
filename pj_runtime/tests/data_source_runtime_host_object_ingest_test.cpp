@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "hermetic_catalog.h"
 #include "pj_base/sdk/data_source_host_views.hpp"
 #include "pj_base/sdk/service_registry.hpp"
 #include "pj_base/sdk/service_traits.hpp"
@@ -24,6 +25,7 @@
 #include "pj_plugins/host/service_registry_builder.hpp"
 #include "pj_runtime/DataSourceRuntimeHost.h"
 #include "pj_runtime/ExtensionCatalogService.h"
+using namespace Qt::StringLiterals;
 
 #ifndef PJ_RUNTIME_HOST_OBJECT_PARSER_PATH
 #error "PJ_RUNTIME_HOST_OBJECT_PARSER_PATH must be defined"
@@ -34,7 +36,7 @@ namespace {
 class DataSourceRuntimeHostObjectIngestTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    ASSERT_NE(catalog_.findParserByEncoding(QStringLiteral("runtime_host_object")), nullptr);
+    ASSERT_NE(catalog_.findParserByEncoding(u"runtime_host_object"_s), nullptr);
 
     auto dataset_or = engine_.createDataset(PJ::DatasetDescriptor{.source_name = "test", .time_domain_id = 0});
     ASSERT_TRUE(dataset_or.has_value()) << dataset_or.error();
@@ -88,7 +90,8 @@ class DataSourceRuntimeHostObjectIngestTest : public ::testing::Test {
   }
 
   QFileInfo plugin_file_{QString::fromUtf8(PJ_RUNTIME_HOST_OBJECT_PARSER_PATH)};
-  PJ::ExtensionCatalogService catalog_{plugin_file_.absolutePath()};
+  PJ::test::HermeticCatalog catalog_box_{plugin_file_.absolutePath()};
+  PJ::ExtensionCatalogService& catalog_{catalog_box_.service};
   PJ::DataEngine engine_;
   PJ::ObjectStore object_store_;
   PJ::DatasetId dataset_id_{0};

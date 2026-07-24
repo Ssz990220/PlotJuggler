@@ -9,7 +9,7 @@ expanded into scalar columns at ingest time.
 `ObjectStore` owns:
 
 - object topic registration scoped by `DatasetId`
-- monotonically non-decreasing timestamped entries per topic
+- timestamped entries per topic, kept in non-decreasing order (out-of-order pushes are inserted, not dropped)
 - eager payload storage through `pushOwned()`
 - lazy payload storage through `pushLazy()`
 - at-or-before timestamp lookup
@@ -50,8 +50,38 @@ struct RetentionBudget {
 Topic names must be unique within one dataset. The same topic name may appear in
 different datasets.
 
-Entries in a topic must be pushed in monotonically non-decreasing timestamp
-order. Equal timestamps are allowed. Out-of-order writes fail.
+Entries are stored per topic in non-decreasing timestamp order. The common case
+is an in-order push (amortized O(1) append). An **out-of-order push is lossless**:
+the entry is inserted at its sorted position (O(n) shift) rather than dropped, so
+the series stays ordered for at-or-before lookup. Equal timestamps are allowed and
+preserve arrival order. This matches the scalar engine's lossless out-of-order
+contract and is what lets real multi-publisher streams ingest fully — notably ROS
+`/tf`, whose per-message publish timestamps legitimately interleave (~1%). (The
+sorted-insert assumes regressions are the exception, not the rule; a pathologically
+unsorted stream degrades toward O(n²).)
+
+After an out-of-order insert, array/timestamp order diverges from UID (arrival)
+order: the new entry sits at an earlier array slot yet carries the newest UID.
+This is reconciled by an internal per-series `uid_order` side index (positions
+into `entries` kept sorted by ascending UID), so the UID-cursor APIs stay a valid
+binary-search path without `entries` itself being UID-sorted. The public
+`entry_timestamps` / `EntryTimestampsView` sorted-vector contract is unchanged.
+
+The three per-series arrays (`entries` + ascending `entry_timestamps` +
+`uid_order`) are encapsulated in one internal value type,
+`OrderedEntries` (`pj_datastore/ordered_entries.hpp`, which also owns
+`ObjectEntry`). It holds the triple privately and enforces the ordering
+invariants **by construction**: every mutation goes through a method
+(`push`/`evictFront`/`shift`/`reuidAll`/`rebuildUidOrder`/the bulk cross-series
+moves) that keeps the three arrays in lockstep, so no ObjectStore call site can
+desync them by hand, and a `#ifndef NDEBUG` checker verifies the `uid_order`
+permutation from the two O(n) paths plus an O(1) tail check on the in-order
+append. `OrderedEntries` owns only the ordered-entry triple: locking (the
+per-series `shared_mutex`), the warm `latestAt` cache, retention/memory
+accounting, and payload resolution stay in `ObjectStore`/`ObjectSeries`, and the
+caller holds the series lock across every call. This is pure encapsulation — the
+public read/write semantics and the `entry_timestamps` / `EntryTimestampsView`
+sorted-vector contract are unchanged.
 
 ## Entry Identity (SequentialUID)
 
@@ -67,12 +97,20 @@ Properties consumers can rely on:
   caches key on it safely.
 - **Sparse per topic.** Allocation is global across all topics, so consecutive
   entries of one topic are *not* consecutive integers. Never iterate a topic by
-  incrementing UID values; step with `nextUIDAfter()`.
+  incrementing UID values; a streaming consumer steps them with `drainNewSince()`.
 - **A generation marker.** `flushTo()` and `replaceDatasetFrom()` assign fresh
   UIDs to the entries they move into the destination topic. A cursor whose UID
   falls below `firstSequentialUID()` therefore detects both "evicted past me"
   and "dataset replaced" with one comparison (eviction is front-only, so the
   first retained UID passing the cursor is exactly the missed-entry condition).
+- **UID order == arrival order, independent of timestamp order.** After an
+  out-of-order push the newest entry has the largest UID but sits at an earlier
+  array slot; the arrival-cursor reads (`at(uid)`, `drainNewSince`,
+  `firstSequentialUID`) stay O(log n) per entry via the `uid_order` side index
+  rather than searching `entries` directly.
+  `firstSequentialUID` returns the smallest *retained* UID, which need not be
+  `entries.front()` (a partial eviction can leave a smaller-UID entry behind an
+  out-of-order one).
 
 ## Write Paths
 
@@ -101,7 +139,8 @@ caller-supplied raw timestamp shifts.
 - Shared object topic names are fused into the anchor topic: entries are
   interleaved by shifted timestamp, equal timestamps keep anchor entries before
   source entries, and the fused series receives fresh ascending
-  `SequentialUID`s so `at(uid)` remains a valid binary-search path.
+  `SequentialUID`s (via `reuidSeriesLocked`, which also makes `uid_order` the
+  identity permutation) so `at(uid)` remains a valid binary-search path.
 - Source-only object topics are reparented to the anchor dataset and keep their
   `ObjectTopicId`; source datasets are emptied.
 - Duplicate or self sources are rejected before mutation, so that validation is
@@ -127,17 +166,42 @@ caller-supplied raw timestamp shifts.
 or equal to the query timestamp. It returns `std::nullopt` if the topic is
 unknown, empty, or has no entry at or before that time.
 
-`at(id, index)` resolves an entry by sequence index.
+`at(id, index)` resolves an entry by sequence index (timestamp-positional; the
+in-order array slot, unaffected by the `uid_order` index).
 
-`at(id, sequential_uid)` resolves an entry by stable UID (binary search; nullopt
-when evicted, invalid, or from another topic/generation).
+`at(id, sequential_uid)` resolves an entry by stable UID (O(log n) via the
+`uid_order` side index; nullopt when evicted, invalid, or from another
+topic/generation).
 
 `indexAt(id, timestamp)` returns the index that `latestAt()` would resolve.
 
-`firstSequentialUID(id)` returns the first retained entry's UID;
-`nextUIDAfter(id, after)` returns the next retained UID strictly greater than
-`after` (an invalid `after` starts from the front). Together they let a replay
-cursor walk a topic's sparse UID sequence at one binary search per entry.
+`firstSequentialUID(id)` returns the smallest retained UID (O(log n) via the
+`uid_order` side index — the front of UID order, which after an out-of-order
+insert need not be `entries.front()`). `drainNewSince(id, cursor)` returns every
+entry with UID strictly greater than `cursor`, in ascending-UID (arrival) order
+with each payload resolved, then advances `cursor` — the single arrival-order read
+primitive, for a streaming consumer ingesting each new entry exactly once into an
+order-independent sink (the TF buffer). It catches late/out-of-order arrivals a
+time window would miss, and is eviction-safe (an entry dropped before it resolves
+is skipped but still advances the cursor). One binary search per entry.
+
+`maxUidAtOrBefore(id, t)` returns the largest UID among entries with `ts <= t`
+(invalid when none). This is the high-water arrival UID of everything at-or-before
+`t` — distinct from `latestAt(t)->sequential_uid`, the newest-*timestamp* entry's
+UID, which an out-of-order insert (old ts, newest UID) can leave *below* a retained
+entry's. A live time-window consumer that tracks "everything consumed up to `t`"
+must advance its cursor to this, not to `latestAt`'s UID, or a late out-of-order
+entry is re-detected every tick. O(count of entries with `ts <= t`).
+
+`rangeByTime(id, lo, hi)` returns the entries with `lo < ts <= hi` as
+`(uid, timestamp)` pairs in ascending-timestamp order — the correct primitive for
+a **time-window** consumer (e.g. incremental occupancy-grid updates). Use it
+instead of walking the arrival-order UID cursor for a window: an out-of-order
+entry (older ts, newest UID) can sit at any UID position, so a UID walk would skip
+it. The call itself resolves no payload under the store lock; the caller resolves
+each with `at(uid)` afterwards — one entry at a time under `at()`'s own brief lock,
+nullopt if evicted in between. `hi <= lo` (and unknown/empty topics) yield an empty
+window. O(log n + window).
 
 `entryTimestamps(id)` returns an `EntryTimestampsView` that holds the series read
 lock while the timestamp span is inspected.
@@ -178,8 +242,12 @@ cache: the most-recently-resolved `ResolvedObjectEntry`, keyed by its
   same entry; no validation against the underlying bytes is needed.
 - **Invalidation.** The slot is dropped when its entry is evicted (`evictFront`
   matching the cached UID) and when the series is replaced or flushed
-  (`replaceDatasetFrom`, `flushTo`). A plain `push` never needs to invalidate: a
-  new entry has a new UID, so a query mapping to it simply misses.
+  (`replaceDatasetFrom`, `flushTo`). An **in-order** push never needs to
+  invalidate (the new entry has a new UID, so a query mapping to it simply
+  misses), but an **out-of-order** push does — it can change which entry an
+  at-or-before lookup lands on, so the cached `latestAt` slot is dropped. The
+  `OrderedEntries::push()` return value (`kInOrderAppend` vs `kOutOfOrderInsert`)
+  is what tells the caller which case to reset.
 - **Residency.** For a lazy topic this keeps at most one materialized payload
   resident per topic (the current sample) — a deliberate relaxation of "lazy
   entries are never resident". It never holds more than the current entry, so the
@@ -211,6 +279,12 @@ The store has one global shared mutex for topic lookup and one shared mutex per
 topic series. Reads can proceed concurrently with reads on the same or different
 topics. Writes take the target topic's exclusive lock. Topic registration,
 removal, and `clear()` take the global exclusive lock.
+
+The per-series `uid_order` side index (inside `OrderedEntries`) is maintained
+under that same per-series mutex as `entries`, written exclusively in lockstep
+with them, and is never handed out through a view — so it introduces no new drain
+contract. `OrderedEntries` is not itself locked; the caller holds the series lock
+across every call to it.
 
 The warm cache (above) has its own small per-series mutex, distinct from the
 series shared mutex. `latestAt` holds the series mutex only in shared mode and
@@ -257,7 +331,23 @@ removes the underlying topic.
 
 Core behavior is covered by:
 
+- `pj_datastore/tests/ordered_entries_test.cpp` (the `OrderedEntries` invariant
+  at the value-type boundary — in/out-of-order push, evict, re-UID, rebuild,
+  shift, and the cross-series bulk moves)
 - `pj_datastore/tests/object_store_test.cpp`
 - `pj_datastore/tests/plugin_data_host_object_test.cpp`
 - `pj_datastore/tests/plugin_data_host_object_read_test.cpp`
 - `pj_datastore/tests/plugin_parser_object_write_test.cpp`
+
+The `uid_order` side index (encapsulated in `OrderedEntries`) that keeps the UID
+cursor correct under out-of-order ingest is pinned by, in `object_store_test.cpp`:
+`OutOfOrderPushRemainsReachableByUidCursor` (the guard),
+`NextUIDAfterWalkVisitsOutOfOrderEntryLast`,
+`NextUIDAfterWalkAfterMultipleOutOfOrderInserts`,
+`EvictionOfOutOfOrderEntryKeepsUidCursorConsistent`,
+`FirstUidNotFrontEntryAfterPartialEvict`,
+`EqualTimestampArrivalOrderPreservedByUidCursor`,
+`SrcUidOrderClearedAfterFlushAllowsSubsequentPushes`, and
+`UidWalkAfterAppendingFlushVisitsAllEntriesInOrder`; in `object_merge_test.cpp`:
+`UidWalkAfterMergeVisitsEveryEntryAscending`; and in `clear_dataset_test.cpp`:
+`ReattachPreservesUidCursorAfterOutOfOrder`.

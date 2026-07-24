@@ -1,4 +1,4 @@
-exclude: ^.vscode/|^deps/|^build/|^3rdparty/
+exclude: ^.vscode/|^deps/|^build/|^3rdparty/|^resources/fonts/
 repos:
 
   # Standard hooks
@@ -6,6 +6,10 @@ repos:
     rev: v4.5.0
     hooks:
       - id: check-added-large-files
+        # The Conan source backup deliberately stores third-party source
+        # tarballs (sha256-addressed; see its README) — exempt it from the
+        # accidental-large-binary guard. (resources/fonts/ is exempt globally.)
+        exclude: ^\.github/conan/source-backup/
       - id: check-ast
       - id: check-case-conflict
       - id: check-merge-conflict
@@ -27,6 +31,11 @@ repos:
       - id: check-forbidden-patterns
         name: Check for forbidden patterns (std::getenv, etc.)
         entry: .pre-commit-scripts/check-forbidden-patterns.py
+        language: python
+        types_or: [c++, c]
+      - id: check-canonical-chrome
+        name: Enforce canonical dialog chrome (no raw QDialog/QMessageBox/QFileDialog)
+        entry: .pre-commit-scripts/check-canonical-chrome.py
         language: python
         types_or: [c++, c]
 

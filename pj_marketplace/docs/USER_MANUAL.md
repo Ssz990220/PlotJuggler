@@ -101,9 +101,29 @@ If PlotJuggler already has the plugin loaded at startup, the marketplace is seed
 3. Confirm in the dialog
 4. Extension files are removed
 
+Core (bundled) extensions have no Uninstall action — see §2.8.
+
 ### 2.7 Enabling/Disabling Extensions
 
 *Planned — see [TODO.md](TODO.md). Today, removing an extension requires Uninstall.*
+
+### 2.8 Core (Bundled) Extensions
+
+Extensions shipped with the application (inside the installer or AppImage) are
+**core** extensions. At every startup they are seeded into the extensions
+directory, so they are managed like any other install — with three differences:
+
+- **They cannot be uninstalled.** The id ships with the app; removing it would
+  just be undone on the next launch.
+- **They follow application upgrades.** When a new PlotJuggler version bundles a
+  newer plugin, your installed copy is refreshed to it automatically. A copy you
+  updated *above* the bundled version through the marketplace is left alone.
+- **Downgrade to bundled.** If you updated a core extension and want the shipped
+  version back, use **Downgrade to bundled** (staged, applied on restart).
+
+To pin a core plugin to an older build, place that build in a custom plugin
+folder (Preferences → Plugins): custom folders override the extensions dir
+regardless of version. The same page lists every scanned plugin folder.
 
 ---
 
@@ -237,7 +257,7 @@ When the marketplace runs **inside** a host application (e.g. PlotJuggler), the 
 | "Post-promotion validation failed" | The DSO loads in the staging area but not from `extensions/` (rpath/dep issue) | The install is rolled back; check the diagnostic for the linker error |
 | "Could not mark … for restart cleanup" | Marketplace could not write the `.pj_pending_uninstall` marker (Windows; permissions or AV) | The uninstall is **not** scheduled; resolve the file-permission issue and retry |
 | "Moved to quarantine: …" | A previous staged update could not be removed; it has been moved aside | Inspect the quarantined directory and delete it manually once safe |
-| "Invalid registry URL" | The Settings dialog rejected a malformed URL | Use a `http://`, `https://`, or `file://` URL |
+| "Invalid registry URL" when saving Preferences | The Marketplace registry URL field holds a non-http(s)/file value | Fix the URL or clear the field to restore the default (see §5.2) |
 
 ### 4.2 Log Locations
 
@@ -292,8 +312,8 @@ Inside that root:
 
 ```
 <config-root>/
-├── extensions/                      # Active installed extensions
-│   └── my-extension/
+├── extensions/                      # Active installed extensions, including
+│   └── my-extension/                # core (bundled) ones seeded at startup
 │       └── libmy_plugin.so
 ├── .extension_staging/      # Staging area: updates land here and are promoted
 │   │                                # on the next startup; a fresh install uses it
@@ -308,7 +328,17 @@ Inside that root:
 
 **Default:** `https://raw.githubusercontent.com/PlotJuggler/pj-plugin-registry/refs/heads/development/registry.json`
 
-**Custom registry:** Open the marketplace, click ⚙ Settings, paste the new URL, click OK. The URL is persisted under `QSettings("PlotJuggler", "Marketplace")/registry_url` and restored on next launch.
+**Custom registry:** open **Preferences → Plugins**. The *Marketplace registry
+URL* row has a **default / custom** switch: *default* shows the built-in URL
+read-only; *custom* enables the field for editing. When you finish editing,
+the value is checked — it must be an http(s) or file URL and, when the system
+is online, it must actually respond — and the text turns **red** while the
+check fails (advisory: nothing blocks or reverts, and offline the reachability
+check is skipped so you can prepare a URL that will work later). On OK a valid
+custom URL persists in the application settings (key `Marketplace/registryUrl`;
+default mode stores "no override") and the marketplace fetches from it the
+next time it opens. The standalone `pj_marketplace_app` harness always uses
+its built-in default.
 
 ### 5.3 Supported Platforms
 

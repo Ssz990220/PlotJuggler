@@ -122,7 +122,6 @@ class ScrubberBase : public QWidget {
   static constexpr int kAutorepeatDelayMs = 400;
   static constexpr int kAutorepeatIntervalMs = 50;
   static constexpr int kArrowZoneWidth = 16;
-  static constexpr int kCornerRadiusPx = 4;
   static constexpr int kHoverFadeMs = 120;
 
   // State

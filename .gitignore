@@ -16,6 +16,25 @@ docs/superpowers/
 # ThreadSanitizer build dir (Task 7 verification)
 build-tsan/
 
+# pixi build exploration (docs/research/pixi_build_exploration.md)
+.pixi/
+build-pixi/
+# rattler-build outputs: the local conda channel built from recipes/
+local-channel/
+# CI compiler/package cache dirs (PIXI_CACHE_DIR/CCACHE_DIR/SCCACHE_DIR in
+# pixi-ci.yml); harmless to ignore even though local dev doesn't create these
+# workspace-relative paths unless the same env vars are set by hand.
+.pixi_cache/
+.ccache/
+.sccache/
+# pixi.lock is intentionally not committed for this exploration: a valid lock
+# would need win-64 entries, which requires building the win-64 gap packages
+# (impossible from a linux dev box). CI solves fresh per platform. A committed
+# multi-platform lock is a follow-up once the gap packages live on a real channel.
+pixi.lock
+# AddressSanitizer build dir (sanitizer verification)
+build-asan/
+
 # heaptrack memory-profiler traces (run.sh --heaptrack)
 heaptrack.*.zst
 
@@ -26,3 +45,9 @@ heaptrack.*.zst
 /multi_dataset.pj4.xml
 # A separately-cloned plugins repo some devs keep in-tree; not a submodule of PJ4.
 /pj-official-plugins/
+
+# Local (non-docker) CMake build dir used in the ui-framework worktree
+build_local/
+/.ccache-appimage-docker/
+/.conan2-appimage-docker/
+/build-appimage-docker/

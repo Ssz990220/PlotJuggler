@@ -45,6 +45,10 @@ struct PanelEngineConfig {
 ///   * Close is plugin-initiated via WidgetData::requestClose("<reason>");
 ///     the engine forwards the reason via the callback set with
 ///     onCloseRequested() and then tears down the panel.
+///   * While the panel root is hidden (e.g. pinned into a non-current
+///     central tab) ticks are throttled to 1/10 rate — the plugin's periodic
+///     logic keeps advancing, the UI poll+diff mostly pauses — and a
+///     catch-up tick fires the moment the root is shown again.
 ///
 /// Typical usage from pj_app:
 ///   auto* engine = new PJ::PanelEngine(std::move(dialog_handle), {}, this);
@@ -88,6 +92,9 @@ class PanelEngine : public QObject {
     int tick_count = 0;
     int event_count = 0;
     int diff_apply_count = 0;
+    /// Polls whose payload was byte-identical to the previous one and were
+    /// dropped before parsing (a gauge of plugin chattiness).
+    int skipped_identical_count = 0;
   };
   [[nodiscard]] Stats stats() const;
 

@@ -37,6 +37,7 @@
 #include "pj_scene3d_core/tf/transform.h"
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
 #include "pj_scene3d_widgets/transform_service.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -76,7 +77,7 @@ TEST(Scene3DDockStreaming, EmptyDockSurvivesRevalidateUntilItHasHeldContent) {
   // Once it has held a config topic that is then evicted, it reports empty so the
   // shell can reset it — same as the eviction path for a populated dock.
   const auto tf_topic = registerTfTopic(session.objectStore(), /*dataset_id=*/1, "/tf");
-  ASSERT_TRUE(dock.addTopic(tf_topic, PJ::sdk::BuiltinObjectType::kFrameTransforms, QStringLiteral("tf")));
+  ASSERT_TRUE(dock.addTopic(tf_topic, PJ::sdk::BuiltinObjectType::kFrameTransforms, u"tf"_s));
   EXPECT_TRUE(dock.revalidateObjects());
   session.objectStore().removeTopic(tf_topic);
   EXPECT_FALSE(dock.revalidateObjects());
@@ -94,7 +95,7 @@ TEST(Scene3DDockStreaming, TfOnlyDockSurvivesRevalidateUntilTopicEvicted) {
   dock.setTransformService(&transform_service);
 
   // Drop a FrameTransforms topic: consumed as a config topic, creates NO layer.
-  ASSERT_TRUE(dock.addTopic(tf_topic, PJ::sdk::BuiltinObjectType::kFrameTransforms, QStringLiteral("tf")));
+  ASSERT_TRUE(dock.addTopic(tf_topic, PJ::sdk::BuiltinObjectType::kFrameTransforms, u"tf"_s));
   EXPECT_TRUE(dock.layers().empty()) << "a FrameTransforms topic must not create a render layer";
 
   // H.4: with zero layers but a live config topic, the dock is still alive — a
@@ -122,7 +123,7 @@ TEST(Scene3DDockStreaming, RebindsToSecondDatasetAfterFirstRemoved) {
   dock.setSessionManager(&session);
   dock.setTransformService(&transform_service);
 
-  ASSERT_TRUE(dock.addTopic(tf_a, PJ::sdk::BuiltinObjectType::kFrameTransforms, QStringLiteral("tf")));
+  ASSERT_TRUE(dock.addTopic(tf_a, PJ::sdk::BuiltinObjectType::kFrameTransforms, u"tf"_s));
   ASSERT_TRUE(dock.hasTransformBufferForTest());
   EXPECT_EQ(dock.boundDatasetIdForTest(), 1u);
 
@@ -135,7 +136,7 @@ TEST(Scene3DDockStreaming, RebindsToSecondDatasetAfterFirstRemoved) {
   // A topic from a second dataset now rebinds cleanly to dataset B's buffer
   // rather than silently resolving against A's dead tree.
   const auto tf_b = registerTfTopic(store, /*dataset_id=*/2, "/tf");
-  ASSERT_TRUE(dock.addTopic(tf_b, PJ::sdk::BuiltinObjectType::kFrameTransforms, QStringLiteral("tf2")));
+  ASSERT_TRUE(dock.addTopic(tf_b, PJ::sdk::BuiltinObjectType::kFrameTransforms, u"tf2"_s));
   EXPECT_TRUE(dock.hasTransformBufferForTest());
   EXPECT_EQ(dock.boundDatasetIdForTest(), 2u);
 }
@@ -179,7 +180,7 @@ TEST(Scene3DDockStreaming, TfOnlyDockTrackerTimeRecoversAbsoluteOffset) {
   dock.setTransformService(&transform_service);
 
   // Consume /tf as a config topic (handleSceneConfigTopic path) -> no render layer.
-  ASSERT_TRUE(dock.addTopic(tf_topic, PJ::sdk::BuiltinObjectType::kFrameTransforms, QStringLiteral("/tf")));
+  ASSERT_TRUE(dock.addTopic(tf_topic, PJ::sdk::BuiltinObjectType::kFrameTransforms, u"/tf"_s));
   ASSERT_TRUE(dock.layers().empty()) << "a FrameTransforms topic must not create a render layer";
   ASSERT_EQ(dock.boundDatasetIdForTest(), 1u) << "dataset_id_ must be set by the config path";
 
@@ -214,7 +215,7 @@ TEST(Scene3DDockStreaming, TfOnlyDockTrackerTimeToggleOffIsRawSeconds) {
   PJ::Scene3DDockWidget dock;
   dock.setSessionManager(&session);
   dock.setTransformService(&transform_service);
-  ASSERT_TRUE(dock.addTopic(tf_topic, PJ::sdk::BuiltinObjectType::kFrameTransforms, QStringLiteral("/tf")));
+  ASSERT_TRUE(dock.addTopic(tf_topic, PJ::sdk::BuiltinObjectType::kFrameTransforms, u"/tf"_s));
 
   session.setUseTimeOffset(false);
   dock.onTrackerTime(5.0);
@@ -238,7 +239,7 @@ TEST(Scene3DDockStreaming, FrameListReflectsBufferGrowthWhilePaused) {
   PJ::Scene3DDockWidget dock;
   dock.setSessionManager(&session);
   dock.setTransformService(&transform_service);
-  ASSERT_TRUE(dock.addTopic(tf_topic, PJ::sdk::BuiltinObjectType::kFrameTransforms, QStringLiteral("/tf")));
+  ASSERT_TRUE(dock.addTopic(tf_topic, PJ::sdk::BuiltinObjectType::kFrameTransforms, u"/tf"_s));
   ASSERT_TRUE(pj::scene3d::test::pumpUntil([&] { return dock.sceneView() != nullptr; }));
 
   // Pin a fixed playhead and enumerate while the buffer is still empty.

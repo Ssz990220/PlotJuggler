@@ -142,6 +142,24 @@ class DataSourceRuntimeHost {
   std::function<bool(uint64_t current)> on_progress_update;
   std::function<void()> on_progress_finish;
 
+  // One topic from a notify_available_topics call, already classified a priori
+  // (see cbNotifyAvailableTopics). Owned strings so on_available_topics can use
+  // them after the worker->GUI marshal a caller performs inside the callback.
+  struct AdvertisedTopicInfo {
+    std::string topic_name;
+    sdk::BuiltinObjectType classification = sdk::BuiltinObjectType::kNone;
+  };
+
+  // Optional hook fired by the notify_available_topics vtable slot: the source
+  // advertised (a subset of) the topics it can stream but has not subscribed to.
+  // [poll/stream thread] — per data_source_protocol.h, the plugin calls
+  // notify_available_topics on its own poll/stream thread, so this callback runs
+  // there too; an implementation that touches Qt objects (CatalogModel,
+  // TopicDemandTracker) MUST marshal to the GUI thread itself (mirror the
+  // samplesIngested hop in StreamingSourceManager), exactly like on_progress_*
+  // above. Set before calling the plugin's start().
+  std::function<void(std::vector<AdvertisedTopicInfo> topics)> on_available_topics;
+
   // Most recent error message captured by any callback. Empty if none.
   const std::string& lastError() const noexcept {
     return last_error_;
@@ -204,6 +222,17 @@ class DataSourceRuntimeHost {
   static int cbShowMessageBox(
       void* ctx, PJ_message_box_type_t type, PJ_string_view_t title, PJ_string_view_t message, int buttons) noexcept;
   static const char* cbListAvailableEncodings(void* ctx) noexcept;
+  static bool cbNotifyAvailableTopics(
+      void* ctx, const PJ_available_topic_t* topics, uint64_t count, PJ_error_t* out_error) noexcept;
+
+  // A-priori classification for one advertised topic: binds the schema against a
+  // throwaway parser instance for `topic.parser_encoding` and calls classifySchema
+  // (no bind(registry) — classification needs no write-host service; cbEnsureParserBinding
+  // already proves the ABI accepts bindSchema/classifySchema before bind()). Falls back to
+  // matching `type_name` against the FrameTransforms/CameraInfo infra schemas when no parser
+  // is registered for the encoding, or the parser's classify_schema returns kNone (e.g. an
+  // older parser .so, or a genuinely unclassified type). Never throws.
+  [[nodiscard]] sdk::BuiltinObjectType classifyAvailableTopic(const PJ_available_topic_t& topic) const noexcept;
 
   // The vtable referenced by every PJ_data_source_runtime_host_t handed to a
   // plugin. Definition in the cpp — single static instance shared by every
@@ -220,11 +249,26 @@ class DataSourceRuntimeHost {
   // supplies fat pointers at bind time — afterwards the plugin holds its own
   // copies, so the builder can die first.
   struct ParserBinding {
+    // Identity of the ensure request that created this binding. A demand-driven
+    // plugin drops its binding cache with the subscription and re-requests on
+    // re-subscribe; an identical signature hands back the existing binding — a
+    // second createTopic would register a duplicate engine topic with the same
+    // name, doubling every field in the catalog. Any difference is a genuine
+    // retype and mints a fresh binding.
+    struct Signature {
+      std::string encoding;
+      std::string type_name;
+      std::string schema_bytes;
+      std::string parser_config;
+      bool operator==(const Signature&) const = default;
+    };
+
     std::unique_ptr<ServiceRegistryBuilder> registry_builder;
     std::unique_ptr<DatastoreParserWriteHost> write_host;
     std::unique_ptr<DatastoreParserObjectWriteHost> object_write_host;
     std::unique_ptr<MessageParserHandle> parser;
     std::string topic_name;
+    Signature signature;
     sdk::BuiltinObjectType object_kind = sdk::BuiltinObjectType::kNone;
     std::optional<ObjectTopicId> object_topic_id;
 
@@ -232,12 +276,18 @@ class DataSourceRuntimeHost {
     ParserBinding(
         std::unique_ptr<ServiceRegistryBuilder> b, std::unique_ptr<DatastoreParserWriteHost> w,
         std::unique_ptr<DatastoreParserObjectWriteHost> ow, std::unique_ptr<MessageParserHandle> p, std::string topic,
-        sdk::BuiltinObjectType kind, std::optional<ObjectTopicId> object_topic);
+        Signature sig, sdk::BuiltinObjectType kind, std::optional<ObjectTopicId> object_topic);
     ~ParserBinding();
 
     ParserBinding(ParserBinding&&) noexcept;
     ParserBinding& operator=(ParserBinding&&) noexcept;
   };
+
+  // The existing binding id for (topic_name, signature), or nullopt when none
+  // matches (first bind, or a retype). [worker-thread] — same poll thread as
+  // cbEnsureParserBinding/cbPushMessage; parser_bindings_ is unsynchronized.
+  [[nodiscard]] std::optional<uint32_t> findReusableBinding(
+      std::string_view topic_name, const ParserBinding::Signature& signature) const;
 
   DataEngine& engine_;
   ExtensionCatalogService& catalog_;

@@ -59,9 +59,11 @@ void PlotPanner::moveCanvas(int dx, int dy) {
     }
   }
 
-  emit rescaled(new_rect);
   qwt_plot->setAutoReplot(auto_replot);
   qwt_plot->replot();
+  // Synchronous history consumers serialize from this signal. Refresh the
+  // canvas maps first so they capture the gesture that just committed.
+  emit rescaled(new_rect);
 }
 
 void PlotPanner::widgetMousePressEvent(QMouseEvent* event) {

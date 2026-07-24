@@ -7,10 +7,10 @@
   </property>
   <layout class="QVBoxLayout" name="mainLayout">
    <property name="spacing"><number>8</number></property>
-   <property name="leftMargin"><number>10</number></property>
-   <property name="topMargin"><number>10</number></property>
-   <property name="rightMargin"><number>10</number></property>
-   <property name="bottomMargin"><number>10</number></property>
+   <property name="leftMargin"><number>8</number></property>
+   <property name="topMargin"><number>8</number></property>
+   <property name="rightMargin"><number>8</number></property>
+   <property name="bottomMargin"><number>8</number></property>
 
    <!-- Preview header: label + AutoZoom toggle (top-right, over the preview) -->
    <item>
@@ -20,7 +20,7 @@
        <property name="text"><string>&lt;b&gt;Preview&lt;/b&gt;</string></property>
       </widget>
      </item>
-     <item><spacer name="previewHeaderSpacer"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+     <item><spacer name="previewHeaderSpacer"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>16</width><height>20</height></size></property></spacer></item>
      <item>
       <widget class="QCheckBox" name="autozoom_check">
        <property name="text"><string>AutoZoom</string></property>
@@ -50,11 +50,11 @@
       <property name="topMargin"><number>4</number></property>
       <property name="rightMargin"><number>0</number></property>
       <property name="bottomMargin"><number>0</number></property>
-      <property name="spacing"><number>6</number></property>
+      <property name="spacing"><number>8</number></property>
       <item>
      <!-- Source curve | Transform + params -->
      <layout class="QHBoxLayout" name="columnsLayout">
-     <property name="spacing"><number>10</number></property>
+     <property name="spacing"><number>8</number></property>
 
      <!-- Left: source curve list -->
      <item>
@@ -167,7 +167,7 @@
           <item>
            <spacer name="autozoomSpacer">
             <property name="orientation"><enum>Qt::Horizontal</enum></property>
-            <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+            <property name="sizeHint" stdset="0"><size><width>16</width><height>20</height></size></property>
            </spacer>
           </item>
          </layout>
@@ -213,11 +213,12 @@
    <!-- Status (left) + Close / Apply (right) -->
    <item>
     <layout class="QHBoxLayout" name="buttonBar">
+     <property name="spacing"><number>8</number></property>
      <item><widget class="QLabel" name="status_label"><property name="text"><string></string></property></widget></item>
      <item>
       <spacer name="buttonBarSpacer">
        <property name="orientation"><enum>Qt::Horizontal</enum></property>
-       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+       <property name="sizeHint" stdset="0"><size><width>16</width><height>20</height></size></property>
       </spacer>
      </item>
      <item><widget class="QPushButton" name="cancel_btn"><property name="text"><string>Cancel</string></property></widget></item>

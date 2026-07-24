@@ -16,6 +16,7 @@
 #include <QDragLeaveEvent>
 #include <QDropEvent>
 #include <QFontDatabase>
+#include <QGuiApplication>
 #include <QIODevice>
 #include <QIcon>
 #include <QMenu>
@@ -23,6 +24,7 @@
 #include <QMouseEvent>
 #include <QPalette>
 #include <QPen>
+#include <QScopedValueRollback>
 #include <QSettings>
 #include <QTimer>
 #include <QUuid>
@@ -33,12 +35,15 @@
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#include <optional>
 #include <set>
 
+#include "TimeAxisWidth.h"
 #include "WidgetClipboard.h"
 #include "pj_plotting/CurveTracker.h"
 #include "pj_plotting/DatastoreCurveAdapter.h"
 #include "pj_plotting/PlotLegend.h"
+#include "pj_plotting/PlotXml.h"
 #include "pj_plotting/PointSeriesXY.h"
 #include "pj_plotting/SnapshotGroupResolver.h"
 #include "pj_plotting/SnapshotGroupDialog.h"
@@ -50,10 +55,12 @@
 #include "pj_runtime/CurveDescriptor.h"
 #include "pj_runtime/CurveDisplayName.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/Time.h"
 #include "pj_widgets/CurveTreeView.h"
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/MessageBox.h"
 #include "pj_widgets/SvgUtil.h"
-#include "pj_widgets/ThemeColors.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 namespace {
@@ -102,11 +109,56 @@ QString newStateId() {
   return QUuid::createUuid().toString(QUuid::WithoutBraces);
 }
 
+// Continuous gestures (wheel ticks, pan moves) coalesce into one history
+// snapshot this long after the last event.
+constexpr int kGestureUndoDebounceMs = 200;
+
 QString curveKey(const QString& source_name, const QString& x_name = {}, const QString& y_name = {}) {
   if (!x_name.isEmpty() || !y_name.isEmpty()) {
-    return QStringLiteral("xy:") + x_name + QStringLiteral("\n") + y_name;
+    return u"xy:"_s + x_name + u"\n"_s + y_name;
   }
-  return QStringLiteral("ts:") + source_name;
+  return u"ts:"_s + source_name;
+}
+
+QString pendingCurveIdentity(const QDomElement& curve) {
+  static const QStringList attributes{
+      u"topic"_s,   u"field"_s,   u"dataset_id"_s,   u"dataset_source"_s,   u"dataset_path"_s,
+      u"x_topic"_s, u"x_field"_s, u"x_dataset_id"_s, u"x_dataset_source"_s, u"x_dataset_path"_s,
+      u"y_topic"_s, u"y_field"_s, u"y_dataset_id"_s, u"y_dataset_source"_s, u"y_dataset_path"_s,
+  };
+  QStringList fields;
+  fields.reserve(attributes.size() + 1);
+  for (const QString& attribute : attributes) {
+    fields.push_back(curve.attribute(attribute));
+  }
+  if (!curve.attribute(u"x_topic"_s).isEmpty()) {
+    fields.push_back(curve.attribute(u"name"_s));
+  }
+  return fields.join(QLatin1Char('\x1f'));
+}
+
+bool isPendingCurveIntentValid(const QDomElement& curve, bool xy_plot) {
+  if (curve.tagName() != "curve"_L1 || !plot_xml::isPendingIntent(curve)) {
+    return false;
+  }
+  const bool time_series = !curve.attribute(u"topic"_s).isEmpty();
+  const bool xy = !curve.attribute(u"x_topic"_s).isEmpty() && !curve.attribute(u"y_topic"_s).isEmpty();
+  if (time_series == xy || xy != xy_plot) {
+    return false;
+  }
+  const QStringList id_attributes =
+      xy ? QStringList{u"x_dataset_id"_s, u"y_dataset_id"_s} : QStringList{u"dataset_id"_s};
+  for (const QString& attribute : id_attributes) {
+    if (!curve.hasAttribute(attribute)) {
+      continue;
+    }
+    bool ok = false;
+    const qulonglong raw = curve.attribute(attribute).toULongLong(&ok);
+    if (!ok || raw == 0 || raw > std::numeric_limits<DatasetId>::max()) {
+      return false;
+    }
+  }
+  return true;
 }
 
 // The session-scoped curve-color registry (issue #68), reached through the
@@ -123,20 +175,25 @@ PlotWidget::PlotWidget(SessionManager* session, CatalogModel* catalog, QWidget* 
     : PlotWidgetBase(parent), session_(session), catalog_(catalog) {
   state_id_ = newStateId();
   setAcceptDrops(true);
-  // Magenta playback tracker, matching the Source Timeline's playhead needle
-  // (theme::kPurple) for cross-widget visual consistency. The reference tracker
-  // is blue, matching the timeline's blue reference line.
-  tracker_ = new CurveTracker(qwtPlot(), PJ::theme::kPurple);
-  reference_tracker_ = new CurveTracker(qwtPlot(), QColor(Qt::blue));
+  const auto fw_theme = theme::themeFor(QGuiApplication::palette().color(QPalette::Window).lightness() >= 128);
+  // Highlight playback tracker, matching the Source Timeline's playhead needle
+  // for cross-widget visual consistency. The reference tracker uses Accent,
+  // matching the timeline's reference line.
+  tracker_ =
+      new CurveTracker(qwtPlot(), theme::interaction(theme::Variant::Highlight, theme::State::Checked, fw_theme));
+  reference_tracker_ =
+      new CurveTracker(qwtPlot(), theme::interaction(theme::Variant::Accent, theme::State::Checked, fw_theme));
   reference_tracker_->setParameter(CurveTracker::kLineOnly);
   reference_tracker_->setEnabled(false);
 
   // Mouse-hover inspector. Shows a snap-to-curve dot + value tooltip wherever
   // the mouse points, gated by show_points_. Independent from the playback
-  // tracker (tracker_): the red playback line always shows the current
+  // tracker (tracker_): the playback line always shows the current
   // playback time and is not affected by this toggle.
   show_point_marker_ = new QwtPlotMarker();
-  show_point_marker_->setSymbol(new QwtSymbol(QwtSymbol::Ellipse, QColor(Qt::yellow), QPen(Qt::black), QSize(8, 8)));
+  show_point_marker_->setSymbol(new QwtSymbol(
+      QwtSymbol::Ellipse, theme::interaction(theme::Variant::Emphasis, theme::State::Nominal, fw_theme),
+      QPen(theme::onFill(theme::Variant::Emphasis, theme::State::Nominal, fw_theme)), QSize(8, 8)));
   show_point_marker_->setVisible(false);
   show_point_marker_->attach(qwtPlot());
 
@@ -145,6 +202,13 @@ PlotWidget::PlotWidget(SessionManager* session, CatalogModel* catalog, QWidget* 
   show_point_text_->attach(qwtPlot());
 
   connect(this, &PlotWidgetBase::viewResized, this, &PlotWidget::onExternallyResized);
+  gesture_undo_debounce_.setSingleShot(true);
+  gesture_undo_debounce_.setInterval(kGestureUndoDebounceMs);
+  connect(&gesture_undo_debounce_, &QTimer::timeout, this, [this]() {
+    if (!loading_state_) {
+      emit undoableChange();
+    }
+  });
   connect(this, &PlotWidgetBase::curveListChanged, this, [this]() {
     updateMaximumZoomArea();
     autoZoomPlotVertically();
@@ -220,7 +284,7 @@ PlotWidget::CurveInfo* PlotWidget::addCurve(const QString& name, QColor color) {
       // colour is then remembered by name (always-on), so the curve keeps it on
       // re-add and across plots.
       QSettings settings;
-      const bool global = settings.value(QStringLiteral("Preferences::curve_color_global"), true).toBool();
+      const bool global = settings.value(u"Preferences::curve_color_global"_s, true).toBool();
       const int index = global ? registry.nextPaletteIndex() : static_cast<int>(curveList().size());
       color = PlotWidgetBase::paletteColor(index);
       registry.setColor(name, color.name());
@@ -240,6 +304,11 @@ PlotWidget::CurveInfo* PlotWidget::addCurve(const QString& name, QColor color) {
   return info;
 }
 
+PlotWidget::CurveInfo* PlotWidget::addCurveFromPending(const QString& name, bool preserve_viewport) {
+  const QScopedValueRollback guard(loading_state_, loading_state_ || preserve_viewport);
+  return addCurve(name);
+}
+
 void PlotWidget::autoZoomPlotVertically() {
   // Skip during layout restore (the saved range wins), when there is nothing to
   // fit, and for XY / snapshot plots (their X axis is data, not the shared time
@@ -247,7 +316,7 @@ void PlotWidget::autoZoomPlotVertically() {
   if (loading_state_ || curveList().empty() || isXYPlot() || isSnapshotPlot()) {
     return;
   }
-  if (!QSettings().value(QStringLiteral("Preferences::auto_zoom_plots"), true).toBool()) {
+  if (!QSettings().value(u"Preferences::auto_zoom_plots"_s, true).toBool()) {
     return;
   }
   // Rescale only Y, over the current X window, so the shared time axis — and
@@ -316,7 +385,9 @@ PlotWidget::CurveInfo* PlotWidget::addCurveXY(
   // current style and width. XY plots are not forced to Dots — they inherit the
   // plot-level style like any plot (PJ3 parity); the Curve Style toolbar controls it.
   updateMaximumZoomArea();
-  replot();
+  // Reveal the ride-along marker at the current cursor immediately rather than on
+  // the next seek/tick (setTrackerPosition replots).
+  setTrackerPosition(last_tracker_time_sec_);
   return info;
 }
 
@@ -604,7 +675,7 @@ void PlotWidget::showPointValues(QPoint paint_point) {
   };
 
   const QPointF mouse_in_plot = paint_to_plot(paint_point);
-  const int precision = QSettings().value(QStringLiteral("Preferences::precision"), 3).toInt();
+  const int precision = QSettings().value(u"Preferences::precision"_s, 3).toInt();
 
   QString text;
   int min_distance_sqr = kHoverHitRadiusPx * kHoverHitRadiusPx;
@@ -641,12 +712,12 @@ void PlotWidget::showPointValues(QPoint paint_point) {
 
   if (updated) {
     show_point_marker_->setValue(marker_point);
+    const auto fw_theme = theme::themeFor(QGuiApplication::palette().color(QPalette::Window).lightness() >= 128);
 
     QwtText label;
     label.setText(text);
-    label.setBorderPen(QColor(Qt::transparent));
-    QColor background = qwtPlot()->palette().color(QPalette::Window);
-    background.setAlpha(220);
+    label.setBorderPen(QPen(Qt::NoPen));
+    const QColor background = theme::overlay(theme::Overlay::Hud, fw_theme);
     label.setBackgroundBrush(background);
     QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     font.setPointSize(9);
@@ -689,19 +760,17 @@ void PlotWidget::setStateId(QString id) {
 }
 
 QDomElement PlotWidget::xmlSaveState(QDomDocument& doc) const {
-  QDomElement plot_element = doc.createElement(QStringLiteral("plot"));
-  plot_element.setAttribute(QStringLiteral("id"), state_id_);
-  plot_element.setAttribute(
-      QStringLiteral("mode"), isSnapshotPlot() ? QStringLiteral("Snapshot")
-                              : isXYPlot()     ? QStringLiteral("XYPlot")
-                                               : QStringLiteral("TimeSeries"));
-  plot_element.setAttribute(QStringLiteral("line_width"), lineWidthToString(lineWidth()));
+  QDomElement plot_element = doc.createElement(u"plot"_s);
+  plot_element.setAttribute(u"id"_s, state_id_);
+  plot_element.setAttribute(u"mode"_s, isSnapshotPlot() ? u"Snapshot"_s
+                                       : isXYPlot()     ? u"XYPlot"_s
+                                                        : u"TimeSeries"_s);
+  plot_element.setAttribute(u"line_width"_s, lineWidthToString(lineWidth()));
   // Style and width are plot-level properties (every curve shares them; only
   // colour is per-curve), so they are saved once on the <plot>, not per <curve>.
-  plot_element.setAttribute(QStringLiteral("style"), curveStyleToString(curveStyle()));
-  plot_element.setAttribute(QStringLiteral("title"), qwtPlot()->title().text());
-  plot_element.setAttribute(
-      QStringLiteral("tracker_enabled"), tracker_enabled_ ? QStringLiteral("true") : QStringLiteral("false"));
+  plot_element.setAttribute(u"style"_s, curveStyleToString(curveStyle()));
+  plot_element.setAttribute(u"title"_s, qwtPlot()->title().text());
+  plot_element.setAttribute(u"tracker_enabled"_s, tracker_enabled_ ? u"true"_s : u"false"_s);
 
   // Manual y-axis limits (a persistent setting, distinct from the transient <range>
   // viewport below). Each bound is written only when pinned, so a half-open pin
@@ -719,28 +788,44 @@ QDomElement PlotWidget::xmlSaveState(QDomDocument& doc) const {
   // <range>, xmlLoadState falls back to zoomOut(), which auto-fits.
   const QRectF rect = currentBoundingRect();
   if (rect.left() != rect.right() && rect.top() != rect.bottom()) {
-    QDomElement range_element = doc.createElement(QStringLiteral("range"));
-    range_element.setAttribute(QStringLiteral("bottom"), QString::number(rect.bottom(), 'f', 6));
-    range_element.setAttribute(QStringLiteral("top"), QString::number(rect.top(), 'f', 6));
-    // The X axis of a time-series plot is TIME: persist it in ABSOLUTE seconds,
-    // not the display-relative seconds the Qwt axis speaks (display = absolute -
-    // offset; see pj_runtime/Time.h). PJ4's display offset is per-dataset and
-    // live, so a display-relative range only frames the right instant for the
-    // offset present at save time — storing absolute makes the restored range
-    // correct regardless of the offset state at load (the "Use time offset"
-    // toggle, reloaded data, a layout shared between machines). The time axis is
-    // ALWAYS stored absolute — no marker is written; on load the plot MODE
-    // (time-series vs XY) is what decides whether to undo the offset. XY plots' X is
-    // a value, not time, so they keep their raw axis coordinates.
+    QDomElement range_element = doc.createElement(u"range"_s);
+    range_element.setAttribute(u"bottom"_s, QString::number(rect.bottom(), 'f', 6));
+    range_element.setAttribute(u"top"_s, QString::number(rect.top(), 'f', 6));
+    // An explicit x_basis marker records what the X coordinates MEAN, so load never
+    // has to infer it from plot mode: "absolute" = time-series wall-clock time,
+    // "value" = an XY plot's raw data value or a Snapshot plot's field value / index.
     if (isXYPlot() || isSnapshotPlot()) {
-      // XY and snapshot plots' X is a data value (or element index), not time, so it
-      // is offset-independent — store the raw axis coordinates verbatim.
-      range_element.setAttribute(QStringLiteral("left"), QString::number(rect.left(), 'f', 6));
-      range_element.setAttribute(QStringLiteral("right"), QString::number(rect.right(), 'f', 6));
+      // XY X is a data value and Snapshot X is a field value / element index — both are
+      // time-independent, stored verbatim (raw left/right, never left_ns/right_ns).
+      range_element.setAttribute(u"left"_s, QString::number(rect.left(), 'f', 6));
+      range_element.setAttribute(u"right"_s, QString::number(rect.right(), 'f', 6));
+      range_element.setAttribute(plot_xml::kXBasisAttribute, plot_xml::kXBasisValue);
     } else {
-      const double offset_sec = displayOffsetSeconds();
-      range_element.setAttribute(QStringLiteral("left"), QString::number(rect.left() + offset_sec, 'f', 6));
-      range_element.setAttribute(QStringLiteral("right"), QString::number(rect.right() + offset_sec, 'f', 6));
+      // The X axis of a time-series plot is TIME: persist it in ABSOLUTE seconds,
+      // not the display-relative seconds the Qwt axis speaks (display = absolute -
+      // offset; see pj_runtime/Time.h). PJ4's display offset is per-dataset and
+      // live, so a display-relative range only frames the right instant for the
+      // offset present at save time — storing absolute makes the restored range
+      // correct regardless of the offset state at load (the "Use time offset"
+      // toggle, reloaded data, a layout shared between machines).
+      // The authoritative edges are integer nanoseconds: quantize the SMALL display
+      // value (rect.left()/right(), a few seconds at most) to ns first, then add the
+      // epoch-scale offset in the INTEGER domain. Adding the offset as a double first
+      // would round away a deeply-zoomed window (a double's ULP at ~1.6e9 s is ~238 ns).
+      const qint64 offset_ns = displayOffsetNanoseconds();
+      const qint64 absolute_left_ns =
+          static_cast<qint64>(std::llround(rect.left() * kNanosecondsPerSecond)) + offset_ns;
+      const qint64 absolute_right_ns =
+          static_cast<qint64>(std::llround(rect.right() * kNanosecondsPerSecond)) + offset_ns;
+      // The decimal left/right remain for human readability and as the v3 fallback;
+      // they carry the same (lossy) absolute seconds older loaders would have read.
+      range_element.setAttribute(
+          u"left"_s, QString::number(static_cast<double>(absolute_left_ns) / kNanosecondsPerSecond, 'f', 6));
+      range_element.setAttribute(
+          u"right"_s, QString::number(static_cast<double>(absolute_right_ns) / kNanosecondsPerSecond, 'f', 6));
+      range_element.setAttribute(u"left_ns"_s, QString::number(absolute_left_ns));
+      range_element.setAttribute(u"right_ns"_s, QString::number(absolute_right_ns));
+      range_element.setAttribute(plot_xml::kXBasisAttribute, plot_xml::kXBasisAbsolute);
     }
     plot_element.appendChild(range_element);
   }
@@ -751,6 +836,7 @@ QDomElement PlotWidget::xmlSaveState(QDomDocument& doc) const {
   // the concrete key (PJ::LayoutXml::rebindCurveKeys), so the saved form stays
   // valid across reloads and similar datasets.
   const auto write_stable_path = [&](QDomElement& element, const QString& topic_attr, const QString& field_attr,
+                                     const QString& dataset_id_attr, const QString& dataset_source_attr,
                                      const QString& key) {
     if (catalog_ == nullptr) {
       return;
@@ -758,6 +844,13 @@ QDomElement PlotWidget::xmlSaveState(QDomDocument& doc) const {
     if (const auto descriptor = catalog_->curveDescriptor(key); descriptor.has_value()) {
       element.setAttribute(topic_attr, descriptor->topic_name);
       element.setAttribute(field_attr, descriptor->field_path);
+      // Exact-id + raw-source qualifiers so a same-topic sibling dataset is never
+      // interchanged on restore. The raw DatasetInfo::source_name is preferred
+      // over the deduped display label (dataset_name) because it is the portable
+      // identity a later-session reload compares against.
+      element.setAttribute(dataset_id_attr, QString::number(descriptor->dataset_id));
+      element.setAttribute(
+          dataset_source_attr, catalog_->datasetSourceName(descriptor->dataset_id).value_or(descriptor->dataset_name));
     }
   };
 
@@ -765,15 +858,18 @@ QDomElement PlotWidget::xmlSaveState(QDomDocument& doc) const {
     if (info.curve == nullptr) {
       continue;
     }
-    QDomElement curve_element = doc.createElement(QStringLiteral("curve"));
-    curve_element.setAttribute(QStringLiteral("color"), info.curve->pen().color().name());
-    curve_element.setAttribute(
-        QStringLiteral("visible"), info.curve->isVisible() ? QStringLiteral("true") : QStringLiteral("false"));
+    QDomElement curve_element = doc.createElement(u"curve"_s);
+    curve_element.setAttribute(u"color"_s, info.curve->pen().color().name());
+    curve_element.setAttribute(u"visible"_s, info.curve->isVisible() ? u"true"_s : u"false"_s);
     if (auto* xy_series = dynamic_cast<PointSeriesXY*>(info.curve->data())) {
       // An XY curve's title is the user alias (not derivable from x/y), so persist it.
-      curve_element.setAttribute(QStringLiteral("name"), info.source_name);
-      write_stable_path(curve_element, QStringLiteral("x_topic"), QStringLiteral("x_field"), xy_series->xSource().name);
-      write_stable_path(curve_element, QStringLiteral("y_topic"), QStringLiteral("y_field"), xy_series->ySource().name);
+      curve_element.setAttribute(u"name"_s, info.source_name);
+      write_stable_path(
+          curve_element, u"x_topic"_s, u"x_field"_s, u"x_dataset_id"_s, u"x_dataset_source"_s,
+          xy_series->xSource().name);
+      write_stable_path(
+          curve_element, u"y_topic"_s, u"y_field"_s, u"y_dataset_id"_s, u"y_dataset_source"_s,
+          xy_series->ySource().name);
     } else if (auto* snapshot = dynamic_cast<SnapshotSeriesData*>(info.curve->data())) {
       // A snapshot curve is a wildcard group over ONE topic. Persist the stable
       // binding: topic + the X/Y patterns + the legend label. `topic`/`field` carry
@@ -783,37 +879,113 @@ QDomElement PlotWidget::xmlSaveState(QDomDocument& doc) const {
       // applyCurveElement re-resolves the whole group from `topic` + the patterns.
       const SnapshotBinding& binding = snapshot->binding();
       const QString y_pattern = QString::fromStdString(binding.y_pattern);
-      curve_element.setAttribute(QStringLiteral("snapshot_y"), y_pattern);
+      curve_element.setAttribute(u"snapshot_y"_s, y_pattern);
       if (!binding.x_pattern.empty()) {
-        curve_element.setAttribute(QStringLiteral("snapshot_x"), QString::fromStdString(binding.x_pattern));
+        curve_element.setAttribute(u"snapshot_x"_s, QString::fromStdString(binding.x_pattern));
       }
-      curve_element.setAttribute(QStringLiteral("label"), info.curve->title().text());
+      curve_element.setAttribute(u"label"_s, info.curve->title().text());
       const QString topic_name = QString::fromStdString(binding.topic_name);
-      curve_element.setAttribute(QStringLiteral("topic"), topic_name);
+      curve_element.setAttribute(u"topic"_s, topic_name);
       // Representative concrete field: the first resolved element of the Y pattern.
       const uint32_t element = snapshot->yElements().empty() ? 0 : snapshot->yElements().front().element_index;
-      curve_element.setAttribute(QStringLiteral("field"), concreteField(y_pattern, element));
+      curve_element.setAttribute(u"field"_s, concreteField(y_pattern, element));
     } else {
-      write_stable_path(curve_element, QStringLiteral("topic"), QStringLiteral("field"), info.source_name);
+      write_stable_path(curve_element, u"topic"_s, u"field"_s, u"dataset_id"_s, u"dataset_source"_s, info.source_name);
     }
     plot_element.appendChild(curve_element);
+  }
+
+  for (const QDomDocument& pending_doc : pending_curve_intents_) {
+    const QDomElement pending = pending_doc.documentElement();
+    if (!pending.isNull()) {
+      plot_element.appendChild(doc.importNode(pending, /*deep=*/true));
+    }
   }
 
   return plot_element;
 }
 
+bool PlotWidget::rememberPendingCurveIntent(const QDomElement& curve_element, bool notify) {
+  if (!isPendingCurveIntentValid(curve_element, isXYPlot())) {
+    return false;
+  }
+  const QString identity = pendingCurveIdentity(curve_element);
+  for (const QDomDocument& existing : pending_curve_intents_) {
+    if (pendingCurveIdentity(existing.documentElement()) == identity) {
+      return false;
+    }
+  }
+  QDomDocument pending_doc;
+  QDomElement pending = pending_doc.importNode(curve_element, /*deep=*/true).toElement();
+  pending.setTagName(u"curve"_s);
+  plot_xml::markPendingIntent(pending);
+  if (pending.attribute(u"x_topic"_s).isEmpty()) {
+    pending.removeAttribute(u"name"_s);
+  }
+  pending.removeAttribute(u"curve_x"_s);
+  pending.removeAttribute(u"curve_y"_s);
+  pending_doc.appendChild(pending);
+  pending_curve_intents_.push_back(std::move(pending_doc));
+  emit pendingCurveIntentsChanged();
+  if (notify && !loading_state_) {
+    emit undoableChange();
+  }
+  return true;
+}
+
+void PlotWidget::forgetPendingCurveIntent(const QDomElement& curve_element, bool notify) {
+  const QString identity = pendingCurveIdentity(curve_element);
+  const std::size_t old_size = pending_curve_intents_.size();
+  pending_curve_intents_.erase(
+      std::remove_if(
+          pending_curve_intents_.begin(), pending_curve_intents_.end(),
+          [&](const QDomDocument& pending_doc) {
+            return pendingCurveIdentity(pending_doc.documentElement()) == identity;
+          }),
+      pending_curve_intents_.end());
+  if (pending_curve_intents_.size() == old_size) {
+    return;
+  }
+  emit pendingCurveIntentsChanged();
+  if (notify && !loading_state_) {
+    emit undoableChange();
+  }
+}
+
 bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
-  if (plot_element.isNull() || plot_element.tagName() != QStringLiteral("plot")) {
+  if (plot_element.isNull() || plot_element.tagName() != "plot"_L1) {
     return false;
   }
 
-  setStateId(plot_element.attribute(QStringLiteral("id")));
-  const QString mode = plot_element.attribute(QStringLiteral("mode"));
-  setModeXY(mode == QStringLiteral("XYPlot"));
+  const bool saved_xy_mode = plot_element.attribute(u"mode"_s) == "XYPlot"_L1;
+  std::vector<QDomDocument> parsed_pending_curves;
+  std::set<QString> parsed_pending_identities;
+  for (QDomElement curve = plot_element.firstChildElement(u"curve"_s); !curve.isNull();
+       curve = curve.nextSiblingElement(u"curve"_s)) {
+    if (!plot_xml::isPendingIntent(curve)) {
+      continue;
+    }
+    const bool resolved = saved_xy_mode
+                              ? !curve.attribute(u"curve_x"_s).isEmpty() && !curve.attribute(u"curve_y"_s).isEmpty()
+                              : !curve.attribute(u"name"_s).isEmpty();
+    if (resolved) {
+      continue;
+    }
+    const QString identity = pendingCurveIdentity(curve);
+    if (!isPendingCurveIntentValid(curve, saved_xy_mode) || !parsed_pending_identities.insert(identity).second) {
+      return false;
+    }
+    QDomDocument pending_doc;
+    pending_doc.appendChild(pending_doc.importNode(curve, /*deep=*/true));
+    parsed_pending_curves.push_back(std::move(pending_doc));
+  }
+
+  setStateId(plot_element.attribute(u"id"_s));
+  setModeXY(saved_xy_mode);
   // Snapshot mode must be known BEFORE curves are applied so applyCurveElement
   // routes them to the snapshot branch; the flag is otherwise set per snapshot curve
   // too. The first data-bearing tracker move fits the axes to the current message.
-  snapshot_mode_ = (mode == QStringLiteral("Snapshot"));
+  snapshot_mode_ = (plot_element.attribute(u"mode"_s) == "Snapshot"_L1);
 
   // Manual y-limits: set the pins before curves/viewport are applied so the restore's
   // own fit passes (applySavedViewportOrZoom / snapshot refit) honor them — the axis
@@ -826,51 +998,52 @@ bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
     const double value = plot_element.attribute(attr).toDouble(&ok);
     return ok ? std::optional<double>{value} : std::nullopt;
   };
-  setFixedYRange(
-      parse_optional_double(QStringLiteral("fixed_y_min")), parse_optional_double(QStringLiteral("fixed_y_max")));
+  setFixedYRange(parse_optional_double(u"fixed_y_min"_s), parse_optional_double(u"fixed_y_max"_s));
   // Line width is plot-level. New layouts store the chosen width on the <plot>.
   // Older layouts kept the plot-level value at the stale default ("1.0") and the
   // real width per-curve, so when the plot value is absent/default fall back to
   // the first saved curve's pixel width. New layouts no longer write a per-curve
   // line_width, so the fallback only fires for genuinely old files.
-  const QString plot_line_width = plot_element.attribute(QStringLiteral("line_width"));
-  const QDomElement first_curve = plot_element.firstChildElement(QStringLiteral("curve"));
-  if ((plot_line_width.isEmpty() || plot_line_width == QStringLiteral("1.0")) &&
-      first_curve.hasAttribute(QStringLiteral("line_width"))) {
-    setLineWidth(lineWidthFromPixels(first_curve.attribute(QStringLiteral("line_width")).toDouble()));
+  const QString plot_line_width = plot_element.attribute(u"line_width"_s);
+  const QDomElement first_curve = plot_element.firstChildElement(u"curve"_s);
+  if ((plot_line_width.isEmpty() || plot_line_width == "1.0"_L1) && first_curve.hasAttribute(u"line_width"_s)) {
+    setLineWidth(lineWidthFromPixels(first_curve.attribute(u"line_width"_s).toDouble()));
   } else {
-    setLineWidth(lineWidthFromString(plot_line_width.isEmpty() ? QStringLiteral("1.0") : plot_line_width));
+    setLineWidth(lineWidthFromString(plot_line_width.isEmpty() ? u"1.0"_s : plot_line_width));
   }
   // Style is plot-level. New layouts store it on the <plot>; for older layouts
   // that stored it per <curve>, fall back to the first saved curve. setDefaultStyle
   // restyles the plot and is inherited by curves added after the load.
-  QString style_attr = plot_element.attribute(QStringLiteral("style"));
+  QString style_attr = plot_element.attribute(u"style"_s);
   if (style_attr.isEmpty()) {
-    style_attr = first_curve.attribute(QStringLiteral("style"), QStringLiteral("Lines"));
+    style_attr = first_curve.attribute(u"style"_s, u"Lines"_s);
   }
   setDefaultStyle(curveStyleFromString(style_attr));
-  setTrackerEnabled(
-      plot_element.attribute(QStringLiteral("tracker_enabled"), QStringLiteral("true")) == QStringLiteral("true"));
-  qwtPlot()->setTitle(plot_element.attribute(QStringLiteral("title")));
+  setTrackerEnabled(plot_element.attribute(u"tracker_enabled"_s, u"true"_s) == "true"_L1);
+  qwtPlot()->setTitle(plot_element.attribute(u"title"_s));
 
   const bool was_loading_state = loading_state_;
   loading_state_ = true;
+  const bool intents_changing = !pending_curve_intents_.empty() || !parsed_pending_curves.empty();
+  pending_curve_intents_ = std::move(parsed_pending_curves);
+  if (intents_changing) {
+    emit pendingCurveIntentsChanged();
+  }
 
   std::set<QString> desired_keys;
-  for (QDomElement curve_element = plot_element.firstChildElement(QStringLiteral("curve")); !curve_element.isNull();
-       curve_element = curve_element.nextSiblingElement(QStringLiteral("curve"))) {
-    if (curve_element.hasAttribute(QStringLiteral("snapshot_y"))) {
+  for (QDomElement curve_element = plot_element.firstChildElement(u"curve"_s); !curve_element.isNull();
+       curve_element = curve_element.nextSiblingElement(u"curve"_s)) {
+    if (curve_element.hasAttribute(u"snapshot_y"_s)) {
       // Snapshot curve: keyed by its stable (topic, X pattern, Y pattern) identity.
       desired_keys.insert(curveKey(stableSnapshotKey(
-          curve_element.attribute(QStringLiteral("topic")), curve_element.attribute(QStringLiteral("snapshot_x")),
-          curve_element.attribute(QStringLiteral("snapshot_y")))));
-    } else if (isXYPlot() && curve_element.hasAttribute(QStringLiteral("curve_x")) &&
-               curve_element.hasAttribute(QStringLiteral("curve_y"))) {
+          curve_element.attribute(u"topic"_s), curve_element.attribute(u"snapshot_x"_s),
+          curve_element.attribute(u"snapshot_y"_s))));
+    } else if (isXYPlot() && curve_element.hasAttribute(u"curve_x"_s) && curve_element.hasAttribute(u"curve_y"_s)) {
       desired_keys.insert(curveKey(
-          curve_element.attribute(QStringLiteral("name")), curve_element.attribute(QStringLiteral("curve_x")),
-          curve_element.attribute(QStringLiteral("curve_y"))));
+          curve_element.attribute(u"name"_s), curve_element.attribute(u"curve_x"_s),
+          curve_element.attribute(u"curve_y"_s)));
     } else {
-      desired_keys.insert(curveKey(curve_element.attribute(QStringLiteral("name"))));
+      desired_keys.insert(curveKey(curve_element.attribute(u"name"_s)));
     }
   }
 
@@ -893,8 +1066,8 @@ bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
     removeCurve(title);
   }
 
-  for (QDomElement curve_element = plot_element.firstChildElement(QStringLiteral("curve")); !curve_element.isNull();
-       curve_element = curve_element.nextSiblingElement(QStringLiteral("curve"))) {
+  for (QDomElement curve_element = plot_element.firstChildElement(u"curve"_s); !curve_element.isNull();
+       curve_element = curve_element.nextSiblingElement(u"curve"_s)) {
     applyCurveElement(curve_element);
   }
 
@@ -911,13 +1084,30 @@ bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
   // progressive path re-applies the stash per curve-bind and at drain (see
   // applySavedViewportOrZoom / PendingCurveBinder). A blocking load resolves correctly
   // on this first call because the offset is already known.
-  const QDomElement range_element = plot_element.firstChildElement(QStringLiteral("range"));
+  const QDomElement range_element = plot_element.firstChildElement(u"range"_s);
   if (!range_element.isNull() && autozoom) {
-    saved_viewport_ = SavedViewport{
-        range_element.attribute(QStringLiteral("bottom")).toDouble(),
-        range_element.attribute(QStringLiteral("top")).toDouble(),
-        range_element.attribute(QStringLiteral("left")).toDouble(),
-        range_element.attribute(QStringLiteral("right")).toDouble()};
+    SavedViewport view;
+    view.bottom = range_element.attribute(u"bottom"_s).toDouble();
+    view.top = range_element.attribute(u"top"_s).toDouble();
+    view.left = range_element.attribute(u"left"_s).toDouble();
+    view.right = range_element.attribute(u"right"_s).toDouble();
+    // x_basis is authoritative: "value" = XY data value, anything else (incl. a
+    // v3 layout with no marker, annotated to "absolute" by normalizePlotRangeBasis
+    // on load) = absolute time. Never re-infer the basis from plot mode.
+    view.x_is_absolute = range_element.attribute(plot_xml::kXBasisAttribute) != plot_xml::kXBasisValue;
+    // Prefer the integer-ns edges (schema v4+) — they survive an epoch-scale round
+    // trip exactly, unlike the decimal left/right which a v3 layout is limited to.
+    if (view.x_is_absolute && range_element.hasAttribute(u"left_ns"_s) && range_element.hasAttribute(u"right_ns"_s)) {
+      bool left_ok = false;
+      bool right_ok = false;
+      const qint64 left_ns = range_element.attribute(u"left_ns"_s).toLongLong(&left_ok);
+      const qint64 right_ns = range_element.attribute(u"right_ns"_s).toLongLong(&right_ok);
+      if (left_ok && right_ok) {
+        view.left_ns = left_ns;
+        view.right_ns = right_ns;
+      }
+    }
+    saved_viewport_ = view;
   } else {
     saved_viewport_.reset();
   }
@@ -937,14 +1127,49 @@ void PlotWidget::applySavedViewportOrZoom(bool clear_after) {
   // up front and keep it framed while data streams in.
   if (saved_viewport_.has_value()) {
     const SavedViewport& view = *saved_viewport_;
-    double left = view.left;
-    double right = view.right;
-    if (!isXYPlot() && !isSnapshotPlot()) {
-      // Time-series X is absolute in the layout; convert to the current display frame.
-      // XY and snapshot X are data values, offset-independent — used verbatim.
-      const double offset_sec = displayOffsetSeconds();
-      left -= offset_sec;
-      right -= offset_sec;
+    double left = 0.0;
+    double right = 0.0;
+    if (view.x_is_absolute && view.left_ns.has_value() && view.right_ns.has_value()) {
+      // Authoritative path (schema v4+): subtract the display offset in the INTEGER
+      // ns domain, THEN convert the small display value to seconds. Converting the
+      // epoch-scale absolute value to a double first would round away a few-ns window
+      // (a double's ULP at ~1.6e9 s is ~238 ns), so a deep-zoom viewport would drift.
+      const qint64 left_ns = *view.left_ns;
+      const qint64 right_ns = *view.right_ns;
+      const bool degenerate = left_ns == right_ns;
+      const qint64 offset_ns = displayOffsetNanoseconds();
+      left = static_cast<double>(left_ns - offset_ns) / kNanosecondsPerSecond;
+      right = static_cast<double>(right_ns - offset_ns) / kNanosecondsPerSecond;
+      // Degenerate-range tolerance: a window saved while zoomed below 1 ns rounds to
+      // equal ns edges. Falling through to auto-fit would wedge undo/redo after a deep
+      // zoom -- the snapshot could never restore. Nudge the collapsed edges +-0.5 ns so a
+      // real (if sub-pixel) window is restored. Near zero (offset ON) that already yields
+      // two distinct doubles; with "Use time offset" OFF the display value sits at epoch
+      // scale (~1.6e9 s) where 0.5 ns is far below the double ULP (~2.4e-7 s) and both
+      // edges collapse back to one value -- so if the nudged window is STILL degenerate,
+      // widen to the ULP-aware minimum around its center, which is guaranteed distinct.
+      // The magnifier's floor keeps LIVE zooming out of this regime; this only rescues an
+      // already-persisted degenerate range.
+      if (degenerate) {
+        const double center = 0.5 * (left + right);
+        left = center - 0.5e-9;
+        right = center + 0.5e-9;
+        if (left == right) {
+          const double half_width = 0.5 * plotting_detail::ulpAwareMinTimeXWidthSec(center);
+          left = center - half_width;
+          right = center + half_width;
+        }
+      }
+    } else {
+      // Fallback: a v3 decimal-only layout, or an XY value axis. The decimal seconds
+      // are the only representation; an XY axis is offset-independent (used verbatim).
+      left = view.left;
+      right = view.right;
+      if (view.x_is_absolute) {
+        const double offset_sec = displayOffsetSeconds();
+        left -= offset_sec;
+        right -= offset_sec;
+      }
     }
     rect.setBottom(view.bottom);
     rect.setTop(view.top);
@@ -963,18 +1188,18 @@ void PlotWidget::applySavedViewportOrZoom(bool clear_after) {
   }
 }
 
-PlotWidget::CurveInfo* PlotWidget::applyCurveElement(const QDomElement& curve_element) {
-  const QColor color(curve_element.attribute(QStringLiteral("color")));
+PlotWidget::CurveInfo* PlotWidget::applyCurveElement(const QDomElement& curve_element, bool preserve_viewport) {
+  const QColor color(curve_element.attribute(u"color"_s));
   CurveInfo* loaded_curve = nullptr;
-  if (curve_element.hasAttribute(QStringLiteral("snapshot_y"))) {
+  if (curve_element.hasAttribute(u"snapshot_y"_s)) {
     // Snapshot curve: re-resolve the whole wildcard group from the stable topic name
     // + patterns. Idempotent (progressive rebind re-applies the same element), and a
     // no-op when the topic is absent from the catalog — the graceful-degradation
     // contract, matching how an unresolved regular curve simply never appears.
-    const QString topic_name = curve_element.attribute(QStringLiteral("topic"));
-    const QString x_pattern = curve_element.attribute(QStringLiteral("snapshot_x"));
-    const QString y_pattern = curve_element.attribute(QStringLiteral("snapshot_y"));
-    const QString label = curve_element.attribute(QStringLiteral("label"));
+    const QString topic_name = curve_element.attribute(u"topic"_s);
+    const QString x_pattern = curve_element.attribute(u"snapshot_x"_s);
+    const QString y_pattern = curve_element.attribute(u"snapshot_y"_s);
+    const QString label = curve_element.attribute(u"label"_s);
     loaded_curve = curveFromTitle(stableSnapshotKey(topic_name, x_pattern, y_pattern));
     if (loaded_curve == nullptr && catalog_ != nullptr) {
       // Resolve the topic id/dataset AND collect its columns in ONE catalog pass, so a
@@ -1005,11 +1230,10 @@ PlotWidget::CurveInfo* PlotWidget::applyCurveElement(const QDomElement& curve_el
         }
       }
     }
-  } else if (isXYPlot() && curve_element.hasAttribute(QStringLiteral("curve_x")) &&
-             curve_element.hasAttribute(QStringLiteral("curve_y"))) {
-    const QString x_name = curve_element.attribute(QStringLiteral("curve_x"));
-    const QString y_name = curve_element.attribute(QStringLiteral("curve_y"));
-    const QString source_name = curve_element.attribute(QStringLiteral("name"));
+  } else if (isXYPlot() && curve_element.hasAttribute(u"curve_x"_s) && curve_element.hasAttribute(u"curve_y"_s)) {
+    const QString x_name = curve_element.attribute(u"curve_x"_s);
+    const QString y_name = curve_element.attribute(u"curve_y"_s);
+    const QString source_name = curve_element.attribute(u"name"_s);
     for (CurveInfo& info : curveList()) {
       if (auto* xy_series = info.curve != nullptr ? dynamic_cast<PointSeriesXY*>(info.curve->data()) : nullptr) {
         if (curveKey(info.source_name, xy_series->xSource().name, xy_series->ySource().name) ==
@@ -1021,12 +1245,14 @@ PlotWidget::CurveInfo* PlotWidget::applyCurveElement(const QDomElement& curve_el
     }
     if (loaded_curve == nullptr) {
       // Restore the saved alias as the title; no dialog on load.
+      const QScopedValueRollback guard(loading_state_, loading_state_ || preserve_viewport);
       loaded_curve = addCurveXY(x_name, y_name, source_name, color.isValid() ? color : Qt::transparent);
     }
   } else {
-    const QString curve_name = curve_element.attribute(QStringLiteral("name"));
+    const QString curve_name = curve_element.attribute(u"name"_s);
     loaded_curve = curveFromTitle(curve_name);
     if (loaded_curve == nullptr) {
+      const QScopedValueRollback guard(loading_state_, loading_state_ || preserve_viewport);
       loaded_curve = addCurve(curve_name, color.isValid() ? color : Qt::transparent);
     }
   }
@@ -1043,8 +1269,8 @@ PlotWidget::CurveInfo* PlotWidget::applyCurveElement(const QDomElement& curve_el
   // Style and width are plot-level (restored once in xmlLoadState); only colour
   // and visibility are per-curve.
   if (loaded_curve != nullptr) {
-    const QString visible_attr = curve_element.attribute(QStringLiteral("visible"), QStringLiteral("true"));
-    loaded_curve->curve->setVisible(visible_attr == QStringLiteral("true"));
+    const QString visible_attr = curve_element.attribute(u"visible"_s, u"true"_s);
+    loaded_curve->curve->setVisible(visible_attr == "true"_L1);
   }
   return loaded_curve;
 }
@@ -1118,6 +1344,26 @@ void PlotWidget::setTrackerPosition(double display_time_sec) {
 
   tracker_->setEnabled(tracker_enabled_ && !isXYPlot());
   if (isXYPlot()) {
+    // An XY plot has no time axis, so the vertical-line tracker is meaningless.
+    // Instead each curve's marker rides along the parametric curve, sitting on
+    // the (x,y) sample at the current time (PJ3 parity).
+    for (CurveInfo& info : curveList()) {
+      if (info.marker == nullptr || info.curve == nullptr) {
+        continue;
+      }
+      const auto* series = dynamic_cast<const PointSeriesXY*>(info.curve->data());
+      std::optional<QPointF> point;
+      if (series != nullptr) {
+        point = series->sampleFromTime(display_time_sec);
+      }
+      if (point.has_value() && info.curve->isVisible()) {
+        info.marker->setValue(*point);
+        info.marker->setVisible(true);
+      } else {
+        info.marker->setVisible(false);
+      }
+    }
+    replot();
     return;
   }
   tracker_->setPosition(QPointF(display_time_sec, 0.0));
@@ -1128,6 +1374,11 @@ void PlotWidget::onChangeCurveColor(const QString& curve_name, QColor new_color)
   CurveInfo* info = curveFromTitle(curve_name);
   if (info != nullptr && info->curve != nullptr) {
     info->curve->setPen(new_color, info->curve->pen().widthF());
+    // The Lines-and-Dots symbol snapshots its color at creation; recolor it
+    // too or the dots keep the old hue.
+    if (const QwtSymbol* symbol = info->curve->symbol(); symbol != nullptr) {
+      info->curve->setSymbol(new QwtSymbol(symbol->style(), new_color, QPen(new_color), symbol->size()));
+    }
     // Remember the override so the curve keeps this color when re-dragged into
     // another plot (issue #68). Keyed by source_name, the same key addCurve uses.
     // Time-series only: XY curves are keyed by a composed title and the registry
@@ -1156,31 +1407,10 @@ void PlotWidget::setCurveStyle(const QString& curve_name, CurveStyle style) {
   if (info == nullptr || info->curve == nullptr) {
     return;
   }
-  // Mirror PlotWidgetBase::setStyle()'s style-to-Qwt mapping (Steps + Inverted
-  // attribute), but skip the pen-width assignment so per-curve width set via
-  // setCurveLineWidth() survives a style toggle.
-  switch (style) {
-    case kLines:
-      info->curve->setStyle(QwtPlotCurve::Lines);
-      break;
-    case kLinesAndDots:
-      info->curve->setStyle(QwtPlotCurve::LinesAndDots);
-      break;
-    case kDots:
-      info->curve->setStyle(QwtPlotCurve::Dots);
-      break;
-    case kSticks:
-      info->curve->setStyle(QwtPlotCurve::Sticks);
-      break;
-    case kSteps:
-      info->curve->setStyle(QwtPlotCurve::Steps);
-      info->curve->setCurveAttribute(QwtPlotCurve::Inverted, false);
-      break;
-    case kStepsInverted:
-      info->curve->setStyle(QwtPlotCurve::Steps);
-      info->curve->setCurveAttribute(QwtPlotCurve::Inverted, true);
-      break;
-  }
+  // Same style-to-Qwt mapping as PlotWidgetBase::setStyle(), minus the
+  // pen-width assignment so per-curve width set via setCurveLineWidth()
+  // survives a style toggle.
+  applyStyleToCurve(info->curve, style);
   replot();
   if (!loading_state_) {
     emit undoableChange();
@@ -1314,18 +1544,20 @@ void PlotWidget::onExternallyResized(const QRectF& rect) {
       // Wheel-zoom (magnifier) and pan bypass the drag-zoom keep-ratio path,
       // and the magnifier clamps each axis independently at the data bounds —
       // that asymmetry skews a 1:1 circle into an ellipse. Re-impose the
-      // canvas aspect ratio on the event's rect (not currentBoundingRect():
-      // the magnifier emits this signal before it replots, so the current
-      // view is still stale here).
+      // canvas aspect ratio on the event's rect — the exact proposed gesture
+      // viewport, immune to canvas-map round-off.
       applyRectKeepingRatio(rect);
       replot();
     }
+    gesture_undo_debounce_.start();
     return;  // XY never emits rectChanged (PJ3 parity).
   }
-  if (!isZoomLinkEnabled()) {
-    return;
+  if (isZoomLinkEnabled()) {
+    emit rectChanged(this, rect);
   }
-  emit rectChanged(this, rect);
+  // rectChanged reaches linked peers immediately; the history snapshot is
+  // debounced so a continuous gesture publishes once, after its last event.
+  gesture_undo_debounce_.start();
 }
 
 void PlotWidget::onDragEnterEvent(QDragEnterEvent* event) {
@@ -1335,9 +1567,9 @@ void PlotWidget::onDragEnterEvent(QDragEnterEvent* event) {
   }
 
   const QMimeData* mime_data = event->mimeData();
-  if (mime_data->hasFormat(QStringLiteral("curveslist/add_curve"))) {
-    const QStringList curves = decodeCurveDrop(mime_data, QStringLiteral("curveslist/add_curve"));
-    if (!curves.empty() && allCurvesKnown(curves) && !isXYPlot()) {
+  if (mime_data->hasFormat(u"curveslist/add_curve"_s)) {
+    const QStringList curves = decodeCurveDrop(mime_data, u"curveslist/add_curve"_s);
+    if (!curves.empty() && allCurvesDroppable(curves) && !isXYPlot()) {
       dragging_.mode = DragMode::kCurves;
       dragging_.curves = curves;
       event->acceptProposedAction();
@@ -1374,6 +1606,13 @@ void PlotWidget::onDropEvent(QDropEvent* event) {
     } else {
       setModeXY(false);
       for (const QString& curve_name : dragging_.curves) {
+        if (isPlaceholderCurveName(curve_name)) {
+          // No fabricated curve — the shell (TopicDemandController) registers
+          // demand and a pending bind that completes once real data arrives.
+          emit placeholderCurveDropped(curve_name);
+          curves_changed = true;
+          continue;
+        }
         curves_changed = addCurve(curve_name) != nullptr || curves_changed;
       }
     }
@@ -1439,7 +1678,7 @@ void PlotWidget::buildActions() {
 }
 
 void PlotWidget::copyWidgetToClipboard() {
-  QDomDocument doc(QStringLiteral("plotjuggler_widget"));
+  QDomDocument doc(u"plotjuggler_widget"_s);
   QDomElement plot_element = xmlSaveState(doc);
   if (plot_element.isNull()) {
     return;
@@ -1451,11 +1690,11 @@ void PlotWidget::copyWidgetToClipboard() {
 
 void PlotWidget::pasteWidgetFromClipboard() {
   QDomDocument doc;
-  if (!widget_clipboard::parse(doc, QStringLiteral("plot"))) {
+  if (!widget_clipboard::parse(doc, u"plot"_s)) {
     return;
   }
   QDomElement plot_element = doc.documentElement();
-  plot_element.setAttribute(QStringLiteral("id"), state_id_);
+  plot_element.setAttribute(u"id"_s, state_id_);
   rebindClipboardCurveKeys(plot_element);
   if (xmlLoadState(plot_element)) {
     emit undoableChange();
@@ -1464,21 +1703,40 @@ void PlotWidget::pasteWidgetFromClipboard() {
 
 bool PlotWidget::canPasteWidgetFromClipboard() const {
   QDomDocument doc;
-  return widget_clipboard::parse(doc, QStringLiteral("plot"));
+  return widget_clipboard::parse(doc, u"plot"_s);
 }
 
 void PlotWidget::stampClipboardCurveKeys(QDomElement& plot_element) const {
-  QDomElement curve_element = plot_element.firstChildElement(QStringLiteral("curve"));
+  // Full-path qualifier so a clipboard paste in a later session can validate a
+  // reminted id (see rebindClipboardCurveKeys). xmlSaveState already stamped
+  // dataset_id + dataset_source; the path is the tiebreak for same-basename files.
+  const auto stamp_path = [this](QDomElement& curve, const QString& path_attr, DatasetId dataset_id) {
+    if (catalog_ == nullptr) {
+      return;
+    }
+    const QString path = catalog_->datasetSourcePath(dataset_id);
+    if (!path.isEmpty()) {
+      curve.setAttribute(path_attr, path);
+    }
+  };
+
+  QDomElement curve_element = plot_element.firstChildElement(u"curve"_s);
   for (const CurveInfo& info : curveList()) {
     if (info.curve == nullptr || curve_element.isNull()) {
       continue;
     }
-    curve_element.setAttribute(QStringLiteral("name"), info.source_name);
+    curve_element.setAttribute(u"name"_s, info.source_name);
     if (auto* xy_series = dynamic_cast<PointSeriesXY*>(info.curve->data())) {
-      curve_element.setAttribute(QStringLiteral("curve_x"), xy_series->xSource().name);
-      curve_element.setAttribute(QStringLiteral("curve_y"), xy_series->ySource().name);
+      curve_element.setAttribute(u"curve_x"_s, xy_series->xSource().name);
+      curve_element.setAttribute(u"curve_y"_s, xy_series->ySource().name);
+      stamp_path(curve_element, u"x_dataset_path"_s, xy_series->xSource().dataset_id);
+      stamp_path(curve_element, u"y_dataset_path"_s, xy_series->ySource().dataset_id);
+    } else if (catalog_ != nullptr) {
+      if (const auto descriptor = catalog_->curveDescriptor(info.source_name); descriptor.has_value()) {
+        stamp_path(curve_element, u"dataset_path"_s, descriptor->dataset_id);
+      }
     }
-    curve_element = curve_element.nextSiblingElement(QStringLiteral("curve"));
+    curve_element = curve_element.nextSiblingElement(u"curve"_s);
   }
 }
 
@@ -1486,35 +1744,76 @@ void PlotWidget::rebindClipboardCurveKeys(QDomElement& plot_element) const {
   if (catalog_ == nullptr) {
     return;
   }
-  const auto resolve = [this](const QString& topic, const QString& field) -> QString {
+  // Clipboard XML carries the same dataset qualifiers as any snapshot (dataset_id +
+  // dataset_source + full dataset_path, written by xmlSaveState/stampClipboardCurveKeys),
+  // and the clipboard outlives undo-history epochs: a pasted id may be stale or reminted.
+  // Three-way result:
+  //   value  = resolved concrete key -> set it;
+  //   empty  = the curve WAS qualified but resolution failed -> CLEAR the concrete key,
+  //            so a stale opaque key from another session can never collide with a live
+  //            different-dataset series;
+  //   nullopt = unqualified legacy copy that stays ambiguous -> leave the copied key
+  //             intact (today's behavior; xmlLoadState drops it if it no longer resolves).
+  const auto resolve = [this](
+                           const QDomElement& curve, const QString& topic_attr, const QString& field_attr,
+                           const QString& id_attr, const QString& source_attr,
+                           const QString& path_attr) -> std::optional<QString> {
+    const QString topic = curve.attribute(topic_attr);
+    const QString field = curve.attribute(field_attr);
     if (topic.isEmpty() || field.isEmpty()) {
-      return {};
+      return std::nullopt;
     }
-    for (const CurveDescriptor& descriptor : catalog_->curves()) {
-      if (descriptor.topic_name == topic && descriptor.field_path == field) {
-        return descriptor.name;
-      }
+    const DatasetId dataset_id = curve.attribute(id_attr).toUInt();
+    const QString dataset_source = curve.attribute(source_attr);
+    const QString dataset_path = curve.attribute(path_attr);
+    // Shared resolver (same three tiers as layout/undo restore, incl. the
+    // full-path-fallback leg the local scan used to lack) — a resolved key comes
+    // back concrete. A miss is nullopt, so map it to the 3-way apply below by
+    // re-deriving whether the curve WAS qualified: qualified-miss clears the key
+    // (never let a stale opaque key collide with a live different-dataset series),
+    // unqualified-miss leaves it untouched (today's behavior).
+    const auto key = catalog_->resolveCurveKey(dataset_id, dataset_source, dataset_path, topic, field);
+    if (key.has_value()) {
+      return key;
     }
-    return {};
+    const bool was_qualified = dataset_id != 0 || !dataset_source.isEmpty() || !dataset_path.isEmpty();
+    return was_qualified ? std::optional<QString>{QString{}} : std::nullopt;
   };
 
-  for (QDomElement curve = plot_element.firstChildElement(QStringLiteral("curve")); !curve.isNull();
-       curve = curve.nextSiblingElement(QStringLiteral("curve"))) {
-    if (curve.hasAttribute(QStringLiteral("x_topic"))) {
-      const QString x_key =
-          resolve(curve.attribute(QStringLiteral("x_topic")), curve.attribute(QStringLiteral("x_field")));
-      const QString y_key =
-          resolve(curve.attribute(QStringLiteral("y_topic")), curve.attribute(QStringLiteral("y_field")));
-      if (!x_key.isEmpty() && !y_key.isEmpty()) {
-        curve.setAttribute(QStringLiteral("curve_x"), x_key);
-        curve.setAttribute(QStringLiteral("curve_y"), y_key);
+  // Applies a resolve() result to one key attribute: overwrite on success, remove
+  // on qualified failure (empty), leave untouched when the result is nullopt.
+  const auto apply_key = [](QDomElement& curve, const QString& key_attr, const std::optional<QString>& result) {
+    if (!result.has_value()) {
+      return;
+    }
+    if (result->isEmpty()) {
+      curve.removeAttribute(key_attr);
+    } else {
+      curve.setAttribute(key_attr, *result);
+    }
+  };
+
+  for (QDomElement curve = plot_element.firstChildElement(u"curve"_s); !curve.isNull();
+       curve = curve.nextSiblingElement(u"curve"_s)) {
+    if (curve.hasAttribute(u"x_topic"_s)) {
+      const std::optional<QString> x_key =
+          resolve(curve, u"x_topic"_s, u"x_field"_s, u"x_dataset_id"_s, u"x_dataset_source"_s, u"x_dataset_path"_s);
+      const std::optional<QString> y_key =
+          resolve(curve, u"y_topic"_s, u"y_field"_s, u"y_dataset_id"_s, u"y_dataset_source"_s, u"y_dataset_path"_s);
+      // An XY curve is undrawable unless BOTH axes resolve. If either axis was
+      // qualified-but-failed, clear both keys so no stale half survives.
+      if (x_key.has_value() && !x_key->isEmpty() && y_key.has_value() && !y_key->isEmpty()) {
+        curve.setAttribute(u"curve_x"_s, *x_key);
+        curve.setAttribute(u"curve_y"_s, *y_key);
+      } else if ((x_key.has_value() && x_key->isEmpty()) || (y_key.has_value() && y_key->isEmpty())) {
+        curve.removeAttribute(u"curve_x"_s);
+        curve.removeAttribute(u"curve_y"_s);
       }
       continue;
     }
-    const QString key = resolve(curve.attribute(QStringLiteral("topic")), curve.attribute(QStringLiteral("field")));
-    if (!key.isEmpty()) {
-      curve.setAttribute(QStringLiteral("name"), key);
-    }
+    apply_key(
+        curve, u"name"_s,
+        resolve(curve, u"topic"_s, u"field"_s, u"dataset_id"_s, u"dataset_source"_s, u"dataset_path"_s));
   }
 }
 
@@ -1524,7 +1823,7 @@ void PlotWidget::canvasContextMenuTriggered(const QPoint& pos) {
   }
 
   QMenu menu(qwtPlot());
-  menu.setObjectName(QStringLiteral("PJMenu"));
+  menu.setObjectName(u"PJMenu"_s);
   menu.setProperty("categorySeparators", true);
   // Refresh icons with the active theme on every popup so the
   // glyphs stay correctly tinted after a theme switch.
@@ -1632,9 +1931,9 @@ void PlotWidget::setAxisScale(QwtAxisId axis_id, double min, double max) {
   qwtPlot()->setAxisScale(axis_id, min, max);
 }
 
-double PlotWidget::displayOffsetSeconds() const {
+std::optional<DisplayOffset> PlotWidget::representativeDisplayOffset() const {
   if (session_ == nullptr) {
-    return 0.0;
+    return std::nullopt;
   }
   // The axis is shared across curves; in the common case they share a dataset
   // (hence one offset). When they don't, the first datastore-backed curve's
@@ -1645,11 +1944,20 @@ double PlotWidget::displayOffsetSeconds() const {
       continue;
     }
     if (const auto* adapter = dynamic_cast<const DatastoreCurveAdapter*>(info.curve->data())) {
-      const DisplayOffset offset = session_->displayOffset(adapter->source().dataset_id);
-      return std::chrono::duration<double>(offset.value).count();
+      return session_->displayOffset(adapter->source().dataset_id);
     }
   }
-  return 0.0;
+  return std::nullopt;
+}
+
+double PlotWidget::displayOffsetSeconds() const {
+  const std::optional<DisplayOffset> offset = representativeDisplayOffset();
+  return offset.has_value() ? std::chrono::duration<double>(offset->value).count() : 0.0;
+}
+
+qint64 PlotWidget::displayOffsetNanoseconds() const {
+  const std::optional<DisplayOffset> offset = representativeDisplayOffset();
+  return offset.has_value() ? static_cast<qint64>(offset->value.count()) : 0;
 }
 
 QStringList PlotWidget::decodeCurveDrop(const QMimeData* mime_data, const QString& format) const {
@@ -1679,28 +1987,46 @@ bool PlotWidget::allCurvesKnown(const QStringList& curves) const {
   });
 }
 
+bool PlotWidget::isPlaceholderCurveName(const QString& name) const {
+  if (catalog_ == nullptr) {
+    return false;
+  }
+  const auto item = catalog_->itemDescriptor(name);
+  return item.has_value() && isAdvertisedTopic(*item) &&
+         asAdvertisedTopic(*item)->classification == sdk::BuiltinObjectType::kNone;
+}
+
+bool PlotWidget::allCurvesDroppable(const QStringList& curves) const {
+  if (catalog_ == nullptr) {
+    return false;
+  }
+  return std::all_of(curves.begin(), curves.end(), [this](const QString& curve_name) {
+    return catalog_->curveDescriptor(curve_name).has_value() || isPlaceholderCurveName(curve_name);
+  });
+}
+
 QString PlotWidget::lineWidthToString(LineWidth width) {
   switch (width) {
     case LineWidth::kPoints10:
-      return QStringLiteral("1.0");
+      return u"1.0"_s;
     case LineWidth::kPoints15:
-      return QStringLiteral("1.5");
+      return u"1.5"_s;
     case LineWidth::kPoints20:
-      return QStringLiteral("2.0");
+      return u"2.0"_s;
     case LineWidth::kPoints30:
-      return QStringLiteral("3.0");
+      return u"3.0"_s;
   }
-  return QStringLiteral("1.0");
+  return u"1.0"_s;
 }
 
 LineWidth PlotWidget::lineWidthFromString(QString value) {
-  if (value == QStringLiteral("1.5")) {
+  if (value == "1.5"_L1) {
     return LineWidth::kPoints15;
   }
-  if (value == QStringLiteral("2.0")) {
+  if (value == "2.0"_L1) {
     return LineWidth::kPoints20;
   }
-  if (value == QStringLiteral("3.0")) {
+  if (value == "3.0"_L1) {
     return LineWidth::kPoints30;
   }
   return LineWidth::kPoints10;
@@ -1728,35 +2054,35 @@ LineWidth PlotWidget::lineWidthFromPixels(double pixels) {
 QString PlotWidget::curveStyleToString(CurveStyle style) {
   switch (style) {
     case kLines:
-      return QStringLiteral("Lines");
+      return u"Lines"_s;
     case kDots:
-      return QStringLiteral("Dots");
+      return u"Dots"_s;
     case kLinesAndDots:
-      return QStringLiteral("LinesAndDots");
+      return u"LinesAndDots"_s;
     case kSticks:
-      return QStringLiteral("Sticks");
+      return u"Sticks"_s;
     case kSteps:
-      return QStringLiteral("Steps");
+      return u"Steps"_s;
     case kStepsInverted:
-      return QStringLiteral("StepsInverted");
+      return u"StepsInverted"_s;
   }
-  return QStringLiteral("Lines");
+  return u"Lines"_s;
 }
 
 PlotWidgetBase::CurveStyle PlotWidget::curveStyleFromString(QString value) {
-  if (value == QStringLiteral("Dots")) {
+  if (value == "Dots"_L1) {
     return kDots;
   }
-  if (value == QStringLiteral("LinesAndDots")) {
+  if (value == "LinesAndDots"_L1) {
     return kLinesAndDots;
   }
-  if (value == QStringLiteral("Sticks")) {
+  if (value == "Sticks"_L1) {
     return kSticks;
   }
-  if (value == QStringLiteral("Steps")) {
+  if (value == "Steps"_L1) {
     return kSteps;
   }
-  if (value == QStringLiteral("StepsInverted")) {
+  if (value == "StepsInverted"_L1) {
     return kStepsInverted;
   }
   return kLines;
@@ -1776,8 +2102,10 @@ void PlotWidget::reconnectDataSignals() {
     disconnect(display_offset_dataset_connection_);
   }
   if (session_ == nullptr) {
+    last_global_time_reference_ = 0;
     return;
   }
+  last_global_time_reference_ = session_->globalTimeReference();
 
   samples_ingested_connection_ =
       connect(session_, &SessionManager::samplesIngested, this, [this](const QVector<TopicId>& ids, bool live) {
@@ -1875,12 +2203,17 @@ void PlotWidget::reconnectDataSignals() {
 
   // Global "Use time offset" toggled (or otherwise re-based): every curve's x
   // shifts by a constant and NO topic changed, so a per-topic samplesIngested
-  // would skip them all. Drop each time-series adapter's cached offset and
-  // re-fit, since the prior zoom rect (in display seconds) no longer frames the
-  // shifted data.
+  // would skip them all. Translate the current viewport by the same frame delta
+  // so its absolute interval survives the automatic global rebase.
   display_offset_connection_ = connect(session_, qOverload<>(&SessionManager::displayOffsetChanged), this, [this]() {
+    const Timestamp new_reference = session_ != nullptr ? session_->globalTimeReference() : 0;
+    const double delta_seconds = timestampDifferenceSeconds(last_global_time_reference_, new_reference);
+    last_global_time_reference_ = new_reference;
     if (invalidateAdapterOffsets()) {
-      resetZoom();
+      QRectF viewport = currentBoundingRect();
+      viewport.translate(delta_seconds, 0.0);
+      updateMaximumZoomArea();
+      setZoomRectangle(viewport, /*emit_signal=*/false);
     }
     // The curves just moved to the new frame, so each tracker's cached
     // intersection markers (the circles) were sampled against the OLD data and
@@ -1906,6 +2239,10 @@ void PlotWidget::reconnectDataSignals() {
   display_offset_dataset_connection_ = connect(
       session_, qOverload<PJ::DatasetId>(&SessionManager::displayOffsetChanged), this, [this](DatasetId dataset_id) {
         if (invalidateAdapterOffsets(dataset_id)) {
+          // The max zoom-out rect (and the magnifier's wheel-out clamp) is
+          // view-independent data state: refresh it here or it stays frozen at
+          // the pre-drag union of curve ranges.
+          updateMaximumZoomArea();
           replot();  // current zoom; the source's curve slides into its new position
         }
       });

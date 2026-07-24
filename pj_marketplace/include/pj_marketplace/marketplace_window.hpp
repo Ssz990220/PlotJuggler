@@ -2,15 +2,12 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-#include <QDialog>
 #include <QMap>
 #include <QUrl>
 
 #include "pj_marketplace/extension.hpp"
 #include "pj_marketplace/installed_extension.hpp"
-
-class QLabel;
-class QMouseEvent;
+#include "pj_widgets/Dialog.h"
 
 namespace Ui {
 class MarketplaceWindow;
@@ -22,8 +19,9 @@ class DownloadManager;
 class ExtensionManager;
 class RegistryManager;
 
-// Marketplace dialog that renders registry extensions and local install state.
-class MarketplaceWindow : public QDialog {
+// Marketplace window on the canonical app chrome (PJ::Dialog): frameless title
+// bar + close, no system (window-manager) decorations.
+class MarketplaceWindow : public Dialog {
   Q_OBJECT
 
  public:
@@ -51,9 +49,6 @@ class MarketplaceWindow : public QDialog {
   // Refreshes installed state before cards are painted.
   void showEvent(QShowEvent* event) override;
 
-  // System-move on title-bar drag (frameless dialog chrome).
-  void mousePressEvent(QMouseEvent* event) override;
-
  private slots:
   // Updates the search filter.
   void onSearchChanged(const QString& text);
@@ -67,9 +62,6 @@ class MarketplaceWindow : public QDialog {
   // Queues updates for every installed extension with a newer registry version.
   void onUpdateAllClicked();
 
-  // Opens the registry URL settings dialog.
-  void onSettingsClicked();
-
   // Opens a read-only view of recent marketplace diagnostics.
   void onDiagnosticsClicked();
 
@@ -80,13 +72,11 @@ class MarketplaceWindow : public QDialog {
   void onUninstallButtonClicked(const QString& ext_id);
 
  private:
-  // Wraps the .ui's content in a body widget under a custom title bar
-  // (frameless window with drag-to-move + close button), matching the
-  // Dialog chrome used elsewhere in the app. Inlined here because
-  // pj_marketplace_ui can't depend on pj_app's Dialog without
-  // creating a cycle. Extract to a shared widgets module if you find
-  // yourself wanting this in a third place.
-  void installChrome();
+  // Shared constructor tail: UI + signals, optional installed-state snapshot,
+  // initial diagnostics, and the first registry fetch. The caller owns
+  // registry-URL policy (the PJ4 host resolves it from its Preferences-managed
+  // setting); the window never second-guesses registry_url_.
+  void finishConstruction(const QMap<QString, InstalledExtension>* installed);
 
   // Creates widgets from the .ui file and configures fixed UI affordances.
   void setupUi();
@@ -94,8 +84,12 @@ class MarketplaceWindow : public QDialog {
   // Connects registry, extension-manager, and widget signals.
   void setupSignals();
 
-  // Rebuilds extension cards from the current filtered list.
-  void populateCards();
+  // Rebuilds every extension card from filtered_. preserve_scroll keeps the
+  // vertical scroll offset across the teardown/rebuild (true for install/update/
+  // uninstall repaints, so the list doesn't jump to the top mid-session); pass
+  // false when the card set changes meaning — filter/search/registry reload —
+  // where returning to the top is the expected behaviour.
+  void populateCards(bool preserve_scroll = true);
 
   // Applies search and category filters to the registry list.
   void applyFilters();
@@ -112,11 +106,34 @@ class MarketplaceWindow : public QDialog {
   // Shows or hides the diagnostics button based on diagnostic history.
   void updateDiagnosticsButton();
 
-  // Opens the detail dialog for one registry extension.
-  void openDetail(const QString& ext_id);
+  // Rebuilds the right-hand detail panel for the given registry extension (the
+  // currently selected card). Replaces the former modal detail dialog.
+  void showDetail(const QString& ext_id);
+
+  // Applies the "selected" highlight to the card matching selected_ext_id_ and
+  // clears it from the others.
+  void updateCardSelection();
 
   // Processes one pending bulk-update item at a time.
   void processInstallQueue();
+
+  // Shows the status of the in-flight install together with the queue depth,
+  // e.g. "Installing mcap…  ·  2 queued". `verb` is the current phase word
+  // ("Installing", "Verifying", "Extracting"). No-op when nothing is active, so
+  // it never clobbers a terminal "Installed"/"Failed" message. Called on every
+  // event that changes the active id or the queue, so the count stays live and
+  // an enqueue no longer hides what is currently installing.
+  void showInstallProgress(const QString& verb = QStringLiteral("Installing"));
+
+  // "  ·  N queued" for the combined pending_clicks_ + update_queue_ depth,
+  // or an empty string when nothing is waiting.
+  QString queueSuffix() const;
+
+  // Shows an informational (non-error) status, UNLESS an install/update is in
+  // flight — then the status line belongs to that operation, so re-assert its
+  // progress instead of clobbering it with unrelated text (filter count,
+  // "Refreshing", "Ready", "Loading registry"). Errors still go via setStatus().
+  void setInfoStatus(const QString& msg);
 
   Ui::MarketplaceWindow* ui_ = nullptr;
   DownloadManager* download_mgr_ = nullptr;
@@ -127,14 +144,21 @@ class MarketplaceWindow : public QDialog {
   QList<Extension> extensions_;  // populated from RegistryManager::fetchFinished
   QList<Extension> filtered_;
   QList<Extension> update_queue_;
+  // Individual Install/Update button clicks that arrive while another install
+  // is already running. Drained by processInstallQueue() in FIFO order once
+  // active_install_id_ clears.
+  QList<QString> pending_clicks_;
+  // Id of the extension currently being installed or updated by the manager,
+  // set from installStarted and cleared from installFinished. Empty means
+  // idle — the UI-side guard uses this to decide whether to enqueue a click
+  // instead of dispatching it straight to ExtensionManager::install().
+  QString active_install_id_;
+  // Registry id of the card currently selected (shown in the detail panel). One
+  // is always selected while the list is non-empty, so the panel is never empty.
+  QString selected_ext_id_;
   bool installations_changed_ = false;
   bool status_error_sticky_ = false;
   bool initial_snapshot_provided_ = false;
-
-  // Chrome widgets — owned by `this` via parent. Used by mousePressEvent
-  // to identify drag-handle clicks.
-  QWidget* dialog_title_bar_ = nullptr;
-  QLabel* dialog_title_label_ = nullptr;
 };
 
 }  // namespace PJ

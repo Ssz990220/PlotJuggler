@@ -17,8 +17,9 @@ namespace pj::scene3d {
 // device-independent size (`img.deviceIndependentSize()`).
 //
 // `padding` is the logical inset between the panel edge and the text on every
-// side; `panel_alpha` is the 0..255 opacity of the black panel fill; lines are
-// drawn in `text_color`. Returns a NULL QImage when there is nothing to draw
+// side; `panel_alpha` is retained for the legacy call sites while the panel fill
+// comes from the framework HUD overlay token; lines are drawn in `text_color`.
+// Returns a NULL QImage when there is nothing to draw
 // (no lines, or every line empty), so the caller can skip the blit.
 //
 // Why this exists — the perf HUD and the TF hover label must NOT paint their

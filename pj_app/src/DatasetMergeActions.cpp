@@ -17,6 +17,7 @@
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_widgets/MessageBox.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 namespace {
@@ -102,20 +103,19 @@ QString composeDatasetMergeWarning(const AppSession& session, const std::vector<
   // bullet list (the <ul> gives the space-before/space-after). MessageBox's body
   // QLabel is AutoText, so this renders as rich text. Names are HTML-escaped.
   const auto bullet_list = [&info](const std::set<DatasetId>& set) {
-    QString html = QStringLiteral("<ul>");
+    QString html = u"<ul>"_s;
     for (const DatasetId ds : set) {
       const auto it = info.find(ds);
       const QString name = it != info.end() ? it->second.name : QString::number(ds);
-      html += QStringLiteral("<li>") + name.toHtmlEscaped() + QStringLiteral("</li>");
+      html += u"<li>"_s + name.toHtmlEscaped() + u"</li>"_s;
     }
-    return html + QStringLiteral("</ul>");
+    return html + u"</ul>"_s;
   };
   const auto section = [&bullet_list](const QString& lead, const std::set<DatasetId>& set) {
-    return QStringLiteral("<p>") + lead + QStringLiteral("</p>") + bullet_list(set);
+    return u"<p>"_s + lead + u"</p>"_s + bullet_list(set);
   };
 
-  QString text = QStringLiteral("<p>") + tr("Merging datasets is a destructive operation. Do you wish to proceed?") +
-                 QStringLiteral("</p>");
+  QString text = u"<p>"_s + tr("Merging datasets is a destructive operation. Do you wish to proceed?") + u"</p>"_s;
   if (!overlapping.empty()) {
     text += section(tr("The following datasets overlap in time:"), overlapping);
   }
@@ -148,8 +148,7 @@ std::optional<DatasetId> confirmAndMergeDatasets(
       std::find(datasets.begin(), datasets.end(), active_streaming_dataset) != datasets.end()) {
     MessageBox::warning(
         parent, tr("Cannot merge datasets"),
-        QStringLiteral("<p>") + tr("Stop streaming the live source before merging it with other datasets.") +
-            QStringLiteral("</p>"));
+        u"<p>"_s + tr("Stop streaming the live source before merging it with other datasets.") + u"</p>"_s);
     return std::nullopt;
   }
 
@@ -159,27 +158,26 @@ std::optional<DatasetId> confirmAndMergeDatasets(
   // hard-stop: name the offenders and abort before any state is touched.
   if (const auto conflicts = session.objectMergeConflicts(datasets); !conflicts.empty()) {
     constexpr qsizetype kMaxConflictItems = 10;
-    QString list = QStringLiteral("<ul>");
+    QString list = u"<ul>"_s;
     const auto shown = std::min<qsizetype>(static_cast<qsizetype>(conflicts.size()), kMaxConflictItems);
     for (qsizetype i = 0; i < shown; ++i) {
       const ObjectMergeConflict& c = conflicts[static_cast<std::size_t>(i)];
-      list += QStringLiteral("<li>") +
+      list += u"<li>"_s +
               tr("\"%1\": %2 vs %3")
                   .arg(
                       QString::fromStdString(c.topic_name).toHtmlEscaped(), QString::fromUtf8(sdk::name(c.anchor_type)),
                       QString::fromUtf8(sdk::name(c.source_type))) +
-              QStringLiteral("</li>");
+              u"</li>"_s;
     }
     if (const qsizetype remaining = static_cast<qsizetype>(conflicts.size()) - shown; remaining > 0) {
-      list += QStringLiteral("<li>") + tr("...and %1 more").arg(remaining) + QStringLiteral("</li>");
+      list += u"<li>"_s + tr("...and %1 more").arg(remaining) + u"</li>"_s;
     }
-    list += QStringLiteral("</ul>");
+    list += u"</ul>"_s;
     MessageBox::warning(
         parent, tr("Cannot merge datasets"),
-        QStringLiteral("<p>") +
+        u"<p>"_s +
             tr("These object topics share a name but have incompatible types, so the datasets cannot be merged:") +
-            QStringLiteral("</p>") + list + QStringLiteral("<p>") +
-            tr("Remove or rename the conflicting topic and try again.") + QStringLiteral("</p>"));
+            u"</p>"_s + list + u"<p>"_s + tr("Remove or rename the conflicting topic and try again.") + u"</p>"_s);
     return std::nullopt;
   }
 

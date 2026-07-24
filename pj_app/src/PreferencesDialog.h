@@ -8,6 +8,8 @@
 #include "pj_widgets/ChromeMetrics.h"
 #include "pj_widgets/Dialog.h"
 
+class QNetworkAccessManager;
+
 namespace Ui {
 // Generated from PreferencesDialog.ui, whose root <class> is PreferencesContent
 // (Qt Designer syncs the generated class to the root widget's objectName).
@@ -26,8 +28,25 @@ class PreferencesDialog : public Dialog {
   ~PreferencesDialog() override;
 
  private:
+  // Validates the registry-URL field when editing finishes: syntax first, then
+  // a reachability probe (async GET; file:// URLs check existence instead;
+  // skipped entirely when the system is not online, so an offline user can
+  // still store a URL that will work later). The outcome is advisory: a failed
+  // check paints the text red (setRegistryUrlError) and never blocks or
+  // reverts the value.
+  void onRegistryUrlEditingFinished();
+
+  // Toggles the field's red-text error state (QSS keys on the [urlError]
+  // dynamic property; the style is re-polished so the change applies live).
+  void setRegistryUrlError(bool error);
+
   Ui::PreferencesContent* ui_;
   Theme& theme_;
+  // Last text the URL check ran for — suppresses duplicate probes when
+  // editingFinished re-fires with unchanged content (Return spam).
+  QString last_checked_registry_url_;
+  // Created on first reachability probe; parented to the dialog.
+  QNetworkAccessManager* network_ = nullptr;
   // Owns nothing — Qt parentage owns the row widgets. This is just the
   // iteration target for selection updates.
   std::vector<PreferencesNavRow*> nav_rows_;

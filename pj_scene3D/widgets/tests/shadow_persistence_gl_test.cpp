@@ -46,6 +46,8 @@
 #include "pj_scene3d_widgets/passes/mesh_render_pass.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
+#include "pj_widgets/FrameworkTokens.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -101,7 +103,7 @@ class BoxShadowCaster final : public Scene3DLayer {
   [[nodiscard]] PJ::SceneLayerInfo info() const override {
     PJ::SceneLayerInfo info;
     info.topic_id = PJ::ObjectTopicId{1};
-    info.display_name = QStringLiteral("box_caster");
+    info.display_name = u"box_caster"_s;
     info.visible = true;
     return info;
   }
@@ -132,7 +134,9 @@ class ShadowPersistenceGlTest : public ::testing::Test {
     }
     host_ = std::make_unique<QWidget>();
     auto* layout = new QVBoxLayout(host_.get());
-    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setContentsMargins(
+        PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+        PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
     view_ = new SceneViewWidget();
     layout->addWidget(view_);
     host_->resize(480, 360);

@@ -1,6 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
+#include <pj_widgets/Dialog.h>
 #include <pj_widgets/FileDialog.h>
+#include <pj_widgets/FrameworkTokens.h>
 #include <pj_widgets/SvgUtil.h>  // currentTheme()
 
 #include <QBuffer>
@@ -9,7 +11,6 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QEvent>
-#include <QFileDialog>
 #include <QLineEdit>
 #include <QPointer>
 #include <QString>
@@ -25,8 +26,15 @@
 #include <pj_plugins/host_qt/widget_adapters.hpp>
 #include <pj_plugins/host_qt/widget_binding.hpp>
 #include <utility>
+using namespace Qt::StringLiterals;
 
 namespace PJ {
+
+namespace {
+// A hidden panel root delivers one tick per this many timer fires (a pinned
+// toolbox tab that is not current still advances its plugin, just slower).
+constexpr int kHiddenTickDivisor = 10;
+}  // namespace
 
 struct PanelEngine::Impl {
   // DialogHandle has no default ctor; construct Impl with the handle.
@@ -67,6 +75,33 @@ struct PanelEngine::Impl {
     }
   }
 
+  // One full tick: advance the plugin, poll widget_data, apply the diff, and
+  // honor a requestClose. Shared by the tick timer and the Show-event
+  // catch-up (see PanelEngine::eventFilter). The sub_panel guard only matters
+  // for the catch-up path — during a modal sub-dialog exec() the timer is
+  // already paused, and a re-entrant tick could observe half-applied state.
+  void runTick() {
+    if (closed || sub_panel != nullptr) {
+      return;
+    }
+    ++stats.tick_count;
+    (void)handle.tick();
+    if (auto reason = applyAndDiff(); reason.has_value()) {
+      if (close_cb) {
+        close_cb(*reason);
+      }
+      if (request_owner_close) {
+        request_owner_close();
+      }
+    }
+  }
+  // Timer fires skipped since the last delivered tick while the panel root
+  // was hidden (a pinned toolbox tab that is not the current tab).
+  int hidden_tick_skips = 0;
+  // A Show-event catch-up tick is already queued (coalesces bursts of Show
+  // events into one deferred tick).
+  bool show_catchup_queued = false;
+
   // Open the interactive sub-panel from its .ui XML. Unlike the requestSubDialog
   // modal, this is a live, non-blocking child wired into the normal event path:
   // its widgets forward events to the plugin and receive widget-data updates on
@@ -84,22 +119,17 @@ struct PanelEngine::Impl {
       return;
     }
     adaptStyledWidgets(loaded);
-    QDialog* dlg = qobject_cast<QDialog*>(loaded);
-    if (dlg == nullptr) {
-      dlg = new QDialog(root);
-      auto* lay = new QVBoxLayout(dlg);
-      lay->setContentsMargins(0, 0, 0, 0);
-      lay->addWidget(loaded);
-    }
-    // Keep the native title bar (unlike the frameless modal sub-dialog) so the
-    // .ui's windowTitle shows as the dialog title, matching PJ3. "[*]" renders
-    // empty yet stops Qt appending the " - PlotJuggler 4" suffix.
-    dlg->setWindowTitle(loaded->windowTitle() + "[*]");
-    dlg->setAttribute(Qt::WA_StyledBackground, true);
+    // Wrap in the app's canonical frameless chrome — the .ui's windowTitle shows
+    // on the custom title bar. Bindings/signals target `loaded` (the plugin
+    // content), not the whole dialog, so the chrome's own buttons never get wired.
+    auto* dlg = new PJ::Dialog(root);
+    dlg->setDialogTitle(loaded->windowTitle());
+    dlg->contentLayout()->addWidget(loaded);
+    forwardEmbeddedDialogClose(loaded, dlg);
     dlg->setWindowModality(Qt::ApplicationModal);
-    applyWidgetData(dlg, full_view, config.session, config.catalog);
-    connectWidgetSignals(dlg, [this](const std::string& n, const std::string& j) { forwardEvent(n, j); });
-    if (auto* button_box = dlg->findChild<QDialogButtonBox*>(QStringLiteral("buttonBox"))) {
+    applyWidgetData(loaded, full_view, config.session, config.catalog);
+    connectWidgetSignals(loaded, [this](const std::string& n, const std::string& j) { forwardEvent(n, j); });
+    if (auto* button_box = loaded->findChild<QDialogButtonBox*>(QStringLiteral("buttonBox"))) {
       QObject::connect(button_box, &QDialogButtonBox::rejected, dlg, &QDialog::reject);
       QObject::connect(button_box, &QDialogButtonBox::accepted, dlg, &QDialog::accept);
     }
@@ -136,6 +166,7 @@ struct PanelEngine::Impl {
     // each tick. Skip the parse + per-key diff + apply when nothing changed —
     // one-shot requests (close/sub-dialog) flip the bytes, so they still fire.
     if (raw == prev_raw) {
+      ++stats.skipped_identical_count;
       return std::nullopt;
     }
     prev_raw = raw;
@@ -204,31 +235,19 @@ struct PanelEngine::Impl {
       QWidget* sub_loaded = sub_loader.load(&sub_buffer, root);
       if (sub_loaded != nullptr) {
         adaptStyledWidgets(sub_loaded);
-        QDialog* sub_dialog = qobject_cast<QDialog*>(sub_loaded);
-        if (sub_dialog == nullptr) {
-          sub_dialog = new QDialog(root);
-          auto* sub_layout = new QVBoxLayout(sub_dialog);
-          sub_layout->setContentsMargins(0, 0, 0, 0);
-          sub_layout->addWidget(sub_loaded);
-        }
-        // "[*]" renders empty yet stops Qt appending the " — PlotJuggler 4" title suffix.
-        sub_dialog->setWindowTitle(sub_loaded->windowTitle() + "[*]");
-        // Frameless + theme-painted, like the app's own dialogs. The .ui ships a
-        // plain QDialog that otherwise gets the native OS titlebar (which doesn't
-        // match the dark/light chrome). FramelessWindowHint drops the OS frame;
-        // WA_StyledBackground lets the global `QDialog { background: ... }` QSS
-        // paint the themed surface. A 1px border gives the borderless window
-        // definition against whatever sits behind it.
-        sub_dialog->setWindowFlag(Qt::FramelessWindowHint, true);
-        sub_dialog->setWindowFlag(Qt::NoDropShadowWindowHint, true);
-        sub_dialog->setAttribute(Qt::WA_StyledBackground, true);
-        sub_dialog->setStyleSheet(
-            sub_dialog->styleSheet() + QStringLiteral("\nQDialog{border:1px solid palette(mid);}"));
+        // Canonical chrome, same as dialog_engine's sub-dialogs: the plugin
+        // content (QDialog-rooted or not) is embedded as the CONTENT of a
+        // PJ::Dialog, which brings the themed title bar with a working close
+        // button, drag-to-move, and the app dialog surface — the hand-rolled
+        // frameless QDialog this replaces had a border but no affordances.
+        auto* sub_dialog = new PJ::Dialog(root);
+        sub_dialog->setDialogTitle(sub_loaded->windowTitle());
+        sub_dialog->contentLayout()->addWidget(sub_loaded);
+        forwardEmbeddedDialogClose(sub_loaded, sub_dialog);
         // Wire the standard QDialogButtonBox (objectName "buttonBox") to
         // QDialog::accept/reject. Without this the OK/Cancel buttons are
-        // inert and the only way to close the sub-dialog is the window
-        // manager's X — the OK click would do nothing.
-        if (auto* button_box = sub_dialog->findChild<QDialogButtonBox*>(QStringLiteral("buttonBox"))) {
+        // inert — the OK click would do nothing.
+        if (auto* button_box = sub_loaded->findChild<QDialogButtonBox*>(u"buttonBox"_s)) {
           QObject::connect(button_box, &QDialogButtonBox::accepted, sub_dialog, &QDialog::accept);
           QObject::connect(button_box, &QDialogButtonBox::rejected, sub_dialog, &QDialog::reject);
         }
@@ -261,7 +280,7 @@ struct PanelEngine::Impl {
         if (dlg_result == QDialog::Accepted) {
           for (auto* line_edit : sub_dialog->findChildren<QLineEdit*>()) {
             const QString name = line_edit->objectName();
-            if (name.isEmpty() || name.startsWith(QStringLiteral("qt_"))) {
+            if (name.isEmpty() || name.startsWith("qt_"_L1)) {
               continue;
             }
             nlohmann::json ev = {{"text", line_edit->text().toStdString()}};
@@ -269,7 +288,7 @@ struct PanelEngine::Impl {
           }
           for (auto* check_box : sub_dialog->findChildren<QCheckBox*>()) {
             const QString name = check_box->objectName();
-            if (name.isEmpty() || name.startsWith(QStringLiteral("qt_"))) {
+            if (name.isEmpty() || name.startsWith("qt_"_L1)) {
               continue;
             }
             nlohmann::json ev = {{"checked", check_box->isChecked()}};
@@ -277,7 +296,7 @@ struct PanelEngine::Impl {
           }
           for (auto* combo_box : sub_dialog->findChildren<QComboBox*>()) {
             const QString name = combo_box->objectName();
-            if (name.isEmpty() || name.startsWith(QStringLiteral("qt_"))) {
+            if (name.isEmpty() || name.startsWith("qt_"_L1)) {
               continue;
             }
             nlohmann::json ev = {
@@ -388,7 +407,7 @@ QWidget* PanelEngine::openPanel() {
         forward(name, PJ::WidgetEventBuilder::fileSelected(path.toStdString()));
       }
     } else if (picker_view.isFolderPicker(name)) {
-      const QString path = QFileDialog::getExistingDirectory(
+      const QString path = PJ::FileDialog::getExistingDirectory(
           impl_->root, QString::fromStdString(picker_view.folderPickerTitle(name).value_or("Select Folder")));
       if (!path.isEmpty()) {
         forward(name, PJ::WidgetEventBuilder::folderSelected(path.toStdString()));
@@ -402,7 +421,7 @@ QWidget* PanelEngine::openPanel() {
   // fall back on — so without this the Close/OK buttons are inert (the reported
   // bug: Close does nothing in every toolbox). Route them through the same
   // close path as a plugin-requested __request_close.
-  if (auto* button_box = loaded->findChild<QDialogButtonBox*>(QStringLiteral("buttonBox"))) {
+  if (auto* button_box = loaded->findChild<QDialogButtonBox*>(u"buttonBox"_s)) {
     auto on_close = [this]() {
       if (impl_->closed) {
         return;
@@ -461,17 +480,18 @@ QWidget* PanelEngine::openPanel() {
   impl_->tick_timer = new QTimer(this);
   impl_->tick_timer->setInterval(impl_->config.tick_interval_ms);
   QObject::connect(impl_->tick_timer, &QTimer::timeout, this, [this]() {
-    if (impl_->closed) {
-      return;
-    }
-    ++impl_->stats.tick_count;
-    (void)impl_->handle.tick();
-    if (auto reason = impl_->applyAndDiff(); reason.has_value()) {
-      if (impl_->close_cb) {
-        impl_->close_cb(*reason);
+    // A hidden panel root (e.g. a toolbox pinned into a non-current central
+    // tab) ticks at 1/kHiddenTickDivisor rate: the plugin's periodic logic
+    // stays alive (async fetches keep progressing) while the invisible UI
+    // skips most poll+diff work. A Show event delivers a catch-up tick
+    // immediately (see eventFilter), so stale state never flashes on reveal.
+    if (impl_->root != nullptr && !impl_->root->isVisible()) {
+      if (++impl_->hidden_tick_skips < kHiddenTickDivisor) {
+        return;
       }
-      this->close();
     }
+    impl_->hidden_tick_skips = 0;
+    impl_->runTick();
   });
   impl_->tick_timer->start();
 
@@ -519,6 +539,23 @@ bool PanelEngine::eventFilter(QObject* watched, QEvent* event) {
       WidgetDataView view(impl_->prev_raw);
       applyWidgetData(impl_->root, view);
     }
+  }
+  // A panel revealed after being hidden (tab switch back to a pinned toolbox)
+  // may have skipped up to kHiddenTickDivisor-1 timer fires; catch up so the
+  // user never sees stale widget state. Queued, not synchronous: a Show fired
+  // mid-presentation (splitter replaceWidget / stack setCurrentWidget) must
+  // not reenter the host's presentation bookkeeping through a plugin
+  // requestClose before that bookkeeping is committed.
+  if (event->type() == QEvent::Show && watched == impl_->root && !impl_->show_catchup_queued) {
+    impl_->show_catchup_queued = true;
+    impl_->hidden_tick_skips = 0;
+    QMetaObject::invokeMethod(
+        this,
+        [this]() {
+          impl_->show_catchup_queued = false;
+          impl_->runTick();
+        },
+        Qt::QueuedConnection);
   }
   return QObject::eventFilter(watched, event);
 }

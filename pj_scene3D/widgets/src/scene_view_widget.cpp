@@ -44,6 +44,8 @@
 #include "pj_scene3d_widgets/hud_overlay.h"
 #include "pj_scene3d_widgets/render_pass.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
+#include "pj_widgets/FrameworkTokens.h"
+using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
 
@@ -65,6 +67,12 @@ bool perfTraceEnabled() {
 // chain can still be 4x. Seeding from this constant rather than the context is
 // what makes MSAA work docked, not just in the more top-level demo.
 inline constexpr int kDefaultMsaaSamples = 4;
+
+bool cameraStatesEqual(const CameraState& lhs, const CameraState& rhs) {
+  return lhs.focal.x == rhs.focal.x && lhs.focal.y == rhs.focal.y && lhs.focal.z == rhs.focal.z &&
+         lhs.radius == rhs.radius && lhs.azimuth == rhs.azimuth && lhs.elevation == rhs.elevation &&
+         lhs.fov_y == rhs.fov_y && lhs.ortho_scale == rhs.ortho_scale && lhs.perspective == rhs.perspective;
+}
 
 QSurfaceFormat makeDefaultFormat() {
   QSurfaceFormat fmt;
@@ -326,10 +334,14 @@ void SceneViewWidget::recenterOnFollowFrame() {
   // point for every model (Fly synthesizes it from eye + forward), so this recenters
   // generically. Keep the follow baseline consistent so the next tick adds only the
   // frame's subsequent motion, not the jump we just applied.
-  camera_->followShift(glm::vec3(target) - camera_->state().focal);
+  const CameraState before = camera_->state();
+  camera_->followShift(glm::vec3(target) - before.focal);
   follow_prev_origin_ = target;
   follow_seeded_ = true;
   update();
+  if (!cameraStatesEqual(before, camera_->state())) {
+    emit presentationChanged();
+  }
 }
 
 uint64_t SceneViewWidget::followRenderKey(PJ::Timepoint time) const {
@@ -359,6 +371,7 @@ void SceneViewWidget::setAxesVisible(bool visible) {
   }
   axes_visible_ = visible;
   update();
+  emit presentationChanged();
 }
 
 void SceneViewWidget::setTfConnectionsVisible(bool visible) {
@@ -367,6 +380,19 @@ void SceneViewWidget::setTfConnectionsVisible(bool visible) {
   }
   tf_connections_visible_ = visible;
   update();
+  emit presentationChanged();
+}
+
+void SceneViewWidget::setMeshShadingParams(const MeshShadingParams& params) {
+  const bool changed = shading_params_.meshes_visible != params.meshes_visible ||
+                       shading_params_.mesh_opacity != params.mesh_opacity ||
+                       shading_params_.collisions_visible != params.collisions_visible ||
+                       shading_params_.collision_opacity != params.collision_opacity;
+  shading_params_ = params;
+  if (changed) {
+    update();
+    emit presentationChanged();
+  }
 }
 
 void SceneViewWidget::setLayers(const std::vector<Scene3DLayer*>& ordered) {
@@ -872,9 +898,9 @@ void SceneViewWidget::renderScene(
   // application palette is kept in lockstep with the theme by pj_app's Theme.
   const QPalette pal = QGuiApplication::palette();
   const QColor window_bg = pal.color(QPalette::Window);
-  const bool dark_theme = window_bg.valueF() < 0.5F;
-  const QColor bg = dark_theme ? QColor(45, 48, 56) : QColor(255, 255, 255);
-  const QColor fg = dark_theme ? QColor(220, 220, 220) : QColor(40, 40, 40);
+  const auto fw_theme = PJ::theme::themeFor(window_bg.lightness() >= 128);
+  const QColor bg = PJ::theme::surface(PJ::theme::Surface::DataBackdrop, fw_theme);
+  const QColor fg = PJ::theme::onSurface(PJ::theme::Surface::DataBackdrop, PJ::theme::Emphasis::Default, fw_theme);
   // Off-screen path: the scene FBO is linear-light (the composite present
   // re-encodes to sRGB), so display-referred theme colors must be linearized on
   // write. The direct-to-backing fallback has no encode — leave them as-is there.
@@ -995,6 +1021,9 @@ void SceneViewWidget::renderScene(
 }
 
 void SceneViewWidget::setCameraModel(CameraModel model) {
+  if (camera_model_ == model) {
+    return;
+  }
   const CameraState carried = camera_->state();
   std::unique_ptr<ICamera> next;
   switch (model) {
@@ -1014,7 +1043,18 @@ void SceneViewWidget::setCameraModel(CameraModel model) {
   next->adoptState(carried);            // carry the pose across so the view doesn't jump
   next->setSceneBounds(scene_bounds_);  // bounds aren't part of CameraState
   camera_ = std::move(next);
+  camera_model_ = model;
   update();
+  emit presentationChanged();
+}
+
+void SceneViewWidget::resetCamera() {
+  const CameraState before = camera_->state();
+  camera_->reset();
+  update();
+  if (!cameraStatesEqual(before, camera_->state())) {
+    emit presentationChanged();
+  }
 }
 
 void SceneViewWidget::setSceneBounds(const AABB& bounds) {
@@ -1025,6 +1065,7 @@ void SceneViewWidget::setSceneBounds(const AABB& bounds) {
 void SceneViewWidget::mousePressEvent(QMouseEvent* event) {
   last_mouse_pos_ = event->position().toPoint();
   active_button_ = event->button();
+  camera_gesture_changed_ = false;
   // Hide any hover label for the duration of a camera gesture; it re-appears on
   // the next button-free move (the hit-test below only runs with no button).
   if (hovered_frame_.has_value()) {
@@ -1039,6 +1080,10 @@ void SceneViewWidget::mouseReleaseEvent(QMouseEvent* event) {
   // applying the released button's gesture.
   if (event->button() == active_button_) {
     active_button_ = Qt::NoButton;
+    if (camera_gesture_changed_) {
+      camera_gesture_changed_ = false;
+      emit presentationChanged();
+    }
   }
 }
 
@@ -1055,6 +1100,8 @@ void SceneViewWidget::mouseMoveEvent(QMouseEvent* event) {
   const float dx = static_cast<float>(delta.x());
   const float dy = static_cast<float>(delta.y());
   const bool shift = (event->modifiers() & Qt::ShiftModifier) != 0;
+  const CameraState before = camera_->state();
+  bool handled = true;
 
   if (active_button_ == Qt::LeftButton && !shift) {
     camera_->rotate(dx, dy);
@@ -1064,6 +1111,11 @@ void SceneViewWidget::mouseMoveEvent(QMouseEvent* event) {
     // Right-drag stays center-of-view zoom — cursor-anchoring per drag delta
     // walks the focal (focal creep); only the wheel is cursor-anchored.
     camera_->zoom(dy * 0.01f);
+  } else {
+    handled = false;
+  }
+  if (handled && !cameraStatesEqual(before, camera_->state())) {
+    camera_gesture_changed_ = true;
   }
 
   update();
@@ -1119,8 +1171,12 @@ void SceneViewWidget::updateHoverFrame(const QPointF& pos_logical) {
 void SceneViewWidget::wheelEvent(QWheelEvent* event) {
   const float ticks = static_cast<float>(event->angleDelta().y()) / 120.0f;
   const QPointF pos = event->position();
+  const CameraState before = camera_->state();
   camera_->zoomToCursor(ticks, glm::vec2{static_cast<float>(pos.x()), static_cast<float>(pos.y())}, width(), height());
   update();
+  if (!cameraStatesEqual(before, camera_->state())) {
+    emit presentationChanged();
+  }
 }
 
 void SceneViewWidget::changeEvent(QEvent* event) {
@@ -1183,23 +1239,25 @@ void SceneViewWidget::drawPerfHud() {
 
   QStringList lines;
   if (scene_profiler_.hasResult()) {
-    lines << QStringLiteral("GPU  %1 ms").arg(scene_profiler_.averageMillis(), 0, 'f', 2);
+    lines << u"GPU  %1 ms"_s.arg(scene_profiler_.averageMillis(), 0, 'f', 2);
   } else {
-    lines << QStringLiteral("GPU  --");
+    lines << u"GPU  --"_s;
   }
-  lines << QStringLiteral("CPU  %1 ms").arg(cpuFrameMillis(), 0, 'f', 2);
-  lines << QStringLiteral("MSAA %1x").arg(achievedSceneSamples());
+  lines << u"CPU  %1 ms"_s.arg(cpuFrameMillis(), 0, 'f', 2);
+  lines << u"MSAA %1x"_s.arg(achievedSceneSamples());
 
   QFont font;
-  font.setFamily(QStringLiteral("monospace"));
+  font.setFamily(u"monospace"_s);
   font.setStyleHint(QFont::Monospace);
   font.setPointSizeF(9.5);
+
+  const auto fw_theme = PJ::theme::appTheme();
 
   // Rasterize the panel + text on the CPU and blit it: a glyph-atlas-free path
   // that survives the GL context recreation ADS triggers on dock reparent /
   // layout restore (see hud_overlay.h). drawImage is a plain textured quad.
-  const QImage panel =
-      renderHudPanel(lines, font, devicePixelRatioF(), /*padding=*/8, /*panel_alpha=*/150, QColor(235, 235, 235));
+  const QImage panel = renderHudPanel(
+      lines, font, devicePixelRatioF(), /*padding=*/8, /*panel_alpha=*/150, PJ::theme::onOverlayHud(fw_theme));
   if (panel.isNull()) {
     return;
   }
@@ -1238,9 +1296,10 @@ void SceneViewWidget::drawHoverLabel(const FrameContext& frame_ctx) {
   // paint engine renders correctly regardless.
   QFont font;
   font.setPointSizeF(9.5);
+  const auto fw_theme = PJ::theme::appTheme();
   const QImage panel = renderHudPanel(
       {QString::fromStdString(*hovered_frame_)}, font, devicePixelRatioF(),
-      /*padding=*/6, /*panel_alpha=*/170, QColor(235, 235, 235));
+      /*padding=*/6, /*panel_alpha=*/170, PJ::theme::onOverlayHud(fw_theme));
   if (panel.isNull()) {
     return;
   }
@@ -1260,7 +1319,8 @@ void SceneViewWidget::drawHoverLabel(const FrameContext& frame_ctx) {
   // A small ring on the frame origin ties the label to the gizmo it names.
   painter.setRenderHint(QPainter::Antialiasing, true);
   painter.setBrush(Qt::NoBrush);
-  painter.setPen(QPen(QColor(255, 255, 255, 200), 1.5));
+  painter.setPen(
+      QPen(PJ::theme::outline(PJ::theme::OutlineRole::Interactive, PJ::theme::OutlineState::Hovered, fw_theme), 1.5));
   painter.drawEllipse(QPointF(anchor->x, anchor->y), 3.0, 3.0);
 }
 

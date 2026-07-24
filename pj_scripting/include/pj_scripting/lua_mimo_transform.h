@@ -46,12 +46,13 @@ class LuaMimoTransform : public PJ::IMIMOTransform {
       PJ::Timestamp time, PJ::Span<const PJ::VarValue> inputs, PJ::Timestamp& out_time,
       std::vector<PJ::VarValue>& output) override;
 
-  /// Sticky failed state (script error / no instance); the runtime checks it after
-  /// install. Not part of the IMIMOTransform contract (a failed node just suppresses).
-  [[nodiscard]] bool failed() const {
+  /// Sticky failed state (script error / no instance). Part of the
+  /// IMIMOTransform contract: the engine distinguishes a sticky failure (staged
+  /// batch invalidated) from ordinary row suppression through this override.
+  [[nodiscard]] bool failed() const override {
     return !instance_ || instance_->failed();
   }
-  [[nodiscard]] const std::string& error() const {
+  [[nodiscard]] const std::string& error() const override {
     return error_;
   }
   /// The module source this filter was parsed from (for layout `<source_fallback>`).

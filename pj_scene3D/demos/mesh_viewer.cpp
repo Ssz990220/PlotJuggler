@@ -51,7 +51,9 @@
 #include "pj_scene3d_widgets/passes/mesh_render_pass.h"
 #include "pj_scene3d_widgets/scene_look_defaults.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
+#include "pj_widgets/FrameworkTokens.h"
 #include "urdf_package_resolver.h"  // private widgets/src header, like the tests
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -89,16 +91,16 @@ int seedZeroPoseTf(const QString& urdf_path, pj::scene3d::TransformBuffer& tf) {
     return 0;
   }
   int joints = 0;
-  for (QDomElement joint = doc.documentElement().firstChildElement(QStringLiteral("joint")); !joint.isNull();
-       joint = joint.nextSiblingElement(QStringLiteral("joint"))) {
-    const QString parent = joint.firstChildElement(QStringLiteral("parent")).attribute(QStringLiteral("link"));
-    const QString child = joint.firstChildElement(QStringLiteral("child")).attribute(QStringLiteral("link"));
+  for (QDomElement joint = doc.documentElement().firstChildElement(u"joint"_s); !joint.isNull();
+       joint = joint.nextSiblingElement(u"joint"_s)) {
+    const QString parent = joint.firstChildElement(u"parent"_s).attribute(u"link"_s);
+    const QString child = joint.firstChildElement(u"child"_s).attribute(u"link"_s);
     if (parent.isEmpty() || child.isEmpty()) {
       continue;
     }
-    const QDomElement origin = joint.firstChildElement(QStringLiteral("origin"));
-    const glm::dvec3 xyz = parseTriple(origin.attribute(QStringLiteral("xyz")));
-    const glm::dvec3 rpy = parseTriple(origin.attribute(QStringLiteral("rpy")));
+    const QDomElement origin = joint.firstChildElement(u"origin"_s);
+    const glm::dvec3 xyz = parseTriple(origin.attribute(u"xyz"_s));
+    const glm::dvec3 rpy = parseTriple(origin.attribute(u"rpy"_s));
     const auto result = tf.setTransform(
         pj::scene3d::StampedTransform{
             .stamp = PJ::fromRaw(0),
@@ -123,7 +125,7 @@ QString rootLinkName(const QString& urdf_path) {
   if (!doc.setContent(&file)) {
     return {};
   }
-  return doc.documentElement().firstChildElement(QStringLiteral("link")).attribute(QStringLiteral("name"));
+  return doc.documentElement().firstChildElement(u"link"_s).attribute(u"name"_s);
 }
 
 // Slider mapping value/100 -> float, with a live value label.
@@ -132,9 +134,9 @@ QSlider* addSlider(
   auto* slider = new QSlider(Qt::Horizontal);
   slider->setRange(min, max);
   slider->setValue(value);
-  auto* name = new QLabel(QStringLiteral("%1 (%2)").arg(label).arg(value / 100.0));
+  auto* name = new QLabel(u"%1 (%2)"_s.arg(label).arg(value / 100.0));
   QObject::connect(slider, &QSlider::valueChanged, name, [name, label, apply](int v) {
-    name->setText(QStringLiteral("%1 (%2)").arg(label).arg(v / 100.0));
+    name->setText(u"%1 (%2)"_s.arg(label).arg(v / 100.0));
     apply(static_cast<float>(v) / 100.0f);
   });
   form->addRow(name, slider);
@@ -146,7 +148,9 @@ QSlider* addSlider(
 QWidget* makeControls(pj::scene3d::SceneViewWidget& view) {
   auto* panel = new QWidget;
   auto* form = new QFormLayout(panel);
-  form->setContentsMargins(8, 8, 8, 8);
+  form->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::Comfortable), PJ::theme::space(PJ::theme::Space::Comfortable),
+      PJ::theme::space(PJ::theme::Space::Comfortable), PJ::theme::space(PJ::theme::Space::Comfortable));
   const auto repaint = [&view] { view.update(); };
 
   // ---- Anti-aliasing + live perf HUD (what this view exists to explore) ------
@@ -156,7 +160,7 @@ QWidget* makeControls(pj::scene3d::SceneViewWidget& view) {
   live_timer->setInterval(16);  // ~60 Hz request; vsync caps the real rate
   QObject::connect(live_timer, &QTimer::timeout, &view, qOverload<>(&QWidget::update));
 
-  auto* hud_box = new QCheckBox(QStringLiteral("Perf HUD — live GPU/CPU ms (key: P)"));
+  auto* hud_box = new QCheckBox(u"Perf HUD — live GPU/CPU ms (key: P)"_s);
   hud_box->setChecked(true);
   view.setShowPerfHud(true);
   live_timer->start();
@@ -174,41 +178,40 @@ QWidget* makeControls(pj::scene3d::SceneViewWidget& view) {
   // MSAA: anti-aliases geometry silhouettes only (4 / 8 coverage steps). Cheap;
   // does nothing for in-triangle specular shimmer. Index i -> 2^i samples.
   auto* msaa = new QComboBox;
-  msaa->addItems({QStringLiteral("Off (1x)"), QStringLiteral("2x"), QStringLiteral("4x"), QStringLiteral("8x")});
+  msaa->addItems({u"Off (1x)"_s, u"2x"_s, u"4x"_s, u"8x"_s});
   msaa->setCurrentIndex(2);  // 4x — matches the app default
   view.setSceneSamples(4);
   QObject::connect(msaa, &QComboBox::currentIndexChanged, &view, [&view](int idx) { view.setSceneSamples(1 << idx); });
-  form->addRow(QStringLiteral("MSAA"), msaa);
+  form->addRow(u"MSAA"_s, msaa);
 
   // Supersample (SSAA): render the scene at scale x device px and downsample.
   // Anti-aliases BOTH silhouettes and shading; cost grows ~scale^2. 1.0 = off.
   // Tip: with SSAA > 1, drop MSAA to Off — SSAA already covers edges and the
   // MSAA resolve at supersampled resolution is pure waste (watch the HUD).
-  addSlider(form, QStringLiteral("Supersample"), 100, 200, 100, [&view](float v) { view.setRenderScale(v); });
+  addSlider(form, u"Supersample"_s, 100, 200, 100, [&view](float v) { view.setRenderScale(v); });
 
   auto* tonemap = new QComboBox;
-  tonemap->addItems({QStringLiteral("None"), QStringLiteral("ACES"), QStringLiteral("AgX"), QStringLiteral("Neutral")});
+  tonemap->addItems({u"None"_s, u"ACES"_s, u"AgX"_s, u"Neutral"_s});
   tonemap->setCurrentIndex(view.compositeParams().tonemap_mode);
   QObject::connect(tonemap, &QComboBox::currentIndexChanged, &view, [&view, repaint](int idx) {
     view.compositeParams().tonemap_mode = idx;
     repaint();
   });
-  form->addRow(QStringLiteral("Tonemap"), tonemap);
+  form->addRow(u"Tonemap"_s, tonemap);
 
   addSlider(
-      form, QStringLiteral("Exposure"), 25, 400, static_cast<int>(view.compositeParams().exposure * 100),
-      [&view, repaint](float v) {
+      form, u"Exposure"_s, 25, 400, static_cast<int>(view.compositeParams().exposure * 100), [&view, repaint](float v) {
         view.compositeParams().exposure = v;
         repaint();
       });
   addSlider(
-      form, QStringLiteral("Saturation"), 0, 250, static_cast<int>(view.compositeParams().saturation * 100),
+      form, u"Saturation"_s, 0, 250, static_cast<int>(view.compositeParams().saturation * 100),
       [&view, repaint](float v) {
         view.compositeParams().saturation = v;
         repaint();
       });
 
-  auto* ssao_box = new QCheckBox(QStringLiteral("SSAO"));
+  auto* ssao_box = new QCheckBox(u"SSAO"_s);
   ssao_box->setChecked(view.compositeParams().ssao_enabled);
   QObject::connect(ssao_box, &QCheckBox::toggled, &view, [&view, repaint](bool on) {
     view.compositeParams().ssao_enabled = on;
@@ -216,49 +219,41 @@ QWidget* makeControls(pj::scene3d::SceneViewWidget& view) {
   });
   form->addRow(ssao_box);
   addSlider(
-      form, QStringLiteral("AO strength"), 0, 100, static_cast<int>(view.compositeParams().ao_strength * 100),
+      form, u"AO strength"_s, 0, 100, static_cast<int>(view.compositeParams().ao_strength * 100),
       [&view, repaint](float v) {
         view.compositeParams().ao_strength = v;
         repaint();
       });
-  addSlider(
-      form, QStringLiteral("AO radius m"), 5, 200, static_cast<int>(look::kSsaoRadiusM * 100),
-      [&view, repaint](float v) {
-        view.ssaoPass().setRadius(v);
-        repaint();
-      });
-  addSlider(
-      form, QStringLiteral("AO power"), 50, 500, static_cast<int>(look::kSsaoPower * 100), [&view, repaint](float v) {
-        view.ssaoPass().setPower(v);
-        repaint();
-      });
+  addSlider(form, u"AO radius m"_s, 5, 200, static_cast<int>(look::kSsaoRadiusM * 100), [&view, repaint](float v) {
+    view.ssaoPass().setRadius(v);
+    repaint();
+  });
+  addSlider(form, u"AO power"_s, 50, 500, static_cast<int>(look::kSsaoPower * 100), [&view, repaint](float v) {
+    view.ssaoPass().setPower(v);
+    repaint();
+  });
 
-  auto* edl_box = new QCheckBox(QStringLiteral("EDL"));
+  auto* edl_box = new QCheckBox(u"EDL"_s);
   edl_box->setChecked(view.compositeParams().edl_enabled);
   QObject::connect(edl_box, &QCheckBox::toggled, &view, [&view, repaint](bool on) {
     view.compositeParams().edl_enabled = on;
     repaint();
   });
   form->addRow(edl_box);
+  addSlider(form, u"EDL strength"_s, 0, 400, static_cast<int>(look::kEdlStrength * 100), [&view, repaint](float v) {
+    view.edlPass().setStrength(v);
+    repaint();
+  });
+  addSlider(form, u"EDL radius px"_s, 10, 500, static_cast<int>(look::kEdlRadiusPx * 100), [&view, repaint](float v) {
+    view.edlPass().setRadiusPx(v);
+    repaint();
+  });
+  addSlider(form, u"EDL max gap"_s, 0, 20, static_cast<int>(look::kEdlMaxGap * 100), [&view, repaint](float v) {
+    view.edlPass().setMaxGap(v);
+    repaint();
+  });
   addSlider(
-      form, QStringLiteral("EDL strength"), 0, 400, static_cast<int>(look::kEdlStrength * 100),
-      [&view, repaint](float v) {
-        view.edlPass().setStrength(v);
-        repaint();
-      });
-  addSlider(
-      form, QStringLiteral("EDL radius px"), 10, 500, static_cast<int>(look::kEdlRadiusPx * 100),
-      [&view, repaint](float v) {
-        view.edlPass().setRadiusPx(v);
-        repaint();
-      });
-  addSlider(
-      form, QStringLiteral("EDL max gap"), 0, 20, static_cast<int>(look::kEdlMaxGap * 100), [&view, repaint](float v) {
-        view.edlPass().setMaxGap(v);
-        repaint();
-      });
-  addSlider(
-      form, QStringLiteral("EDL floor"), 0, 100, static_cast<int>(view.compositeParams().edl_floor * 100),
+      form, u"EDL floor"_s, 0, 100, static_cast<int>(view.compositeParams().edl_floor * 100),
       [&view, repaint](float v) {
         view.compositeParams().edl_floor = v;
         repaint();
@@ -267,33 +262,24 @@ QWidget* makeControls(pj::scene3d::SceneViewWidget& view) {
   // Per-view shading knobs: `view` outlives this panel (both owned by `window`),
   // so the lambdas can capture &shading safely, same as the compositeParams() rows.
   auto& shading = view.meshShadingParams();
+  addSlider(form, u"Roughness"_s, 5, 100, static_cast<int>(shading.roughness * 100), [&shading, repaint](float v) {
+    shading.roughness = v;
+    repaint();
+  });
+  addSlider(form, u"Reflectivity"_s, 0, 25, static_cast<int>(shading.reflectivity * 100), [&shading, repaint](float v) {
+    shading.reflectivity = v;
+    repaint();
+  });
+  addSlider(form, u"Ambient"_s, 0, 250, static_cast<int>(shading.ambient_scale * 100), [&shading, repaint](float v) {
+    shading.ambient_scale = v;
+    repaint();
+  });
+  addSlider(form, u"Key light"_s, 0, 250, static_cast<int>(shading.direct_scale * 100), [&shading, repaint](float v) {
+    shading.direct_scale = v;
+    repaint();
+  });
   addSlider(
-      form, QStringLiteral("Roughness"), 5, 100, static_cast<int>(shading.roughness * 100),
-      [&shading, repaint](float v) {
-        shading.roughness = v;
-        repaint();
-      });
-  addSlider(
-      form, QStringLiteral("Reflectivity"), 0, 25, static_cast<int>(shading.reflectivity * 100),
-      [&shading, repaint](float v) {
-        shading.reflectivity = v;
-        repaint();
-      });
-  addSlider(
-      form, QStringLiteral("Ambient"), 0, 250, static_cast<int>(shading.ambient_scale * 100),
-      [&shading, repaint](float v) {
-        shading.ambient_scale = v;
-        repaint();
-      });
-  addSlider(
-      form, QStringLiteral("Key light"), 0, 250, static_cast<int>(shading.direct_scale * 100),
-      [&shading, repaint](float v) {
-        shading.direct_scale = v;
-        repaint();
-      });
-  addSlider(
-      form, QStringLiteral("Fill light"), 0, 150, static_cast<int>(shading.fill_light_scale * 100),
-      [&shading, repaint](float v) {
+      form, u"Fill light"_s, 0, 150, static_cast<int>(shading.fill_light_scale * 100), [&shading, repaint](float v) {
         shading.fill_light_scale = v;
         repaint();
       });
@@ -310,34 +296,31 @@ QWidget* makeControls(pj::scene3d::SceneViewWidget& view) {
         auto* slider = new QSlider(Qt::Horizontal);
         slider->setRange(min, max);
         slider->setValue(value);
-        auto* name = new QLabel(QStringLiteral("%1 (%2°)").arg(label).arg(value));
+        auto* name = new QLabel(u"%1 (%2°)"_s.arg(label).arg(value));
         QObject::connect(slider, &QSlider::valueChanged, name, [name, label, apply](int v) {
-          name->setText(QStringLiteral("%1 (%2°)").arg(label).arg(v));
+          name->setText(u"%1 (%2°)"_s.arg(label).arg(v));
           apply(static_cast<float>(v));
         });
         form->addRow(name, slider);
       };
   add_deg_slider(
-      QStringLiteral("Key azimuth"), -180, 180, static_cast<int>(look::kKeyLightAzimuthDeg),
-      [key_angles, apply_key_dir](float v) {
+      u"Key azimuth"_s, -180, 180, static_cast<int>(look::kKeyLightAzimuthDeg), [key_angles, apply_key_dir](float v) {
         key_angles->x = v;
         apply_key_dir();
       });
   add_deg_slider(
-      QStringLiteral("Key elevation"), 0, 90, static_cast<int>(look::kKeyLightElevationDeg),
-      [key_angles, apply_key_dir](float v) {
+      u"Key elevation"_s, 0, 90, static_cast<int>(look::kKeyLightElevationDeg), [key_angles, apply_key_dir](float v) {
         key_angles->y = v;
         apply_key_dir();
       });
 
   addSlider(
-      form, QStringLiteral("Env reflection"), 0, 200, static_cast<int>(shading.env_intensity * 100),
-      [&shading, repaint](float v) {
+      form, u"Env reflection"_s, 0, 200, static_cast<int>(shading.env_intensity * 100), [&shading, repaint](float v) {
         shading.env_intensity = v;
         repaint();
       });
 
-  auto* axes_box = new QCheckBox(QStringLiteral("TF axes"));
+  auto* axes_box = new QCheckBox(u"TF axes"_s);
   axes_box->setChecked(false);
   QObject::connect(axes_box, &QCheckBox::toggled, &view, [&view](bool on) { view.setAxesVisible(on); });
   form->addRow(axes_box);
@@ -378,45 +361,45 @@ CliOptions parseCli(const QStringList& args) {
   for (int i = 1; i < args.size(); ++i) {
     const QString& arg = args[i];
     const auto next = [&args, &i]() -> QString { return ++i < args.size() ? args[i] : QString(); };
-    if (arg == QStringLiteral("--screenshot")) {
+    if (arg == "--screenshot"_L1) {
       opts.screenshot_path = next();
-    } else if (arg == QStringLiteral("--benchmark")) {
+    } else if (arg == "--benchmark"_L1) {
       opts.benchmark = true;
-    } else if (arg == QStringLiteral("--bench-frames")) {
+    } else if (arg == "--bench-frames"_L1) {
       opts.bench_frames = next().toInt();
-    } else if (arg == QStringLiteral("--bench-csv")) {
+    } else if (arg == "--bench-csv"_L1) {
       opts.bench_csv = next();
-    } else if (arg == QStringLiteral("--win-size")) {
+    } else if (arg == "--win-size"_L1) {
       const QStringList wh = next().split('x', Qt::SkipEmptyParts);
       if (wh.size() == 2) {
         opts.win_w = wh[0].toInt();
         opts.win_h = wh[1].toInt();
       }
-    } else if (arg == QStringLiteral("--msaa")) {
+    } else if (arg == "--msaa"_L1) {
       opts.msaa = next().toInt();
-    } else if (arg == QStringLiteral("--ssaa")) {
+    } else if (arg == "--ssaa"_L1) {
       opts.ssaa = next().toFloat();
-    } else if (arg == QStringLiteral("--delay-ms")) {
+    } else if (arg == "--delay-ms"_L1) {
       opts.delay_ms = next().toInt();
-    } else if (arg == QStringLiteral("--tonemap")) {
+    } else if (arg == "--tonemap"_L1) {
       opts.tonemap = next().toInt();
-    } else if (arg == QStringLiteral("--env")) {
+    } else if (arg == "--env"_L1) {
       opts.env = next().toFloat();
-    } else if (arg == QStringLiteral("--key-az")) {
+    } else if (arg == "--key-az"_L1) {
       opts.key_az = next().toFloat();
-    } else if (arg == QStringLiteral("--key-el")) {
+    } else if (arg == "--key-el"_L1) {
       opts.key_el = next().toFloat();
-    } else if (arg == QStringLiteral("--shadows")) {
-      opts.shadows = next() != QStringLiteral("off");  // "--shadows on" / "--shadows off"
-    } else if (arg == QStringLiteral("--collisions")) {
-      opts.collisions = next() != QStringLiteral("off");
-    } else if (arg == QStringLiteral("--cam-radius")) {
+    } else if (arg == "--shadows"_L1) {
+      opts.shadows = next() != "off"_L1;  // "--shadows on" / "--shadows off"
+    } else if (arg == "--collisions"_L1) {
+      opts.collisions = next() != "off"_L1;
+    } else if (arg == "--cam-radius"_L1) {
       opts.cam_radius = next().toFloat();
-    } else if (arg == QStringLiteral("--cam-az")) {
+    } else if (arg == "--cam-az"_L1) {
       opts.cam_az = next().toFloat();
-    } else if (arg == QStringLiteral("--cam-el")) {
+    } else if (arg == "--cam-el"_L1) {
       opts.cam_el = next().toFloat();
-    } else if (arg == QStringLiteral("--cam-focal-z")) {
+    } else if (arg == "--cam-focal-z"_L1) {
       opts.cam_focal_z = next().toFloat();
     } else if (opts.urdf.isEmpty()) {
       opts.urdf = arg;
@@ -505,7 +488,7 @@ void runBenchmark(pj::scene3d::SceneViewWidget* view, const CliOptions& opts) {
   std::printf("  ----  -----  --------  --------  --------  --------\n");
   std::fflush(stdout);
   if (!state->csv.isEmpty()) {
-    state->csv_rows.push_back(QStringLiteral("msaa,ssaa,gpu_med_ms,gpu_p95_ms,cpu_med_ms,scenefbo_mb"));
+    state->csv_rows.push_back(u"msaa,ssaa,gpu_med_ms,gpu_p95_ms,cpu_med_ms,scenefbo_mb"_s);
   }
 
   const auto apply = [view](const BenchConfig& cfg) {
@@ -548,8 +531,7 @@ void runBenchmark(pj::scene3d::SceneViewWidget* view, const CliOptions& opts) {
           gpu_p95, cpu_med, mb);
       std::fflush(stdout);
       if (!state->csv.isEmpty()) {
-        state->csv_rows.push_back(QStringLiteral("%1,%2,%3,%4,%5,%6")
-                                      .arg(got_samples)
+        state->csv_rows.push_back(u"%1,%2,%3,%4,%5,%6"_s.arg(got_samples)
                                       .arg(static_cast<double>(cfg.scale))
                                       .arg(gpu_med, 0, 'f', 3)
                                       .arg(gpu_p95, 0, 'f', 3)
@@ -604,8 +586,8 @@ constexpr const char* kUsage =
 int main(int argc, char** argv) {
   QApplication app(argc, argv);
   // Own QSettings scope (separate ini from the real app) for the persisted camera.
-  QApplication::setOrganizationName(QStringLiteral("PlotJuggler"));
-  QApplication::setApplicationName(QStringLiteral("scene3d_mesh_viewer"));
+  QApplication::setOrganizationName(u"PlotJuggler"_s);
+  QApplication::setApplicationName(u"scene3d_mesh_viewer"_s);
   const CliOptions opts = parseCli(app.arguments());
 
   QString urdf_arg = opts.urdf;
@@ -614,8 +596,8 @@ int main(int argc, char** argv) {
       std::fprintf(stderr, "screenshot mode requires a URDF path\n%s", kUsage);
       return 1;
     }
-    urdf_arg = QFileDialog::getOpenFileName(
-        nullptr, QStringLiteral("Open URDF"), QString(), QStringLiteral("URDF files (*.urdf *.xml);;All files (*)"));
+    urdf_arg =
+        QFileDialog::getOpenFileName(nullptr, u"Open URDF"_s, QString(), u"URDF files (*.urdf *.xml);;All files (*)"_s);
     if (urdf_arg.isEmpty()) {
       std::fprintf(stderr, "%s", kUsage);
       return 1;
@@ -636,7 +618,7 @@ int main(int argc, char** argv) {
     resolver.addSearchRoot(opts.search_root);
   }
 
-  pj::scene3d::RobotModelLayer layer(PJ::ObjectTopicId{.id = 1}, QStringLiteral("mesh_viewer"));
+  pj::scene3d::RobotModelLayer layer(PJ::ObjectTopicId{.id = 1}, u"mesh_viewer"_s);
   layer.setPackageResolver(&resolver);
   // Force the File source BEFORE attach so the synthetic topic id never
   // reaches the ObjectStore (the dock's local-layer rule, mirrored here).
@@ -648,9 +630,11 @@ int main(int argc, char** argv) {
   layer.setSourceFile(urdf_path);
 
   QWidget window;
-  window.setWindowTitle(QStringLiteral("scene3d_mesh_viewer — %1").arg(QFileInfo(urdf_path).fileName()));
+  window.setWindowTitle(u"scene3d_mesh_viewer — %1"_s.arg(QFileInfo(urdf_path).fileName()));
   auto* row = new QHBoxLayout(&window);
-  row->setContentsMargins(0, 0, 0, 0);
+  row->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
   auto* view = new pj::scene3d::SceneViewWidget(&window);
   view->setTransformBuffer(tf);
   view->setAxesVisible(false);  // look-dev default: meshes only (panel toggle)
@@ -664,7 +648,7 @@ int main(int argc, char** argv) {
   // Save only on a clean interactive quit — a --screenshot run must NOT overwrite
   // the saved framing with its transient default.
   QSettings settings;
-  const QString saved_camera = settings.value(QStringLiteral("camera_state")).toString();
+  const QString saved_camera = settings.value(u"camera_state"_s).toString();
   if (!saved_camera.isEmpty()) {
     view->camera().adoptState(pj::scene3d::cameraStateFromJson(saved_camera.toStdString(), view->camera().state()));
   }
@@ -686,9 +670,7 @@ int main(int argc, char** argv) {
   if (opts.screenshot_path.isEmpty() && !opts.benchmark) {
     QObject::connect(&app, &QApplication::aboutToQuit, view, [view] {
       QSettings save;
-      save.setValue(
-          QStringLiteral("camera_state"),
-          QString::fromStdString(pj::scene3d::cameraStateToJson(view->camera().state())));
+      save.setValue(u"camera_state"_s, QString::fromStdString(pj::scene3d::cameraStateToJson(view->camera().state())));
     });
   }
 
@@ -749,7 +731,7 @@ int main(int argc, char** argv) {
       // view (coverage drives fragment cost) before trusting the numbers.
       const QImage img = view->grabFramebuffer();
       if (!img.isNull()) {
-        const QString path = QStringLiteral("/tmp/bench_first_frame.png");
+        const QString path = u"/tmp/bench_first_frame.png"_s;
         img.save(path);
         std::printf("[mesh_viewer] framing preview: %s (%dx%d)\n", qPrintable(path), img.width(), img.height());
       }

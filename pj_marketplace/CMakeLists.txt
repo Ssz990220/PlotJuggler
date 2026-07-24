@@ -29,7 +29,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   enable_testing()
 endif()
 
-find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network Test)
+find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network Test Concurrent)
 find_package(LibArchive REQUIRED)
 
 # ---------------------------------------------------------------------------
@@ -63,6 +63,7 @@ target_link_libraries(pj_marketplace PUBLIC
   Qt6::Core
   Qt6::Network
   Qt6::Widgets
+  Qt6::Concurrent
   LibArchive::LibArchive
 )
 

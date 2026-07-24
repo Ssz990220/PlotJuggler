@@ -14,6 +14,7 @@
 #include <utility>
 
 #include "pj_widgets/SvgUtil.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -25,7 +26,7 @@ constexpr const char* kPaletteStartMarker = "PALETTE START";
 constexpr const char* kPaletteEndMarker = "PALETTE END";
 
 QString resourcePathFor(const QString& name) {
-  return QStringLiteral(":/resources/stylesheet_%1.qss").arg(name);
+  return u":/resources/stylesheet_%1.qss"_s.arg(name);
 }
 
 // Expand `${KEY}` tokens against `palette`. Unknown keys are left as
@@ -38,7 +39,7 @@ QString expandPlaceholders(const QString& body, const std::map<QString, QString>
 
   qsizetype i = 0;
   while (i < body.size()) {
-    const qsizetype start = body.indexOf(QStringLiteral("${"), i);
+    const qsizetype start = body.indexOf("${"_L1, i);
     if (start < 0) {
       out.append(QStringView{body}.mid(i));
       break;
@@ -123,10 +124,10 @@ void syncApplicationPalette(const std::map<QString, QString>& tokens) {
   if (qGuiApp == nullptr) {
     return;  // Theme constructed without a GUI application (tests)
   }
-  const auto window_it = tokens.find(QStringLiteral("main_background"));
-  const auto text_it = tokens.find(QStringLiteral("default_text"));
+  const auto window_it = tokens.find(u"backdrop"_s);
+  const auto text_it = tokens.find(u"on_backdrop_default"_s);
   if (window_it == tokens.end() || text_it == tokens.end()) {
-    qCWarning(lcTheme) << "Palette tokens main_background/default_text missing; application palette not synced";
+    qCWarning(lcTheme) << "Palette tokens backdrop/on_backdrop_default missing; application palette not synced";
     return;
   }
   const QColor window_color(window_it->second);
@@ -144,12 +145,12 @@ void syncApplicationPalette(const std::map<QString, QString>& tokens) {
 }  // namespace
 
 QStringList Theme::availableThemes() {
-  return {QStringLiteral("light"), QStringLiteral("dark")};
+  return {u"light"_s, u"dark"_s};
 }
 
 Theme::Theme(QObject* parent) : QObject(parent), name_(QSettings().value(kThemeSettingsKey, "light").toString()) {
   if (!availableThemes().contains(name_)) {
-    name_ = QStringLiteral("light");
+    name_ = u"light"_s;
     // Rewrite stale or corrupt persisted name so subsequent readers
     // (e.g. SvgUtil::currentTheme) see the same value Theme is using.
     QSettings().setValue(kThemeSettingsKey, name_);

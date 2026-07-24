@@ -38,6 +38,13 @@ class VoxelGridLayer : public Scene3DLayer {
   [[nodiscard]] PJ::Range<PJ::Timepoint> timeRange() const override;
   [[nodiscard]] QStringList fallbackFrames() const override;
   [[nodiscard]] QString sourceFrame() const override;
+  // Layer-row warning surface: set when a grid arrives with dimensions too large
+  // to render (corrupt/untrusted wire dims — see kMaxRenderableVoxels). Routed
+  // through the dock's orphan-state combine so it persists across list refreshes
+  // and TF recomputes, unlike a bare warningChanged emit.
+  [[nodiscard]] QString statusWarning() const override {
+    return status_warning_;
+  }
   QDomElement xmlSaveState(QDomDocument& doc) const override;
   bool xmlLoadState(const QDomElement& element) override;
 
@@ -95,6 +102,9 @@ class VoxelGridLayer : public Scene3DLayer {
   // falling back to chooseDefaultField. Updates resolved_field_name_ + value_kind_.
   const PJ::sdk::PointField* resolveField(const PJ::sdk::VoxelGrid& grid);
   void pushDisplayParamsToPass();
+  // Set (or clear, with an empty reason) the layer-row warning; emits
+  // statusWarningChanged() only on a real change so the dock re-combines once.
+  void setStatusWarning(const QString& reason);
 
   PJ::ObjectTopicId topic_id_;
   QString display_name_;
@@ -115,6 +125,9 @@ class VoxelGridLayer : public Scene3DLayer {
   std::string source_frame_;
   bool tracker_dirty_ = false;
   bool visible_ = true;
+  // Non-empty while the layer row shows a warning for an over-cap (corrupt-dims)
+  // grid; the source of truth statusWarning() returns. See setStatusWarning().
+  QString status_warning_;
 
   // Display settings (persisted). active_field_name_ empty = auto-pick.
   std::string active_field_name_;

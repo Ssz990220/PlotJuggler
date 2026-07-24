@@ -7,6 +7,7 @@
 #include <tsl/robin_map.h>
 #include <tsl/robin_set.h>
 
+#include <QFileInfo>
 #include <QHash>
 #include <QLoggingCategory>
 #include <algorithm>
@@ -28,6 +29,7 @@
 #include "pj_runtime/DataProcessorService.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 namespace {
@@ -64,18 +66,45 @@ struct QStringHash {
 [[nodiscard]] QString baseDatasetLabel(const DatasetInfo* dataset) {
   QString label = dataset != nullptr ? QString::fromStdString(dataset->source_name) : QString{};
   if (label.isEmpty()) {
-    label = QStringLiteral("Dataset");
+    label = u"Dataset"_s;
   }
   label.replace('/', '_');
   return label;
 }
 
 [[nodiscard]] QString makeCurveKey(DatasetId dataset_id, TopicId topic_id, std::size_t column_index) {
-  return QStringLiteral("dataset:%1/topic:%2/column:%3").arg(dataset_id).arg(topic_id).arg(column_index);
+  return u"dataset:%1/topic:%2/column:%3"_s.arg(dataset_id).arg(topic_id).arg(column_index);
 }
 
 [[nodiscard]] QString makeObjectTopicKey(DatasetId dataset_id, ObjectTopicId object_topic_id) {
-  return QStringLiteral("dataset:%1/object_topic:%2").arg(dataset_id).arg(object_topic_id.id);
+  return u"dataset:%1/object_topic:%2"_s.arg(dataset_id).arg(object_topic_id.id);
+}
+
+// Key for a data-less advertised placeholder. Distinct namespace from the
+// curve/object keys so it never collides with a storage-backed entry.
+[[nodiscard]] QString makeAdvertisedKey(DatasetId dataset_id, const QString& topic_name) {
+  return u"dataset:%1/advertised:%2"_s.arg(dataset_id).arg(topic_name);
+}
+
+// True when `live_path` and `saved_path` name the same on-disk source. Replicates
+// pj_app's layout_xml::isSamePath semantics without depending on it (pj_runtime is
+// below pj_app): the normalized-equality short-circuit first, then a QFileInfo
+// canonical fallback. Both sides are normally already normalized (the source-path
+// registry stores normalized paths and layout load normalizes dataset_path), so the
+// literal-equality leg is the load-bearing one; the canonical fallback only matters
+// for symlink/relative variants, and it fails on a file that no longer exists on disk
+// (canonicalFilePath returns empty), which is why the equality leg keeps a
+// deleted-source dataset resolvable by path. Empty inputs never match.
+[[nodiscard]] bool isSamePathLike(const QString& live_path, const QString& saved_path) {
+  if (live_path.isEmpty() || saved_path.isEmpty()) {
+    return false;
+  }
+  if (live_path == saved_path) {
+    return true;
+  }
+  const QString canon_live = QFileInfo(live_path).canonicalFilePath();
+  const QString canon_saved = QFileInfo(saved_path).canonicalFilePath();
+  return !canon_live.isEmpty() && !canon_saved.isEmpty() && canon_live == canon_saved;
 }
 
 [[nodiscard]] CurveDescriptor curveFromItem(const CatalogItem& item) {
@@ -249,6 +278,16 @@ struct CatalogModel::Impl {
   // they survive rebuilds and clearAll/restoreDataset. Never holds empty values.
   tsl::robin_map<DatasetId, QString> dataset_display_overrides;
 
+  // Advertised (available-but-unsubscribed) topics per dataset: topic name →
+  // a-priori classification. Merged into the catalog by rebuildNow as data-less
+  // placeholders only where storage has NOT produced an entry for the same topic
+  // (real data wins). Declarative full-set per dataset (see setAdvertisedTopics).
+  tsl::robin_map<DatasetId, tsl::robin_map<QString, sdk::BuiltinObjectType, QStringHash>> advertised;
+
+  // Datasets whose streaming source supports per-topic pause (see
+  // setPerTopicPauseCapable). Membership only, no payload.
+  tsl::robin_set<DatasetId> per_topic_pause_capable_datasets;
+
   // Content fingerprint as of the last completed rebuildFromDatastore(), used by
   // the samplesIngested gate (rebuildIfChanged) to skip redundant full rebuilds.
   // Unset until the first rebuild, so the first ingest always rebuilds.
@@ -316,7 +355,17 @@ std::optional<double> CatalogModel::scalarValueAt(const QString& key, double dis
 
 bool CatalogModel::isScalarKey(const QString& key) const {
   const auto it = impl_->items.find(key);
-  return it != impl_->items.end() && isScalarField(it->second);
+  if (it == impl_->items.end()) {
+    return false;
+  }
+  if (isScalarField(it->second)) {
+    return true;
+  }
+  // A scalar-shaped (kNone) advertised placeholder is scalar too — no sample has
+  // arrived yet, but the Value column should render "-" for it exactly like a
+  // real scalar field with no data, not blank like a non-scalar row.
+  const auto* advertised = asAdvertisedTopic(it->second);
+  return advertised != nullptr && advertised->classification == sdk::BuiltinObjectType::kNone;
 }
 
 bool CatalogModel::isStringKey(const QString& key) const {
@@ -399,6 +448,88 @@ std::vector<std::pair<DatasetId, QString>> CatalogModel::datasets() const {
   return result;
 }
 
+std::optional<QString> CatalogModel::datasetSourceName(DatasetId dataset_id) const {
+  if (impl_->session == nullptr) {
+    return std::nullopt;
+  }
+  const DatasetInfo* dataset = impl_->session->dataEngine().getDataset(dataset_id);
+  if (dataset == nullptr) {
+    return std::nullopt;
+  }
+  return QString::fromStdString(dataset->source_name);
+}
+
+std::optional<QString> CatalogModel::resolveCurveKey(
+    DatasetId saved_id, const QString& saved_source, const QString& saved_path, const QString& topic,
+    const QString& field) const {
+  if (impl_->session == nullptr) {
+    return std::nullopt;
+  }
+
+  // Qualified identities share SessionManager's one resolver: in-session duplicate
+  // basenames keep their exact id, while a reminted/swapped id must also agree with
+  // the FileLoader-known full path (see resolveDatasetIdentity).
+  if (saved_id != 0 || !saved_source.isEmpty() || !saved_path.isEmpty()) {
+    const DatasetIdentityResolution identity = resolveDatasetIdentity(saved_id, saved_source, saved_path);
+    if (identity.id.has_value()) {
+      if (const auto descriptor = descriptorForPath(*identity.id, topic, field)) {
+        return descriptor->name;
+      }
+      // The intended dataset exists but this series has not materialized (or
+      // disappeared). Never steal a same-named field from a sibling source.
+      return std::nullopt;
+    }
+
+    // Exact id failed: the physical file path now OUTRANKS the raw source label.
+    // A same-file single<->fan-out reload relabels the dataset (the former raw
+    // source label no longer exists) while the file path stays stable, so path is
+    // the more trustworthy identity. Bind only when exactly one physical-source
+    // sibling provides this series; ambiguity stays unresolved, never fan-out order.
+    if (!saved_path.isEmpty()) {
+      std::optional<QString> unique_path_match;
+      for (const auto& [dataset_id, name] : datasets()) {
+        (void)name;
+        if (!isSamePathLike(datasetSourcePath(dataset_id), saved_path)) {
+          continue;
+        }
+        if (const auto descriptor = descriptorForPath(dataset_id, topic, field)) {
+          if (unique_path_match.has_value()) {
+            return std::nullopt;
+          }
+          unique_path_match = descriptor->name;
+        }
+      }
+      return unique_path_match;
+    }
+    return std::nullopt;
+  }
+
+  // Legacy/generic unqualified layouts may target a structurally similar
+  // recording. Accept exactly one candidate; duplicates stay unresolved (the
+  // reported multi-dataset bug was this scan taking the first match).
+  std::optional<QString> unique_match;
+  for (const auto& [id, name] : datasets()) {
+    (void)name;
+    if (const auto descriptor = descriptorForPath(id, topic, field)) {
+      if (unique_match.has_value()) {
+        return std::nullopt;
+      }
+      unique_match = descriptor->name;
+    }
+  }
+  return unique_match;
+}
+
+DatasetIdentityResolution CatalogModel::resolveDatasetIdentity(
+    DatasetId saved_id, const QString& saved_source, const QString& saved_path) const {
+  return impl_->session != nullptr ? impl_->session->resolveDatasetIdentity(saved_id, saved_source, saved_path)
+                                   : DatasetIdentityResolution{};
+}
+
+QString CatalogModel::datasetSourcePath(DatasetId dataset_id) const {
+  return impl_->session != nullptr ? impl_->session->datasetSourcePath(dataset_id) : QString{};
+}
+
 std::optional<CurveDescriptor> CatalogModel::descriptorForPath(
     DatasetId dataset_id, const QString& topic, const QString& field) const {
   for (const auto& [key, item] : impl_->items) {
@@ -406,7 +537,9 @@ std::optional<CurveDescriptor> CatalogModel::descriptorForPath(
     if (item.dataset_id != dataset_id || item.topic_name != topic || !isScalarField(item)) {
       continue;
     }
-    if (asScalarField(item)->field_path == field) {
+    // A saved numeric curve must never rebind onto a same-named string field.
+    const ScalarFieldPayload* scalar = asScalarField(item);
+    if (scalar->field_path == field && !scalar->is_string) {
       return curveFromItem(item);
     }
   }
@@ -495,6 +628,17 @@ std::uint64_t CatalogModel::catalogFingerprint() const {
   for (const auto& [dataset_id, label] : impl_->dataset_display_overrides) {
     fp += mix(7, (static_cast<std::uint64_t>(dataset_id) << 32) ^ qHash(label));
   }
+  // Advertised placeholders also change catalog output and are mutated outside
+  // the samplesIngested path (setAdvertisedTopics), so fold them in to keep the
+  // gate self-correcting.
+  for (const auto& [dataset_id, topics] : impl_->advertised) {
+    fp += mix(8, dataset_id);
+    for (const auto& [topic_name, classification] : topics) {
+      fp +=
+          mix(9, (static_cast<std::uint64_t>(dataset_id) << 32) ^ qHash(topic_name) ^
+                     (static_cast<std::uint64_t>(classification) << 8));
+    }
+  }
   return fp;
 }
 
@@ -550,7 +694,7 @@ void CatalogModel::rebuildNow() {
     if (label_counts[base_label] > 1) {
       const int ordinal = ++label_ordinals[base_label];
       if (ordinal > 1) {
-        label = QStringLiteral("%1 (%2)").arg(base_label).arg(ordinal);
+        label = u"%1 (%2)"_s.arg(base_label).arg(ordinal);
       }
     }
     dataset_labels.insert_or_assign(dataset_id, std::move(label));
@@ -652,6 +796,48 @@ void CatalogModel::rebuildNow() {
     }
   }
 
+  // Merge advertised (available-but-unsubscribed) placeholders: a data-less node
+  // for every advertised topic that storage has NOT already produced an entry for
+  // (real data wins) and that isn't tombstoned. Superseded automatically once the
+  // topic subscribes and its real scalar/object entries appear.
+  if (!impl_->advertised.empty()) {
+    Impl::NameSet materialized;  // "<dataset_id>\x1f<topic_name>" produced by storage this pass
+    for (const auto& [key, item] : next_items) {
+      (void)key;
+      materialized.insert(u"%1\x1f%2"_s.arg(item.dataset_id).arg(item.topic_name));
+    }
+    for (const auto& [dataset_id, topics] : impl_->advertised) {
+      if (impl_->removed_datasets.count(dataset_id) > 0) {
+        continue;
+      }
+      const auto dataset_label_it = dataset_labels.find(dataset_id);
+      const QString dataset_label =
+          dataset_label_it != dataset_labels.end() ? dataset_label_it->second : effective_base_label(dataset_id);
+      const Impl::NameSet* removed_names_for_dataset = nullptr;
+      if (const auto it = impl_->removed_names_per_dataset.find(dataset_id);
+          it != impl_->removed_names_per_dataset.end()) {
+        removed_names_for_dataset = &it->second;
+      }
+      for (const auto& [topic_name, classification] : topics) {
+        if (materialized.count(u"%1\x1f%2"_s.arg(dataset_id).arg(topic_name)) > 0) {
+          continue;  // real data for this topic already surfaced — it wins
+        }
+        const QString key = makeAdvertisedKey(dataset_id, topic_name);
+        if (removed_names_for_dataset != nullptr && removed_names_for_dataset->count(key) > 0) {
+          continue;
+        }
+        next_items.insert_or_assign(
+            key, CatalogItem{
+                     .key = key,
+                     .dataset_name = dataset_label,
+                     .topic_name = topic_name,
+                     .dataset_id = dataset_id,
+                     .payload = AdvertisedTopicPayload{.classification = classification},
+                 });
+      }
+    }
+  }
+
   const Impl::ItemMap previous_items = std::move(impl_->items);
   impl_->items = std::move(next_items);
 
@@ -699,6 +885,8 @@ void CatalogModel::clearAll(bool tombstone) {
   }
   impl_->items.clear();
   impl_->removed_names_per_dataset.clear();
+  impl_->advertised.clear();
+  impl_->per_topic_pause_capable_datasets.clear();
   emit cleared();
 }
 
@@ -734,6 +922,59 @@ void CatalogModel::setDatasetDisplayName(DatasetId dataset_id, const QString& di
   rebuildFromDatastore();
 }
 
+void CatalogModel::setAdvertisedTopics(DatasetId dataset_id, const std::vector<AdvertisedTopic>& topics) {
+  tsl::robin_map<QString, sdk::BuiltinObjectType, QStringHash> next;
+  next.reserve(topics.size());
+  for (const AdvertisedTopic& t : topics) {
+    next.insert_or_assign(t.topic_name, t.classification);
+  }
+
+  const auto existing = impl_->advertised.find(dataset_id);
+  const bool had = existing != impl_->advertised.end();
+  if (next.empty()) {
+    if (!had) {
+      return;  // nothing advertised for this dataset — no-op
+    }
+    impl_->advertised.erase(dataset_id);
+  } else {
+    // Idempotence: re-advertising an identical set (e.g. on stream reconnect)
+    // must not churn the catalog.
+    if (had && existing->second.size() == next.size()) {
+      bool same = true;
+      for (const auto& [name, cls] : next) {
+        const auto it = existing->second.find(name);
+        if (it == existing->second.end() || it->second != cls) {
+          same = false;
+          break;
+        }
+      }
+      if (same) {
+        return;
+      }
+    }
+    impl_->advertised.insert_or_assign(dataset_id, std::move(next));
+  }
+  rebuildFromDatastore();
+}
+
+void CatalogModel::clearAdvertisedTopics(DatasetId dataset_id) {
+  if (impl_->advertised.erase(dataset_id) > 0) {
+    rebuildFromDatastore();
+  }
+}
+
+void CatalogModel::setPerTopicPauseCapable(DatasetId dataset_id, bool capable) {
+  if (capable) {
+    impl_->per_topic_pause_capable_datasets.insert(dataset_id);
+  } else {
+    impl_->per_topic_pause_capable_datasets.erase(dataset_id);
+  }
+}
+
+bool CatalogModel::isPerTopicPauseCapable(DatasetId dataset_id) const {
+  return impl_->per_topic_pause_capable_datasets.count(dataset_id) > 0;
+}
+
 void CatalogModel::removeItems(const std::vector<QString>& keys) {
   // Accepts any catalog item kind. Object-topic keys are honored too, so the
   // trash/remove flow stays symmetric across scalar fields and object topics
@@ -750,7 +991,15 @@ void CatalogModel::removeItems(const std::vector<QString>& keys) {
     impl_->items.erase(it);
     removed.push_back(key);
   }
-  if (!removed.isEmpty()) {
+  if (removed.isEmpty()) {
+    return;
+  }
+  // Emptying the catalog via a trash-selection reaches the same terminal state as
+  // removeDataset()/clearAll(): emit cleared() (O(1) view reset + the playback
+  // empty-reset hook) rather than a full-key itemsRemoved.
+  if (impl_->items.empty()) {
+    emit cleared();
+  } else {
     emit itemsRemoved(removed);
   }
 }
@@ -769,6 +1018,10 @@ bool CatalogModel::removeDataset(DatasetId dataset_id, bool tombstone) {
   if (keys.empty()) {
     return false;
   }
+  // A removed dataset shows no advertised placeholders; on restore the live source
+  // re-advertises.
+  impl_->advertised.erase(dataset_id);
+  impl_->per_topic_pause_capable_datasets.erase(dataset_id);
   // Whole-dataset tombstone (vs removeItems' per-name blacklist): rebuildFromDatastore
   // hides this id until a reload mints a new DatasetId or restoreDataset un-hides it.
   // Skipped for a real "Remove Dataset": the caller erases the engine/object data too, so

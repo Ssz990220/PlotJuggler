@@ -25,6 +25,7 @@
 #include "pj_base/span.hpp"
 #include "pj_base/types.hpp"
 #include "pj_datastore/merge_result.hpp"
+#include "pj_datastore/ordered_entries.hpp"
 #include "pj_datastore/sequential_uid.hpp"
 
 namespace PJ {
@@ -72,27 +73,8 @@ struct ObjectDatasetMergeReport {
   std::vector<DatasetId> consumed_datasets;
 };
 
-/// Eager payload: store-owned bytes, counted against the retention budget.
-using SharedBuffer = std::shared_ptr<const std::vector<uint8_t>>;
-
-/// Lazy payload: idempotent, thread-safe fetcher returning bytes + anchor.
-/// Invoked on every read; bytes are not counted against the retention budget.
-using LazyCallback = std::function<sdk::PayloadView()>;
-
-struct ObjectEntry {
-  Timestamp timestamp = 0;
-  SequentialUID sequential_uid;
-  // Nanoseconds this entry's STORE timestamp has been slid relative to the
-  // timestamps embedded in its payload bytes. Nonzero only after a time-shifted
-  // dataset merge: the merge moves `timestamp` by the per-source delta but cannot
-  // rewrite the payload, so a consumer that keys off timestamps embedded INSIDE
-  // the payload (e.g. the TF buffer, indexed by each transform's own stamp) must
-  // add this delta to land them on the shifted clock. Consumers that key off the
-  // store `timestamp` ignore it. Accumulates across chained merges.
-  Timestamp payload_stamp_shift = 0;
-  // Eager owned bytes or a lazy resolver; resolveEntry discriminates via std::get_if.
-  std::variant<SharedBuffer, LazyCallback> payload;
-};
+// SharedBuffer / LazyCallback / ObjectEntry live in ordered_entries.hpp (the
+// OrderedEntries value type owns the entry deque), included above.
 
 struct ResolvedObjectEntry {
   Timestamp timestamp = 0;
@@ -197,11 +179,39 @@ class ObjectStore {
   // First retained entry UID for this topic, or invalid when the topic is empty
   // or unknown. Useful for detecting retention gaps in replay cursors.
   SequentialUID firstSequentialUID(ObjectTopicId id) const;
-  // UID of the first retained entry with sequential_uid > after, or invalid when
-  // none remains (an invalid `after` starts from the first retained entry). UID
-  // allocation is process-global, so one topic's UIDs are sparse — replay cursors
-  // must step with this instead of probing every intermediate value.
-  SequentialUID nextUIDAfter(ObjectTopicId id, SequentialUID after) const;
+  // Streaming-ingest cursor: returns every entry with sequential_uid > `cursor`, in
+  // ASCENDING UID (arrival) order with each payload resolved, then advances `cursor`
+  // to the last one seen. This is the only arrival-order read primitive — for a
+  // consumer that must ingest each new entry exactly once into an order-independent
+  // sink (e.g. the TF buffer), catching late/out-of-order arrivals a time window
+  // would miss. Eviction-safe: an entry dropped before it resolves is skipped but
+  // still advances `cursor`, so it is never revisited. For "state at time t" use
+  // rangeByTime()/latestAt() — never a UID as a time bound.
+  std::vector<ResolvedObjectEntry> drainNewSince(ObjectTopicId id, SequentialUID& cursor) const;
+
+  // The largest sequential_uid among entries with timestamp <= t, or the invalid
+  // UID when none exists. Unlike `latestAt(t)->sequential_uid` — the newest-
+  // TIMESTAMP entry, whose UID an out-of-order insert (old ts, newest UID) can
+  // leave below a retained entry's — this is the true high-water arrival UID of
+  // everything at-or-before t. A time-window replay cursor advances to it so a
+  // late out-of-order entry is not re-detected every step. O(count with ts <= t).
+  SequentialUID maxUidAtOrBefore(ObjectTopicId id, Timestamp t) const;
+
+  // One entry's stable identity plus its store timestamp, as returned by
+  // rangeByTime(). Decode-free — resolve the payload later via at(uid). Owned by
+  // OrderedEntries (which produces rangeByTime); aliased here for the public API.
+  using TimeRangeEntry = OrderedEntries::TimeRangeEntry;
+
+  // Snapshot of the entries with lo < timestamp <= hi, as (uid, timestamp) pairs
+  // in ASCENDING timestamp order. This is the correct primitive for a time-window
+  // consumer (e.g. incremental occupancy-grid updates): it must NOT walk the
+  // arrival-order UID cursor, because an out-of-order entry (older timestamp,
+  // newest UID) can sit at any UID position. rangeByTime itself resolves no
+  // payload under the store lock; the caller resolves each entry afterwards with
+  // at(uid) — one at a time under at()'s own brief lock — getting nullopt for any
+  // evicted in between. Empty when hi <= lo, or the topic is unknown/empty, or the
+  // window holds nothing. O(log n + window).
+  std::vector<TimeRangeEntry> rangeByTime(ObjectTopicId id, Timestamp lo, Timestamp hi) const;
 
   size_t entryCount(ObjectTopicId id) const;
 
@@ -268,9 +278,10 @@ class ObjectStore {
   /// Holds the MOVED-OUT entries + timestamps + retention budget + memory
   /// accounting (keyed by ObjectTopicId.id); series stay registered + empty.
   /// `prior_object_topic_ids` is the registered set at detach time so reattach
-  /// can remove any topic a failed refill added. The warm latestAt cache is NOT
-  /// snapshotted (reset on detach, re-seeded lazily after reattach). `valid ==
-  /// false` means nothing was detached.
+  /// can remove any topic a failed refill added. The uid_order side index is NOT
+  /// snapshotted (it is derivable — reattach rebuilds it). The warm latestAt cache
+  /// is NOT snapshotted (reset on detach, re-seeded lazily after reattach).
+  /// `valid == false` means nothing was detached.
   struct ObjectDatasetSnapshot {
     struct SeriesSnapshot {
       std::deque<ObjectEntry> entries;
@@ -305,8 +316,10 @@ class ObjectStore {
  private:
   struct ObjectSeries {
     ObjectTopicDescriptor descriptor;
-    std::deque<ObjectEntry> entries;
-    std::vector<Timestamp> entry_timestamps;
+    // The ordered-entry triple (entries + ascending timestamps + uid_order),
+    // encapsulated so its ordering invariants are enforced by construction and no
+    // mutation site can desync the three arrays by hand.
+    OrderedEntries ordered;
     RetentionBudget budget;
     size_t memory_bytes = 0;
     mutable std::shared_mutex mutex;
@@ -338,23 +351,17 @@ class ObjectStore {
   // destroying a still-locked series mutex is UB and the view's pointer dangles.
   static void drainSeriesReaders(ObjectSeries& series);
 
-  // Empty one series' entries/timestamps and reset its warm cache. Caller MUST
-  // hold store_mutex_ exclusively AND must have already drained the series'
-  // readers (drainSeriesReaders) so no EntryTimestampsView dangles into the
-  // timestamp vector being cleared.
+  // Empty one series' entries/timestamps/uid_order (via OrderedEntries::clear) and
+  // reset its memory accounting + warm cache. Caller MUST hold store_mutex_
+  // exclusively AND must have already drained the series' readers
+  // (drainSeriesReaders) so no EntryTimestampsView dangles into the timestamp
+  // vector being cleared.
   static void clearEntriesLocked(ObjectSeries& series);
 
-  // Shift every retained entry timestamp in-place. Caller MUST hold
-  // store_mutex_ exclusively and must have already drained the series readers.
-  static void shiftSeriesLocked(ObjectSeries& series, Timestamp shift);
-
-  // Reassign UIDs in current entry order. Caller MUST hold store_mutex_
-  // exclusively and must have already drained the series readers.
-  static void reuidSeriesLocked(ObjectSeries& series);
-
-  static std::optional<size_t> upperBoundIndex(const std::vector<Timestamp>& timestamps, Timestamp ts);
   static ResolvedObjectEntry resolveEntry(const ObjectEntry& entry);
 
+  // Drop the oldest entry: the warm cache (if it holds it) + owned-payload memory
+  // accounting live here; the triple pop delegates to OrderedEntries::evictFront.
   void evictFront(ObjectSeries& series);
   void applyRetention(ObjectSeries& series, Timestamp newest_ts);
 

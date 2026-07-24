@@ -17,6 +17,7 @@
 
 #include "pj_widgets/IntScrubber.h"
 #include "pj_widgets/ScrubberBase.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -107,7 +108,7 @@ TEST(ScrubberBase, KeyboardCommitFiresEditingFinished) {
 
   auto* editor = scrubber.findChild<QLineEdit*>();
   ASSERT_NE(editor, nullptr);
-  editor->setText(QStringLiteral("57"));
+  editor->setText(u"57"_s);
   QTest::keyClick(editor, Qt::Key_Return);
 
   EXPECT_EQ(scrubber.value(), 57);
@@ -126,7 +127,7 @@ TEST(ScrubberBase, EscapeRevertDoesNotFireEditingFinished) {
 
   auto* editor = scrubber.findChild<QLineEdit*>();
   ASSERT_NE(editor, nullptr);
-  editor->setText(QStringLiteral("57"));
+  editor->setText(u"57"_s);
   QTest::keyClick(editor, Qt::Key_Escape);
 
   EXPECT_EQ(finished_spy.count(), 0);

@@ -14,10 +14,13 @@ add_library(pj_runtime STATIC
     src/DataSourceRuntimeHost.cpp
     src/DiagnosticHistory.cpp
     src/ExtensionCatalogService.cpp
+    src/HttpGet.cpp
+    src/PluginRuntimeCatalog.cpp
     src/PlaybackEngine.cpp
     src/QSettingsBackend.cpp
     src/SessionManager.cpp
     src/ToolboxRuntimeHost.cpp
+    src/TopicDemandTracker.cpp
     src/UpdateChecker.cpp
     include/pj_runtime/AppSession.h
     include/pj_runtime/CatalogModel.h
@@ -27,11 +30,14 @@ add_library(pj_runtime STATIC
     include/pj_runtime/DataSourceRuntimeHost.h
     include/pj_runtime/DiagnosticHistory.h
     include/pj_runtime/ExtensionCatalogService.h
+    include/pj_runtime/HttpGet.h
+    include/pj_runtime/PluginRuntimeCatalog.h
     include/pj_runtime/IDataWidget.h
     include/pj_runtime/PlaybackEngine.h
     include/pj_runtime/QSettingsBackend.h
     include/pj_runtime/SessionManager.h
     include/pj_runtime/ToolboxRuntimeHost.h
+    include/pj_runtime/TopicDemandTracker.h
     include/pj_runtime/UpdateChecker.h
     include/pj_runtime/UpdateVersion.h
 )
@@ -50,7 +56,11 @@ target_link_libraries(pj_runtime PUBLIC
     Qt6::Xml
     pj_datastore
     pj_marketplace
-    pj_plugin_runtime_catalog
+    pj_data_source_host
+    pj_message_parser_host
+    pj_toolbox_host
+    pj_plugin_catalog
+    pj_base
     nlohmann_json::nlohmann_json
   PRIVATE
     tsl::robin_map
@@ -162,11 +172,25 @@ if(PJ_BUILD_TESTS)
         tests/catalog_model_test.cpp
     )
     target_compile_options(catalog_model_test PRIVATE ${PJ_WARNING_FLAGS})
+    # Qt6::Test supplies QSignalSpy for the advertised-topics idempotence test.
     target_link_libraries(catalog_model_test PRIVATE
         pj_runtime
         GTest::gtest_main
+        Qt6::Test
     )
     add_test(NAME CatalogModelTest COMMAND catalog_model_test)
+
+    add_executable(topic_demand_tracker_test
+        tests/topic_demand_tracker_test.cpp
+    )
+    target_compile_options(topic_demand_tracker_test PRIVATE ${PJ_WARNING_FLAGS})
+    # Qt6::Test supplies QSignalSpy for the activeTopicsChanged emission tests.
+    target_link_libraries(topic_demand_tracker_test PRIVATE
+        pj_runtime
+        GTest::gtest_main
+        Qt6::Test
+    )
+    add_test(NAME TopicDemandTrackerTest COMMAND topic_demand_tracker_test)
 
     add_executable(payload_anchor_test
         tests/payload_anchor_test.cpp
@@ -282,4 +306,79 @@ if(PJ_BUILD_TESTS)
     )
     add_dependencies(data_source_runtime_host_stream_swap_test streaming_caching_parser_plugin)
     add_test(NAME DataSourceRuntimeHostStreamSwapTest COMMAND data_source_runtime_host_stream_swap_test)
+
+    # M5: notify_available_topics threading + a-priori classification fallback.
+    add_executable(data_source_runtime_host_advertise_test
+        tests/data_source_runtime_host_advertise_test.cpp
+    )
+    target_compile_options(data_source_runtime_host_advertise_test PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(data_source_runtime_host_advertise_test PRIVATE
+        pj_runtime
+        GTest::gtest_main
+    )
+    add_test(NAME DataSourceRuntimeHostAdvertiseTest COMMAND data_source_runtime_host_advertise_test)
+
+    add_executable(extension_catalog_service_thread_safety_test
+        tests/extension_catalog_service_thread_safety_test.cpp
+    )
+    target_compile_options(extension_catalog_service_thread_safety_test PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(extension_catalog_service_thread_safety_test PRIVATE
+        pj_runtime
+        GTest::gtest
+    )
+    # Test name matches the target so build.sh's TSAN_TESTS ctest -R filter
+    # (which lists target names) picks it up under ./build.sh --tsan.
+    add_test(NAME extension_catalog_service_thread_safety_test COMMAND extension_catalog_service_thread_safety_test)
+
+    # PluginRuntimeCatalog — duplicate-resolution policy (version/compat/authoritative)
+    # relocated from the SDK into the host. These mocks moved with the tests from the
+    # SDK; mock_data_source_plugin (v1) is the SDK example fixture, reused from the
+    # SDK subdir.
+    add_library(mock_data_source_v2_plugin SHARED tests/mock_data_source_v2_plugin.cpp)
+    target_compile_features(mock_data_source_v2_plugin PRIVATE cxx_std_20)
+    target_compile_options(mock_data_source_v2_plugin PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(mock_data_source_v2_plugin PRIVATE pj_base)
+
+    add_library(mock_data_source_incompatible_plugin SHARED tests/mock_data_source_incompatible_plugin.cpp)
+    target_compile_features(mock_data_source_incompatible_plugin PRIVATE cxx_std_20)
+    target_compile_options(mock_data_source_incompatible_plugin PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(mock_data_source_incompatible_plugin PRIVATE pj_base)
+
+    add_library(mock_data_source_incompatible_low_plugin SHARED tests/mock_data_source_incompatible_low_plugin.cpp)
+    target_compile_features(mock_data_source_incompatible_low_plugin PRIVATE cxx_std_20)
+    target_compile_options(mock_data_source_incompatible_low_plugin PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(mock_data_source_incompatible_low_plugin PRIVATE pj_base)
+
+    add_executable(plugin_runtime_catalog_test tests/plugin_runtime_catalog_test.cpp)
+    target_compile_definitions(plugin_runtime_catalog_test PRIVATE
+        PJ_MOCK_DATA_SOURCE_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_plugin>"
+        PJ_MOCK_DATA_SOURCE_V2_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_v2_plugin>"
+        PJ_MOCK_DATA_SOURCE_INCOMPATIBLE_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_incompatible_plugin>"
+        PJ_MOCK_DATA_SOURCE_INCOMPATIBLE_LOW_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_incompatible_low_plugin>"
+        PJ_MOCK_TOOLBOX_PLUGIN_PATH="$<TARGET_FILE:mock_toolbox_plugin>"
+    )
+    target_compile_options(plugin_runtime_catalog_test PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(plugin_runtime_catalog_test PRIVATE
+        pj_runtime
+        GTest::gtest_main
+    )
+    add_dependencies(plugin_runtime_catalog_test
+        mock_data_source_plugin mock_data_source_v2_plugin
+        mock_data_source_incompatible_plugin mock_data_source_incompatible_low_plugin
+        mock_toolbox_plugin)
+    add_test(NAME plugin_runtime_catalog_test COMMAND plugin_runtime_catalog_test)
+
+    # Bundled-plugin seeding (share -> marketplace sync) + scan-tier precedence.
+    add_executable(extension_catalog_seed_test tests/extension_catalog_seed_test.cpp)
+    target_compile_definitions(extension_catalog_seed_test PRIVATE
+        PJ_MOCK_DATA_SOURCE_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_plugin>"
+        PJ_MOCK_DATA_SOURCE_V2_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_v2_plugin>"
+    )
+    target_compile_options(extension_catalog_seed_test PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(extension_catalog_seed_test PRIVATE
+        pj_runtime
+        GTest::gtest_main
+    )
+    add_dependencies(extension_catalog_seed_test mock_data_source_plugin mock_data_source_v2_plugin)
+    add_test(NAME extension_catalog_seed_test COMMAND extension_catalog_seed_test)
 endif()

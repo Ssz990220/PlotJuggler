@@ -7,7 +7,7 @@
 #include <QWidget>
 #include <vector>
 
-#include "pj_plugins/host/plugin_runtime_catalog.hpp"
+#include "pj_runtime/PluginRuntimeCatalog.h"
 #include "pj_widgets/ChromeMetrics.h"
 
 namespace Ui {
@@ -73,10 +73,11 @@ class LeftPanel : public QWidget {
   void restoreSourcesState(const QDomElement& element);
 
  public:
-  // Rebuilds the Cloud page from the catalog. Not a slot: RuntimeToolboxPlugin
-  // is non-copyable (owns a ToolboxLibrary), so MOC can't marshal it. Filters
-  // to toolboxes whose manifest `tags` contains "cloud" and renders one button
-  // per match. Safe to call repeatedly (e.g. on catalogChanged).
+  // Repopulates the Cloud combo from the catalog (mirrors setStreamingSources:
+  // selection preserved by plugin id, an empty catalog disables the row). Not a
+  // slot: RuntimeToolboxPlugin is non-copyable (owns a ToolboxLibrary), so MOC
+  // can't marshal it. Filters to toolboxes whose manifest `tags` contains
+  // "cloud". Safe to call repeatedly (e.g. on catalogChanged).
   void populateCloudToolboxes(const std::vector<RuntimeToolboxPlugin>& toolboxes);
 
  private:

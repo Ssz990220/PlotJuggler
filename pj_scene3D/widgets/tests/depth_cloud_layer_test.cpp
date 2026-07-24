@@ -27,6 +27,7 @@
 #include "pj_datastore/object_store.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -178,13 +179,13 @@ TEST(DepthCloudLayer, BackProjects32FC1UsingCameraInfoIntrinsics) {
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session;
-  pj::scene3d::DepthCloudLayer layer(depth, QStringLiteral("depth"), PJ::sdk::BuiltinObjectType::kImage);
+  pj::scene3d::DepthCloudLayer layer(depth, u"depth"_s, PJ::sdk::BuiltinObjectType::kImage);
   ASSERT_TRUE(layer.attach(ctx));
 
   // attach() renders the first sample: 4 valid pixels -> 4 back-projected points.
   EXPECT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{100});
   EXPECT_EQ(layer.lastPointCountForTest(), 4U);
-  EXPECT_EQ(layer.sourceFrameForTest(), QStringLiteral("cam"));
+  EXPECT_EQ(layer.sourceFrameForTest(), u"cam"_s);
 }
 
 // RealSense compressedDepth arrives as a BARE PNG (no signature). toDepthView must
@@ -220,13 +221,13 @@ TEST(DepthCloudLayer, BackProjectsBarePngCompressedDepth) {
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session;
-  pj::scene3d::DepthCloudLayer layer(depth, QStringLiteral("depth"), PJ::sdk::BuiltinObjectType::kImage);
+  pj::scene3d::DepthCloudLayer layer(depth, u"depth"_s, PJ::sdk::BuiltinObjectType::kImage);
   ASSERT_TRUE(layer.attach(ctx));
 
   // The bare PNG decodes (16UC1 mm) and back-projects to 4 points (== the 32FC1 case).
   EXPECT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{100});
   EXPECT_EQ(layer.lastPointCountForTest(), 4U);
-  EXPECT_EQ(layer.sourceFrameForTest(), QStringLiteral("cam"));
+  EXPECT_EQ(layer.sourceFrameForTest(), u"cam"_s);
 }
 
 TEST(DepthCloudLayer, CachesIntrinsicsAcrossFramesNotReparsedPerFrame) {
@@ -254,7 +255,7 @@ TEST(DepthCloudLayer, CachesIntrinsicsAcrossFramesNotReparsedPerFrame) {
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session;
-  pj::scene3d::DepthCloudLayer layer(depth, QStringLiteral("depth"), PJ::sdk::BuiltinObjectType::kImage);
+  pj::scene3d::DepthCloudLayer layer(depth, u"depth"_s, PJ::sdk::BuiltinObjectType::kImage);
   ASSERT_TRUE(layer.attach(ctx));  // renders the first frame (t=100)
   layer.renderAtForTest(200);
   layer.renderAtForTest(300);
@@ -291,7 +292,7 @@ TEST(DepthCloudLayer, PrefersCameraInfoMatchingFrameIdAmongMany) {
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session;
-  pj::scene3d::DepthCloudLayer layer(depth, QStringLiteral("depth"), PJ::sdk::BuiltinObjectType::kImage);
+  pj::scene3d::DepthCloudLayer layer(depth, u"depth"_s, PJ::sdk::BuiltinObjectType::kImage);
   ASSERT_TRUE(layer.attach(ctx));
 
   // frame_id="camB" must select camB's intrinsics (fx=200), never camA's (fx=100).
@@ -330,7 +331,7 @@ TEST(DepthCloudLayer, RefusesIntrinsicsAmongMultipleCamerasWithNoFrameMatch) {
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session;
-  pj::scene3d::DepthCloudLayer layer(depth, QStringLiteral("depth"), PJ::sdk::BuiltinObjectType::kImage);
+  pj::scene3d::DepthCloudLayer layer(depth, u"depth"_s, PJ::sdk::BuiltinObjectType::kImage);
   ASSERT_TRUE(layer.attach(ctx));
 
   // Two cameras, neither frame matches "camX": refuse rather than pair the wrong one.
@@ -359,7 +360,7 @@ TEST(DepthCloudLayer, FallsBackToLoneCameraOnFrameMismatch) {
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session;
-  pj::scene3d::DepthCloudLayer layer(depth, QStringLiteral("depth"), PJ::sdk::BuiltinObjectType::kImage);
+  pj::scene3d::DepthCloudLayer layer(depth, u"depth"_s, PJ::sdk::BuiltinObjectType::kImage);
   ASSERT_TRUE(layer.attach(ctx));
 
   EXPECT_EQ(layer.lastPointCountForTest(), 4U);
@@ -377,7 +378,7 @@ TEST(DepthCloudLayer, ColorImageProducesNoPoints) {
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session;
-  pj::scene3d::DepthCloudLayer layer(color, QStringLiteral("color"), PJ::sdk::BuiltinObjectType::kImage);
+  pj::scene3d::DepthCloudLayer layer(color, u"color"_s, PJ::sdk::BuiltinObjectType::kImage);
   ASSERT_TRUE(layer.attach(ctx));
 
   // A non-depth encoding produces no geometry and no pushed sample.

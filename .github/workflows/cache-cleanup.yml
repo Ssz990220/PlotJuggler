@@ -12,13 +12,18 @@ name: Cache cleanup
 #   * pr-cache-cleanup  — when a PR closes, delete the caches scoped to its ref
 #     (a merged PR's ~1.68 GB Linux ccache + ~0.66 GB Windows sccache are dead
 #     weight the moment it merges).
-#   * prune-stale-caches — keep only the newest cache per (ref, key-family) and
-#     drop the per-SHA rolling churn. e.g. ccache-linux-main had 3 entries / 5 GB
-#     where 1 suffices, because restore-keys always restores the most recent.
+#   * prune-stale-caches — remove late cache writes from already-closed PR refs,
+#     then keep only the newest cache per (ref, key-family) and drop the per-SHA
+#     rolling churn. e.g. ccache-linux-main had 3 entries / 5 GB where 1
+#     suffices, because restore-keys always restores the most recent.
 
 on:
   pull_request:
     types: [closed]
+  push:
+    # Prune right after every merge: the rolling per-SHA families otherwise
+    # hold 2-3 near-identical generations (~1-2 GB) between cron ticks.
+    branches: [main]
   schedule:
     # Every 6 h: bounds how much per-push churn accumulates between prunes.
     # The job is seconds of ubuntu time (just API calls), so cost is negligible.
@@ -28,6 +33,7 @@ on:
 permissions:
   actions: write     # delete cache entries via the REST API
   contents: read
+  pull-requests: read  # distinguish live PR cache refs from late closed-PR writes
 
 concurrency:
   # Serialize prunes so two runs don't race on the same cache IDs.
@@ -51,7 +57,11 @@ jobs:
         run: |
           set -euo pipefail
           echo "Deleting caches scoped to ${PR_REF}"
-          ids=$(gh api "/repos/${REPO}/actions/caches?ref=${PR_REF}&per_page=100" \
+          # The native sccache backend stores one cache entry per compiled
+          # object, so a single PR can own well over the list endpoint's
+          # 100-entry page size. Follow every Link header before deleting.
+          ids=$(gh api --paginate \
+                  "/repos/${REPO}/actions/caches?ref=${PR_REF}&per_page=100" \
                   --jq '.actions_caches[].id')
           if [ -z "${ids}" ]; then
             echo "No caches found for ${PR_REF}"

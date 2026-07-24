@@ -163,7 +163,6 @@ class Scene3DConfigPanel : public QWidget {
   QToolButton* mesh_eye_ = nullptr;
   DoubleScrubber* collision_opacity_ = nullptr;
   QToolButton* collision_eye_ = nullptr;
-  QToolButton* shadows_eye_ = nullptr;  // mesh-shadow on/off (per-dock shadows_enabled)
 
   // Model/URDF row. Robot layers are panel-managed: they do not appear in the
   // Topics list, so the source combo + add button + per-robot rows below are

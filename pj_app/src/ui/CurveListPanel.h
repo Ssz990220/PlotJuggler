@@ -19,6 +19,7 @@
 class QAction;
 class QPushButton;
 class QTimer;
+class QTreeWidgetItem;
 
 namespace Ui {
 class CurveListPanel;
@@ -29,6 +30,8 @@ namespace PJ {
 class CatalogModel;
 struct CatalogItem;
 class CurveTreeView;
+class TopicDemandController;
+class TopicDemandTracker;
 
 // Timeseries list + Custom Series section. Top tree mirrors CatalogModel;
 // bottom tree is the user's custom/derived series.
@@ -39,6 +42,16 @@ class CurveListPanel : public QWidget {
   ~CurveListPanel() override;
 
   void setCatalog(CatalogModel* catalog);
+
+  // Drives the "unsubscribed" (dimmed) row state: a topic that has data but is
+  // not currently referenced on a per-topic-pause-capable dataset. Optional —
+  // without it every row's unsubscribed flag stays false (today's behavior).
+  void setTopicDemandTracker(TopicDemandTracker* tracker);
+
+  // Routes a double-click on a scalar placeholder leaf to a bounded field
+  // preview (and arms the one-shot auto-expand). Optional — without it a
+  // double-click peek is a no-op.
+  void setTopicDemandController(TopicDemandController* controller);
 
   void refreshValues(double tracker_time);
 
@@ -101,6 +114,11 @@ class CurveListPanel : public QWidget {
  private slots:
   void onFilterChanged(const QString& text);
   void onCustomFilterChanged(const QString& text);
+  // Any of the three Datasets type-filter toggles (plot / 2D / 3D) changed.
+  // Pushes the enabled kinds to the Datasets tree; all three off is allowed
+  // and shows the tree's empty-filter message. Reads live button state, so
+  // it is sender-agnostic.
+  void onTypeFilterToggled();
   void onShowValuesToggled(bool show);
   void onPreserveTopicNameToggled(bool checked);
   void onTrashClicked();
@@ -110,9 +128,27 @@ class CurveListPanel : public QWidget {
   void onTreeContextMenu(const QPoint& pos);
 
  private:
+  // Right-click on a topic/field/placeholder row of a per-topic-pause-capable
+  // dataset: one toggle — "Force topic streaming" / "Stop forced streaming" —
+  // driving TopicDemandTracker::setTopicForced. The only way to accumulate a
+  // topic's history BEFORE it is first displayed.
+  void showTopicContextMenu(QTreeWidgetItem* clicked, const QPoint& pos);
   void onCatalogItemsAdded(const std::vector<CatalogItem>& items);
   void onCatalogItemsRemoved(const QStringList& keys);
   void onCatalogCleared();
+  void onActiveTopicsChanged(DatasetId dataset_id, const std::vector<QString>& active_topics);
+  // Recomputes every catalog item's unsubscribed state from scratch and pushes
+  // it to tree_view_ — the live-update path for onActiveTopicsChanged (no
+  // rebuild). No-op without both a catalog and a tracker.
+  void refreshUnsubscribedFlags();
+  // Pushes the tracker's forced-topic sets (every dataset) to the tree as
+  // accent-painted topic marks. Runs on forcedTopicsChanged and after any
+  // rebuild (the marks live on tree nodes, which rebuilds recreate).
+  void refreshForcedMarks();
+  // Handles CurveTreeView::placeholderPeekRequested: resolves the catalog key,
+  // asks the controller for a bounded field preview, and arms the tree's
+  // one-shot auto-expand at the topic's path. No-op without a controller.
+  void onPlaceholderPeekRequested(const QString& catalog_key);
   void applyIcons(QString theme);
   std::vector<QString> selectedCurveNamesForDrag() const;
 
@@ -125,6 +161,8 @@ class CurveListPanel : public QWidget {
 
   Ui::CurveListPanel* ui_;
   CatalogModel* catalog_ = nullptr;
+  TopicDemandTracker* tracker_ = nullptr;
+  TopicDemandController* controller_ = nullptr;
   CurveTreeView* tree_view_ = nullptr;
   CurveTreeView* custom_view_ = nullptr;
   // Catalog keys routed to the Custom Series panel (plugin-created transforms).

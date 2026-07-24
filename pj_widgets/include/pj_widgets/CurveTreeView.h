@@ -4,6 +4,7 @@
 
 #include <QByteArray>
 #include <QMimeData>
+#include <QSet>
 #include <QStringList>
 #include <QTreeWidget>
 #include <functional>
@@ -31,6 +32,18 @@ class CurveTreeView : public QTreeWidget {
     bool draggable = true;
     bool is_image_topic = false;
     bool is_3d_object_topic = false;
+    // An advertised-but-unsubscribed placeholder (a streaming source's topic with
+    // no data yet, no storage id) — rendered "paused/ghost" (dimmed) by
+    // CurveTreeItemDelegate, still selectable/draggable so it can be dropped to
+    // register demand (see the pj_app-side TopicDemandController).
+    bool is_placeholder = false;
+    // A topic that HAS data but is not currently referenced by any displayed
+    // widget on a per-topic-pause-capable dataset — dimmed the same way as
+    // is_placeholder. Computed at construction time from
+    // TopicDemandTracker::activeTopics(); kept live afterward via
+    // setUnsubscribedKeys() rather than a rebuild, so a subscribe/unsubscribe
+    // toggle only repaints, never restructures.
+    bool is_unsubscribed = false;
   };
 
   // Hierarchical: split dataset/topic/field on every '/' (after '.' → '/').
@@ -58,8 +71,73 @@ class CurveTreeView : public QTreeWidget {
   void addCurve(const CurvePath& path);
   void addCatalogItem(const CurvePath& path);
   void addCatalogItems(const std::vector<CurvePath>& paths);
+  // Builds the hierarchical tree-path a row is filed under and searched by
+  // (dataset/topic/field, '.'→'/' normalized) — the exact string addCatalogItem
+  // stores in the row's search role. Exposed so a caller can name a row by its
+  // tree location, e.g. to pre-arm requestExpansionWhenPromoted for a
+  // placeholder that will later promote to a field-bearing group.
+  [[nodiscard]] static QString treePathFromCurvePath(const CurvePath& path);
   void clearCurves();
+  // Expanded-group snapshot for rebuild survival: a full rebuild (clearCurves +
+  // re-add, e.g. after a catalog item removal) would otherwise collapse the
+  // whole tree. Capture before, restore after. Paths are name chains joined
+  // with a control character (names may contain '/'); restore only ADDS
+  // expansions — vanished paths are skipped and nothing is collapsed, so it
+  // composes with an active filter's own auto-expansion.
+  [[nodiscard]] QStringList expandedGroupPaths() const;
+  void restoreExpandedGroupPaths(const QStringList& paths);
+  // Updates the "unsubscribed" (dimmed) flag on every on-screen row whose
+  // catalog key is in `unsubscribed_keys`, clearing it on every other row — a
+  // full-set replace, mirroring TopicDemandTracker's own declarative active-set
+  // semantics. No structural change (no rebuild), so it is cheap to call after
+  // every TopicDemandTracker::activeTopicsChanged.
+  void setUnsubscribedKeys(const QSet<QString>& unsubscribed_keys);
+  // Reads back what setUnsubscribedKeys (or CurvePath::is_unsubscribed at
+  // construction) set for `key`; false for an unknown key.
+  [[nodiscard]] bool isKeyUnsubscribed(const QString& key) const;
+  // The catalog key a row resolves to (curve leaf, object-topic terminal, or
+  // placeholder), or empty for pure group/folder rows — lets a context-menu
+  // host map the clicked row back to a CatalogModel item.
+  [[nodiscard]] static QString catalogKeyOf(const QTreeWidgetItem* item);
+  // Every catalog key in `item`'s subtree, including `item`'s own (depth-first;
+  // keyless group rows contribute nothing). Lets a context-menu host act on a
+  // GROUP row — e.g. a promoted scalar topic, whose keys live on its field
+  // leaves, not the topic node itself.
+  [[nodiscard]] static QStringList catalogKeysUnder(const QTreeWidgetItem* item);
+  // Full-set replace of the topics whose streaming is user-forced, each named
+  // by its topic tree-path (dataset/topic, '.'→'/' — see treePathFromCurvePath
+  // with an empty field). The TOPIC node's name paints in the accent blue.
+  // The set is retained and re-applied across rebuilds.
+  void setForcedTopicPaths(const QSet<QString>& topic_paths);
+  // Test read-back: whether the topic node at `topic_path` carries the forced
+  // mark right now.
+  [[nodiscard]] bool isTopicPathForced(const QString& topic_path);
+  // Arms a one-shot intent: once a placeholder leaf at `tree_path` promotes to a
+  // field-bearing topic (its fields materialize as child rows), expand that
+  // topic's node and its ancestors so the field breakdown is revealed, then
+  // forget the intent. Fires at most once, so a later manual collapse survives
+  // subsequent rebuilds; the intent itself survives rebuilds until honored.
+  // `tree_path` is the row's normalized search path (dataset/topic/field, '.'→'/'
+  // — see treePathFromCurvePath); matching keys on that search role, so it works
+  // in both the hierarchical and show-topics views. A promotion to a single
+  // unnamed field (no sub-path) reveals nothing to expand and is a no-op.
+  void requestExpansionWhenPromoted(const QString& tree_path);
   void applyFilter(const QString& filter);
+  // Restrict which topic KINDS the tree shows, ANDed with the text filter.
+  // Classification is per TOPIC and governs the topic's whole subtree: a Scene2D
+  // (image-family, kImageTopicRole) or Scene3D (3D-object, k3dObjectTopicRole)
+  // topic — and every scalar field nested under it — is hidden together when
+  // that kind is off; those fields count as the topic's scene kind, never as
+  // Plot. Plot is the "by exclusion" bucket: a topic carrying no scene marker
+  // anywhere above the row (a plain numeric topic and its fields). All three
+  // default to true (no type restriction).
+  void setVisibleCurveKinds(bool show_plot, bool show_scene2d, bool show_scene3d);
+  // Message shown as a muted, column-spanning child row under each dataset node
+  // whose topics are ALL filtered out (by text and/or setVisibleCurveKinds): the
+  // dataset name stays visible and the row explains the blank instead of the
+  // whole panel going empty. Empty string (default) disables it; a dataset with
+  // no topics at all shows nothing.
+  void setEmptyFilterMessage(const QString& message);
   void refreshIcons(const QString& theme);
   std::vector<QString> selectedCurveNames() const;
   // selectedCurveNames() returns only directly-selected leaves; this variant
@@ -101,6 +179,14 @@ class CurveTreeView : public QTreeWidget {
 
   void setDragSelectionProvider(DragSelectionProvider provider);
 
+ signals:
+  // Emitted on a double-click of a childless, peek-eligible scalar placeholder
+  // leaf: an advertised-but-unsubscribed row that is NOT an image/3D-object
+  // terminal. The host (pj_app) responds by starting a bounded preview
+  // subscription so one real sample lands and the placeholder promotes to
+  // per-field rows. Carries the row's catalog key.
+  void placeholderPeekRequested(const QString& catalog_key);
+
  protected:
   void mousePressEvent(QMouseEvent* event) override;
   void mouseMoveEvent(QMouseEvent* event) override;
@@ -112,9 +198,18 @@ class CurveTreeView : public QTreeWidget {
 
   void addCurve(const QString& name, SortMode sort_mode);
   void addCatalogItem(const CurvePath& path, SortMode sort_mode);
+  // The node representing the topic at `topic_path`: the row whose search role
+  // equals it (placeholder leaf / object terminal), or the group above its
+  // field leaves (promoted scalar topic). Null when nothing matches.
+  QTreeWidgetItem* findTopicNode(const QString& topic_path);
+  // Re-stamps kForcedRole from forced_topic_paths_ (clear-all then set).
+  void applyForcedTopicMarks();
   QTreeWidgetItem* ensureGroupSegments(const QStringList& segments);
   QTreeWidgetItem* ensureGroup(const QString& path);
-  QString treePathFromCurvePath(const CurvePath& path) const;
+  // Walks the tree; for every pending_expand_paths_ entry whose group node now
+  // exists, expands that node and its ancestors and drops the entry. No-op when
+  // there are no pending intents.
+  void expandPendingGroups();
   // Recompute the Name column so it fills whatever viewport width is
   // left over after the Value column. Used by the resize event handler
   // and the value-column show/hide toggle.
@@ -138,6 +233,12 @@ class CurveTreeView : public QTreeWidget {
   // the data arrived still applies to it. No-op when no filter is active (freshly
   // inserted rows are visible by default).
   void reapplyFilter();
+  // Show/hide the managed empty-filter placeholder under `dataset_node`: a single
+  // italic, muted, column-spanning child row, displayed (with the node force-shown
+  // and expanded) when `subtree_hidden` and the dataset actually has topics — so a
+  // fully-filtered dataset keeps its name and explains the blank. See
+  // setEmptyFilterMessage. No-op when the message is empty.
+  void updateEmptyMessageChild(QTreeWidgetItem* dataset_node, bool subtree_hidden);
   void setDescendantsExpanded(QTreeWidgetItem* item, bool expanded);
   std::vector<QString> selectedCurveNamesForDrag() const;
 
@@ -147,6 +248,12 @@ class CurveTreeView : public QTreeWidget {
   QStringList drag_catalog_keys_;
   bool suppress_next_release_ = false;
   QString last_filter_;
+  // setVisibleCurveKinds flags; all true = no type restriction (the default).
+  bool show_plot_ = true;
+  bool show_scene2d_ = true;
+  bool show_scene3d_ = true;
+  // See setEmptyFilterMessage. Empty string disables the overlay.
+  QString empty_filter_message_;
   DragSelectionProvider drag_selection_provider_;
   // Re-entry guard for the header sectionResized handler: programmatic
   // resizes inside the handler re-fire the signal, which would otherwise
@@ -159,6 +266,13 @@ class CurveTreeView : public QTreeWidget {
   // Coalesces the deferred re-apply so a burst of expand/scroll events schedules
   // a single refresh on the next event loop turn.
   bool value_refresh_scheduled_ = false;
+  // Topics currently marked as force-streamed (see setForcedTopicPaths);
+  // retained so rebuilds re-stamp the marks.
+  QSet<QString> forced_topic_paths_;
+  // One-shot auto-expand intents keyed by tree-path (see
+  // requestExpansionWhenPromoted). Survives rebuilds; each entry is erased the
+  // first time a matching group node is expanded.
+  QSet<QString> pending_expand_paths_;
 };
 
 // Format a scalar for the curve-list "Value" column, PlotJuggler-3 style: fixed

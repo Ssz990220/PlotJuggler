@@ -2,8 +2,11 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <pj_widgets/ChromeMetrics.h>
+
 #include <QWidget>
 #include <functional>
+#include <optional>
 #include <pj_plugins/host/dialog_handle.hpp>
 #include <string>
 
@@ -37,6 +40,15 @@ struct DialogEngineConfig {
   /// window remains interactive. Required for drag-and-drop from the host UI
   /// into the dialog. Defaults to false (modal).
   bool non_modal = false;
+
+  /// Chrome metrics for sizing plugin SectionHeaderBand widgets to the app's
+  /// canonical band height. A plugin .ui inflates its bands at the widget's
+  /// default height, with no wiring to the host — so without this they render
+  /// shorter than every other section band in the app. When set, the engine
+  /// applies these metrics to every SectionHeaderBand in the loaded UI so the
+  /// bands match the panel-hosted toolboxes. Unset -> bands keep their default
+  /// height (headless runs and tests, which have no live app metrics).
+  std::optional<ChromeMetrics> section_band_metrics;
 };
 
 /// Orchestrates the full dialog lifecycle for a plugin:
@@ -69,6 +81,9 @@ class DialogEngine {
     int tick_count = 0;
     int event_count = 0;
     int diff_apply_count = 0;
+    /// Re-reads whose payload was byte-identical to the previous one and were
+    /// dropped before parsing (a gauge of plugin chattiness).
+    int skipped_identical_count = 0;
     bool has_parser_slot = false;
     bool parser_dialog_injected = false;  // True if a parser dialog was actually injected
   };

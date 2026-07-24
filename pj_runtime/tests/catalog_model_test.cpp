@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include <QSignalSpy>
 #include <QString>
 #include <QStringList>
 #include <cstdint>
@@ -16,6 +17,7 @@
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -56,17 +58,17 @@ TEST(CatalogModelTest, KeepsDuplicateDatasetTopicsVisibleUnderDatasetRoot) {
   EXPECT_FALSE(PJ::isObjectTopic(items[0]));
   EXPECT_FALSE(PJ::isObjectTopic(items[1]));
 
-  EXPECT_EQ(curves[0].name, QStringLiteral("dataset:1/topic:%1/column:0").arg(first_topic));
-  EXPECT_EQ(curves[0].dataset_name, QStringLiteral("drive.mcap"));
-  EXPECT_EQ(curves[0].topic_name, QStringLiteral("/imu/accel/sample"));
-  EXPECT_EQ(curves[0].field_name, QStringLiteral("value"));
+  EXPECT_EQ(curves[0].name, u"dataset:1/topic:%1/column:0"_s.arg(first_topic));
+  EXPECT_EQ(curves[0].dataset_name, u"drive.mcap"_s);
+  EXPECT_EQ(curves[0].topic_name, u"/imu/accel/sample"_s);
+  EXPECT_EQ(curves[0].field_name, u"value"_s);
   EXPECT_EQ(curves[0].dataset_id, *first_dataset);
   EXPECT_EQ(curves[0].topic_id, first_topic);
 
-  EXPECT_EQ(curves[1].name, QStringLiteral("dataset:2/topic:%1/column:0").arg(second_topic));
-  EXPECT_EQ(curves[1].dataset_name, QStringLiteral("drive.mcap (2)"));
-  EXPECT_EQ(curves[1].topic_name, QStringLiteral("/imu/accel/sample"));
-  EXPECT_EQ(curves[1].field_name, QStringLiteral("value"));
+  EXPECT_EQ(curves[1].name, u"dataset:2/topic:%1/column:0"_s.arg(second_topic));
+  EXPECT_EQ(curves[1].dataset_name, u"drive.mcap (2)"_s);
+  EXPECT_EQ(curves[1].topic_name, u"/imu/accel/sample"_s);
+  EXPECT_EQ(curves[1].field_name, u"value"_s);
   EXPECT_EQ(curves[1].dataset_id, *second_dataset);
   EXPECT_EQ(curves[1].topic_id, second_topic);
 
@@ -77,6 +79,65 @@ TEST(CatalogModelTest, KeepsDuplicateDatasetTopicsVisibleUnderDatasetRoot) {
   const auto second_descriptor = catalog.curveDescriptor(curves[1].name);
   ASSERT_TRUE(second_descriptor.has_value());
   EXPECT_EQ(second_descriptor->topic_id, second_topic);
+}
+
+TEST(CatalogModelTest, DatasetSourceNameReturnsRawIdentityNotDisplayLabel) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+
+  const auto first = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "logs/drive.mcap"});
+  const auto second = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "logs/drive.mcap"});
+  ASSERT_TRUE(first.has_value());
+  ASSERT_TRUE(second.has_value());
+  ASSERT_NE(addScalarTopic(session, *first, "/speed"), 0U);
+  ASSERT_NE(addScalarTopic(session, *second, "/speed"), 0U);
+
+  catalog.setDatasetDisplayName(*second, u"Pretty recording"_s);
+  const auto visible = catalog.datasets();
+  ASSERT_EQ(visible.size(), 2U);
+  EXPECT_EQ(visible[0].second, u"logs_drive.mcap"_s);
+  EXPECT_EQ(visible[1].second, u"Pretty recording"_s);
+
+  EXPECT_EQ(catalog.datasetSourceName(*first), u"logs/drive.mcap"_s);
+  EXPECT_EQ(catalog.datasetSourceName(*second), u"logs/drive.mcap"_s);
+  EXPECT_FALSE(catalog.datasetSourceName(999).has_value());
+
+  PJ::CatalogModel detached;
+  EXPECT_FALSE(detached.datasetSourceName(*first).has_value());
+}
+
+TEST(CatalogModelTest, ResolveDatasetIdentityDelegatesToSessionRegistry) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+
+  const auto first = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "run.mcap"});
+  const auto second = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "run.mcap"});
+  ASSERT_TRUE(first.has_value());
+  ASSERT_TRUE(second.has_value());
+
+  // Exact live id wins even amid duplicate source names.
+  const PJ::DatasetIdentityResolution exact = catalog.resolveDatasetIdentity(*second, u"run.mcap"_s);
+  ASSERT_TRUE(exact.id.has_value());
+  EXPECT_EQ(*exact.id, second.value());
+
+  // A reminted id with only a duplicated source label must reject as ambiguous.
+  const PJ::DatasetIdentityResolution portable = catalog.resolveDatasetIdentity(999, u"run.mcap"_s);
+  EXPECT_FALSE(portable.id.has_value());
+  EXPECT_TRUE(portable.ambiguous);
+
+  // The facade mirrors the session's source-path registry. Compare through
+  // normalizedSourcePath — on Windows a driveless Unix-style input gains a
+  // drive prefix (see SessionManager::normalizedSourcePath's doc comment).
+  session.setDatasetSourcePath(*first, u"/data/run.mcap"_s);
+  EXPECT_EQ(catalog.datasetSourcePath(*first), PJ::SessionManager::normalizedSourcePath(u"/data/run.mcap"_s));
+  EXPECT_TRUE(catalog.datasetSourcePath(*second).isEmpty());
+
+  // A detached catalog resolves nothing (and is not ambiguous).
+  PJ::CatalogModel detached;
+  const PJ::DatasetIdentityResolution none = detached.resolveDatasetIdentity(*first, u"run.mcap"_s);
+  EXPECT_FALSE(none.id.has_value());
+  EXPECT_FALSE(none.ambiguous);
+  EXPECT_TRUE(detached.datasetSourcePath(*first).isEmpty());
 }
 
 TEST(CatalogModelTest, KeepsDuplicateDatasetObjectTopicsVisibleUnderDatasetRoot) {
@@ -113,16 +174,15 @@ TEST(CatalogModelTest, KeepsDuplicateDatasetObjectTopicsVisibleUnderDatasetRoot)
   EXPECT_EQ(PJ::asObjectTopic(items[0])->object_type, PJ::sdk::BuiltinObjectType::kImage);
   EXPECT_EQ(PJ::asObjectTopic(items[1])->object_type, PJ::sdk::BuiltinObjectType::kImage);
 
-  EXPECT_EQ(items[0].key, QStringLiteral("dataset:%1/object_topic:%2").arg(*first_dataset).arg(first_object_topic->id));
-  EXPECT_EQ(items[0].dataset_name, QStringLiteral("drive.mcap"));
-  EXPECT_EQ(items[0].topic_name, QStringLiteral("/camera/image"));
+  EXPECT_EQ(items[0].key, u"dataset:%1/object_topic:%2"_s.arg(*first_dataset).arg(first_object_topic->id));
+  EXPECT_EQ(items[0].dataset_name, u"drive.mcap"_s);
+  EXPECT_EQ(items[0].topic_name, u"/camera/image"_s);
   EXPECT_EQ(items[0].dataset_id, *first_dataset);
   EXPECT_EQ(PJ::asObjectTopic(items[0])->object_topic_id, *first_object_topic);
 
-  EXPECT_EQ(
-      items[1].key, QStringLiteral("dataset:%1/object_topic:%2").arg(*second_dataset).arg(second_object_topic->id));
-  EXPECT_EQ(items[1].dataset_name, QStringLiteral("drive.mcap (2)"));
-  EXPECT_EQ(items[1].topic_name, QStringLiteral("/camera/image"));
+  EXPECT_EQ(items[1].key, u"dataset:%1/object_topic:%2"_s.arg(*second_dataset).arg(second_object_topic->id));
+  EXPECT_EQ(items[1].dataset_name, u"drive.mcap (2)"_s);
+  EXPECT_EQ(items[1].topic_name, u"/camera/image"_s);
   EXPECT_EQ(items[1].dataset_id, *second_dataset);
   EXPECT_EQ(PJ::asObjectTopic(items[1])->object_topic_id, *second_object_topic);
 
@@ -251,11 +311,11 @@ TEST(CatalogModelTest, DisplayNameOverrideReplacesLabelButKeepsSourceName) {
   auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "info.json"});
   ASSERT_TRUE(dataset.has_value()) << dataset.error();
   ASSERT_NE(addScalarTopic(session, *dataset, "/imu/accel/sample"), 0U);
-  ASSERT_EQ(catalog.curves().at(0).dataset_name, QStringLiteral("info.json"));
+  ASSERT_EQ(catalog.curves().at(0).dataset_name, u"info.json"_s);
 
-  catalog.setDatasetDisplayName(*dataset, QStringLiteral("pusht_v21"));
+  catalog.setDatasetDisplayName(*dataset, u"pusht_v21"_s);
 
-  EXPECT_EQ(catalog.curves().at(0).dataset_name, QStringLiteral("pusht_v21"));
+  EXPECT_EQ(catalog.curves().at(0).dataset_name, u"pusht_v21"_s);
   // The engine's source_name is left untouched so dataset-reuse matching
   // (FileLoader matches by source_name) keeps working.
   const PJ::DatasetInfo* info = session.dataEngine().getDataset(*dataset);
@@ -271,11 +331,11 @@ TEST(CatalogModelTest, DisplayNameOverrideIsFlattened) {
   ASSERT_TRUE(dataset.has_value());
   ASSERT_NE(addScalarTopic(session, *dataset, "/imu/accel/sample"), 0U);
 
-  catalog.setDatasetDisplayName(*dataset, QStringLiteral("lerobot/pusht"));
+  catalog.setDatasetDisplayName(*dataset, u"lerobot/pusht"_s);
 
   // '/' is flattened to '_' (same normalization as a source_name label) so the
   // override stays a single tree-root node.
-  EXPECT_EQ(catalog.curves().at(0).dataset_name, QStringLiteral("lerobot_pusht"));
+  EXPECT_EQ(catalog.curves().at(0).dataset_name, u"lerobot_pusht"_s);
 }
 
 TEST(CatalogModelTest, DisplayNameOverrideParticipatesInCollisionOrdinals) {
@@ -289,13 +349,13 @@ TEST(CatalogModelTest, DisplayNameOverrideParticipatesInCollisionOrdinals) {
   ASSERT_TRUE(second.has_value());
   ASSERT_NE(addScalarTopic(session, *second, "/imu/accel/sample"), 0U);
 
-  catalog.setDatasetDisplayName(*first, QStringLiteral("pusht"));
-  catalog.setDatasetDisplayName(*second, QStringLiteral("pusht"));
+  catalog.setDatasetDisplayName(*first, u"pusht"_s);
+  catalog.setDatasetDisplayName(*second, u"pusht"_s);
 
   const auto curves = catalog.curves();
   ASSERT_EQ(curves.size(), 2U);
-  EXPECT_EQ(curves[0].dataset_name, QStringLiteral("pusht"));
-  EXPECT_EQ(curves[1].dataset_name, QStringLiteral("pusht (2)"));
+  EXPECT_EQ(curves[0].dataset_name, u"pusht"_s);
+  EXPECT_EQ(curves[1].dataset_name, u"pusht (2)"_s);
 }
 
 TEST(CatalogModelTest, DisplayNameOverrideSurvivesRebuild) {
@@ -305,13 +365,13 @@ TEST(CatalogModelTest, DisplayNameOverrideSurvivesRebuild) {
   auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "info.json"});
   ASSERT_TRUE(dataset.has_value());
   ASSERT_NE(addScalarTopic(session, *dataset, "/imu/accel/sample"), 0U);
-  catalog.setDatasetDisplayName(*dataset, QStringLiteral("pusht_v21"));
+  catalog.setDatasetDisplayName(*dataset, u"pusht_v21"_s);
 
   // A second commit triggers rebuildFromDatastore via topicsCommitted.
   ASSERT_NE(addScalarTopic(session, *dataset, "/imu/gyro/sample"), 0U);
 
   for (const auto& curve : catalog.curves()) {
-    EXPECT_EQ(curve.dataset_name, QStringLiteral("pusht_v21"));
+    EXPECT_EQ(curve.dataset_name, u"pusht_v21"_s);
   }
 }
 
@@ -322,14 +382,14 @@ TEST(CatalogModelTest, DisplayNameOverrideSurvivesClearAndRestore) {
   auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "info.json"});
   ASSERT_TRUE(dataset.has_value());
   ASSERT_NE(addScalarTopic(session, *dataset, "/imu/accel/sample"), 0U);
-  catalog.setDatasetDisplayName(*dataset, QStringLiteral("pusht_v21"));
+  catalog.setDatasetDisplayName(*dataset, u"pusht_v21"_s);
 
   catalog.clearAll();
   EXPECT_TRUE(catalog.items().empty());
 
   catalog.restoreDataset(*dataset);
   ASSERT_EQ(catalog.curves().size(), 1U);
-  EXPECT_EQ(catalog.curves().at(0).dataset_name, QStringLiteral("pusht_v21"));
+  EXPECT_EQ(catalog.curves().at(0).dataset_name, u"pusht_v21"_s);
 }
 
 // Regression for the single-instance path: rebuildFromDatastore signals only
@@ -343,7 +403,7 @@ TEST(CatalogModelTest, DisplayNameOverrideSetBeforeCommitReachesItemAddedSignal)
 
   auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "info.json"});
   ASSERT_TRUE(dataset.has_value());
-  catalog.setDatasetDisplayName(*dataset, QStringLiteral("pusht_v21"));
+  catalog.setDatasetDisplayName(*dataset, u"pusht_v21"_s);
 
   QString added_dataset_name;
   QObject::connect(&catalog, &PJ::CatalogModel::itemAdded, [&](const PJ::CatalogItem& item) {
@@ -352,7 +412,7 @@ TEST(CatalogModelTest, DisplayNameOverrideSetBeforeCommitReachesItemAddedSignal)
 
   ASSERT_NE(addScalarTopic(session, *dataset, "/imu/accel/sample"), 0U);
 
-  EXPECT_EQ(added_dataset_name, QStringLiteral("pusht_v21"));
+  EXPECT_EQ(added_dataset_name, u"pusht_v21"_s);
 }
 
 TEST(CatalogModelTest, EmptyDisplayNameClearsOverride) {
@@ -362,12 +422,12 @@ TEST(CatalogModelTest, EmptyDisplayNameClearsOverride) {
   auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "info.json"});
   ASSERT_TRUE(dataset.has_value());
   ASSERT_NE(addScalarTopic(session, *dataset, "/imu/accel/sample"), 0U);
-  catalog.setDatasetDisplayName(*dataset, QStringLiteral("pusht_v21"));
-  ASSERT_EQ(catalog.curves().at(0).dataset_name, QStringLiteral("pusht_v21"));
+  catalog.setDatasetDisplayName(*dataset, u"pusht_v21"_s);
+  ASSERT_EQ(catalog.curves().at(0).dataset_name, u"pusht_v21"_s);
 
   catalog.setDatasetDisplayName(*dataset, QString{});
 
-  EXPECT_EQ(catalog.curves().at(0).dataset_name, QStringLiteral("info.json"));
+  EXPECT_EQ(catalog.curves().at(0).dataset_name, u"info.json"_s);
 }
 
 TEST(CatalogModelTest, RemoveDatasetHidesItemsScopedToTargetIdAndReturnsTrue) {
@@ -479,9 +539,9 @@ TEST(CatalogModelPathResolve, DatasetsEnumeratesLoadedDatasetsInLoadOrder) {
   const auto ds = catalog.datasets();
   ASSERT_EQ(ds.size(), 2U);
   EXPECT_EQ(ds[0].first, *a);
-  EXPECT_EQ(ds[0].second, QStringLiteral("a.mcap"));
+  EXPECT_EQ(ds[0].second, u"a.mcap"_s);
   EXPECT_EQ(ds[1].first, *b);
-  EXPECT_EQ(ds[1].second, QStringLiteral("b.mcap"));
+  EXPECT_EQ(ds[1].second, u"b.mcap"_s);
 }
 
 TEST(CatalogModelPathResolve, SameTopicFieldResolvesPerDatasetToDistinctKeys) {
@@ -496,8 +556,8 @@ TEST(CatalogModelPathResolve, SameTopicFieldResolvesPerDatasetToDistinctKeys) {
   ASSERT_TRUE(b.has_value());
   ASSERT_NE(addScalarTopic(session, *b, "/vehicle/speed"), 0U);
 
-  const auto da = catalog.descriptorForPath(*a, QStringLiteral("/vehicle/speed"), QStringLiteral("value"));
-  const auto db = catalog.descriptorForPath(*b, QStringLiteral("/vehicle/speed"), QStringLiteral("value"));
+  const auto da = catalog.descriptorForPath(*a, u"/vehicle/speed"_s, u"value"_s);
+  const auto db = catalog.descriptorForPath(*b, u"/vehicle/speed"_s, u"value"_s);
   ASSERT_TRUE(da.has_value());
   ASSERT_TRUE(db.has_value());
   EXPECT_EQ(da->dataset_id, *a);
@@ -512,8 +572,8 @@ TEST(CatalogModelPathResolve, ReturnsNulloptForAbsentTopicOrField) {
   ASSERT_TRUE(a.has_value());
   ASSERT_NE(addScalarTopic(session, *a, "/vehicle/speed"), 0U);
 
-  EXPECT_FALSE(catalog.descriptorForPath(*a, QStringLiteral("/no/such/topic"), QStringLiteral("value")).has_value());
-  EXPECT_FALSE(catalog.descriptorForPath(*a, QStringLiteral("/vehicle/speed"), QStringLiteral("nope")).has_value());
+  EXPECT_FALSE(catalog.descriptorForPath(*a, u"/no/such/topic"_s, u"value"_s).has_value());
+  EXPECT_FALSE(catalog.descriptorForPath(*a, u"/vehicle/speed"_s, u"nope"_s).has_value());
 }
 
 // ===========================================================================
@@ -678,7 +738,7 @@ TEST(CatalogModelTest, ScalarValueAtReturnsLatestSampleAtOrBeforeTime) {
   EXPECT_FALSE(catalog.scalarValueAt(key, displayOf(500'000'000)).has_value());
 
   // Unknown / non-scalar key → no value.
-  EXPECT_FALSE(catalog.scalarValueAt(QStringLiteral("not-a-key"), displayOf(2'500'000'000)).has_value());
+  EXPECT_FALSE(catalog.scalarValueAt(u"not-a-key"_s, displayOf(2'500'000'000)).has_value());
 }
 
 // String-typed fields surface in the catalog as scalar items (so the curve list
@@ -745,7 +805,7 @@ TEST(CatalogModelTest, StringFieldIsCatalogedAsScalarReadableButNotPlottable) {
   // String zero-order hold: between the 2nd and 3rd sample → "running".
   auto mid = catalog.stringValueAt(string_key, displayOf(2'500'000'000));
   ASSERT_TRUE(mid.has_value());
-  EXPECT_EQ(*mid, QStringLiteral("running"));
+  EXPECT_EQ(*mid, u"running"_s);
   // Before the first sample → no string.
   EXPECT_FALSE(catalog.stringValueAt(string_key, displayOf(500'000'000)).has_value());
 
@@ -755,6 +815,164 @@ TEST(CatalogModelTest, StringFieldIsCatalogedAsScalarReadableButNotPlottable) {
   EXPECT_DOUBLE_EQ(*numeric_value, 10.0);
   EXPECT_FALSE(catalog.scalarValueAt(string_key, displayOf(2'500'000'000)).has_value());
   EXPECT_FALSE(catalog.stringValueAt(numeric_key, displayOf(2'500'000'000)).has_value());
+}
+
+// --- Advertised (available-but-unsubscribed) placeholders (per-topic pause) ---
+
+TEST(CatalogModelTest, AdvertisedTopicsAppearAsDataLessPlaceholders) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "live"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+
+  catalog.setAdvertisedTopics(
+      *dataset, {
+                    {.topic_name = "/odom", .classification = PJ::sdk::BuiltinObjectType::kNone},
+                    {.topic_name = "/camera/image", .classification = PJ::sdk::BuiltinObjectType::kImage},
+                });
+
+  const auto items = catalog.items();
+  ASSERT_EQ(items.size(), 2U);
+  bool saw_scalar = false;
+  bool saw_image = false;
+  for (const auto& item : items) {
+    EXPECT_TRUE(PJ::isAdvertisedTopic(item));
+    EXPECT_FALSE(PJ::isScalarField(item));
+    EXPECT_FALSE(PJ::isObjectTopic(item));
+    // A data-less placeholder is not a plottable curve.
+    EXPECT_FALSE(catalog.curveDescriptor(item.key).has_value());
+    const auto* adv = PJ::asAdvertisedTopic(item);
+    ASSERT_NE(adv, nullptr);
+    if (item.topic_name == "/odom") {
+      saw_scalar = true;
+      EXPECT_EQ(adv->classification, PJ::sdk::BuiltinObjectType::kNone);
+    } else if (item.topic_name == "/camera/image") {
+      saw_image = true;
+      EXPECT_EQ(adv->classification, PJ::sdk::BuiltinObjectType::kImage);
+    }
+  }
+  EXPECT_TRUE(saw_scalar);
+  EXPECT_TRUE(saw_image);
+  EXPECT_TRUE(catalog.curves().empty());  // placeholders are never curves
+}
+
+TEST(CatalogModelTest, ScalarShapedPlaceholderIsScalarKeyButImageShapedIsNot) {
+  // M3-UI: the curve-list Value column reads isScalarKey to choose "-" (scalar,
+  // no sample yet) vs blank (non-scalar row) — a kNone-classified advertised
+  // placeholder must count as scalar so it shows "-" like a real empty scalar
+  // field, but an object-shaped placeholder (e.g. kImage) must not.
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "live"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+
+  catalog.setAdvertisedTopics(
+      *dataset, {
+                    {.topic_name = "/odom", .classification = PJ::sdk::BuiltinObjectType::kNone},
+                    {.topic_name = "/camera/image", .classification = PJ::sdk::BuiltinObjectType::kImage},
+                });
+
+  QString scalar_key;
+  QString image_key;
+  for (const auto& item : catalog.items()) {
+    (item.topic_name == "/odom" ? scalar_key : image_key) = item.key;
+  }
+  ASSERT_FALSE(scalar_key.isEmpty());
+  ASSERT_FALSE(image_key.isEmpty());
+
+  EXPECT_TRUE(catalog.isScalarKey(scalar_key));
+  EXPECT_FALSE(catalog.isScalarKey(image_key));
+  // No sample exists yet — scalarValueAt stays nullopt (the caller renders "-").
+  EXPECT_FALSE(catalog.scalarValueAt(scalar_key, 0.0).has_value());
+}
+
+TEST(CatalogModelTest, RealDataSupersedesAdvertisedPlaceholder) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "live"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+
+  catalog.setAdvertisedTopics(
+      *dataset, {{.topic_name = "/imu/accel/sample", .classification = PJ::sdk::BuiltinObjectType::kNone}});
+  ASSERT_EQ(catalog.items().size(), 1U);
+  ASSERT_TRUE(PJ::isAdvertisedTopic(catalog.items()[0]));
+
+  // Subscribe: real scalar data for the same topic name arrives.
+  const PJ::TopicId topic = addScalarTopic(session, *dataset, "/imu/accel/sample");
+  ASSERT_NE(topic, 0U);
+
+  const auto items = catalog.items();
+  ASSERT_EQ(items.size(), 1U);
+  EXPECT_TRUE(PJ::isScalarField(items[0]));  // placeholder replaced by the real field
+  EXPECT_FALSE(PJ::isAdvertisedTopic(items[0]));
+  EXPECT_EQ(items[0].topic_name, u"/imu/accel/sample"_s);
+  EXPECT_TRUE(catalog.curveDescriptor(items[0].key).has_value());
+}
+
+TEST(CatalogModelTest, AdvertiseIsDeclarativeAndClearable) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "live"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+
+  catalog.setAdvertisedTopics(
+      *dataset, {
+                    {.topic_name = "/a", .classification = PJ::sdk::BuiltinObjectType::kNone},
+                    {.topic_name = "/b", .classification = PJ::sdk::BuiltinObjectType::kNone},
+                });
+  ASSERT_EQ(catalog.items().size(), 2U);
+
+  // Declarative shrink: the new full set drops "/b".
+  catalog.setAdvertisedTopics(*dataset, {{.topic_name = "/a", .classification = PJ::sdk::BuiltinObjectType::kNone}});
+  ASSERT_EQ(catalog.items().size(), 1U);
+  EXPECT_EQ(catalog.items()[0].topic_name, u"/a"_s);
+
+  catalog.clearAdvertisedTopics(*dataset);
+  EXPECT_TRUE(catalog.items().empty());
+}
+
+TEST(CatalogModelTest, ReAdvertisingIdenticalSetEmitsNothing) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "live"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+
+  const std::vector<PJ::AdvertisedTopic> topics{
+      {.topic_name = "/a", .classification = PJ::sdk::BuiltinObjectType::kNone}};
+  catalog.setAdvertisedTopics(*dataset, topics);
+  ASSERT_EQ(catalog.items().size(), 1U);
+
+  QSignalSpy added_spy(&catalog, &PJ::CatalogModel::itemsAdded);
+  QSignalSpy removed_spy(&catalog, &PJ::CatalogModel::itemsRemoved);
+  catalog.setAdvertisedTopics(*dataset, topics);  // identical → idempotent, no churn
+  EXPECT_EQ(added_spy.count(), 0);
+  EXPECT_EQ(removed_spy.count(), 0);
+}
+
+TEST(CatalogModelTest, PerTopicPauseCapableDefaultsFalseAndRoundTrips) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "live"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+
+  EXPECT_FALSE(catalog.isPerTopicPauseCapable(*dataset));  // unset → false (a file dataset, e.g.)
+  catalog.setPerTopicPauseCapable(*dataset, true);
+  EXPECT_TRUE(catalog.isPerTopicPauseCapable(*dataset));
+  catalog.setPerTopicPauseCapable(*dataset, false);
+  EXPECT_FALSE(catalog.isPerTopicPauseCapable(*dataset));
+}
+
+TEST(CatalogModelTest, PerTopicPauseCapableClearedOnDatasetRemoval) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "live"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  catalog.setAdvertisedTopics(*dataset, {{.topic_name = "/a", .classification = PJ::sdk::BuiltinObjectType::kNone}});
+  catalog.setPerTopicPauseCapable(*dataset, true);
+  ASSERT_TRUE(catalog.isPerTopicPauseCapable(*dataset));
+
+  catalog.removeDataset(*dataset, /*tombstone=*/false);
+  EXPECT_FALSE(catalog.isPerTopicPauseCapable(*dataset));
 }
 
 }  // namespace

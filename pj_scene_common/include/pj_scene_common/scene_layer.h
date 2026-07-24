@@ -130,6 +130,8 @@ class ISceneLayer : public QObject {
  signals:
   void infoChanged();
   void visibilityChanged(bool visible);
+  /// Emitted after a user commits a persistent layer-parameter edit.
+  void configurationChanged();
   void repaintRequested();
   void warningChanged(bool warn, QString reason);
 };

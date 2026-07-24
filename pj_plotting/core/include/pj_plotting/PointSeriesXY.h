@@ -8,6 +8,7 @@
 #include <QRectF>
 #include <cstddef>
 #include <limits>
+#include <optional>
 #include <vector>
 
 #include "pj_base/types.hpp"
@@ -36,6 +37,15 @@ class PointSeriesXY final : public QwtSeriesData<QPointF> {
   [[nodiscard]] const CurveDescriptor& ySource() const noexcept {
     return y_source_;
   }
+
+  /// The (x,y) sample at-or-before `display_time_sec`, for the time-driven marker
+  /// that glides along an XY curve as the playback cursor moves (PlotWidget's XY
+  /// tracker). `display_time_sec` is the Qwt/playback display coordinate; it is
+  /// mapped back to a raw timestamp through the Y source's display offset (the
+  /// two axes share a time base) and matched against the time-ordered alignment
+  /// index. nullopt if there is no pair at-or-before that time (cursor before the
+  /// first sample) or the series is empty.
+  [[nodiscard]] std::optional<QPointF> sampleFromTime(double display_time_sec) const;
 
  private:
   struct PairSlot {

@@ -29,6 +29,7 @@
 #include "pj_widgets/ScrubberBase.h"
 #include "pj_widgets/SvgUtil.h"
 #include "ui_LeftPanel.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -45,6 +46,12 @@ constexpr const char* kRecentIconExpanded = ":/resources/svg/keyboard_arrow_down
 // Streaming-buffer setting key — preserved verbatim from when the
 // scrubber lived on the timeline so user-saved values survive the move.
 constexpr const char* kStreamingBufferKey = "MainWindow.streamingBufferValue";
+// Last-selected streaming source, persisted by name so it survives plugin
+// re-discovery reordering across sessions (an index would not).
+constexpr const char* kStreamingSourceKey = "MainWindow.streamingSource";
+// Last-selected cloud toolbox, persisted by plugin id (stable across sessions,
+// unlike the display name or a combo index). Mirrors kStreamingSourceKey.
+constexpr const char* kCloudSourceKey = "MainWindow.cloudSource";
 }  // namespace
 
 LeftPanel::LeftPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::LeftPanel) {
@@ -62,7 +69,7 @@ LeftPanel::LeftPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::LeftPanel) 
   // the stylesheet separator path and suppresses addSection() text. A disabled
   // QAction flows through the themed ::item:disabled rule and renders reliably.
   auto* recent_menu = new QMenu(this);
-  recent_menu->setObjectName(QStringLiteral("PJMenu"));
+  recent_menu->setObjectName(u"PJMenu"_s);
   connect(recent_menu, &QMenu::aboutToShow, this, [this, recent_menu]() {
     recent_menu->clear();
     const QStringList layouts = QSettings().value(kRecentLayoutsKey).toStringList();
@@ -76,7 +83,7 @@ LeftPanel::LeftPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::LeftPanel) 
       QAction* header = recent_menu->addAction(title);
       header->setEnabled(false);
       QFont font = header->font();
-      font.setBold(true);
+      font.setWeight(QFont::DemiBold);
       header->setFont(font);
     };
     if (!layouts.isEmpty()) {
@@ -163,7 +170,13 @@ LeftPanel::LeftPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::LeftPanel) 
   connect(ui_->buttonStreamingPause, &QPushButton::toggled, this, &LeftPanel::streamingPauseToggled);
   connect(
       ui_->buttonStreamingPause, &QPushButton::toggled, this, [this](bool) { applyPauseButtonState(currentTheme()); });
-  connect(ui_->comboStreaming, &QComboBox::currentTextChanged, this, &LeftPanel::streamingSourceChanged);
+  // Persist the user's choice so it is restored next session. The signal only
+  // fires on genuine user selection — setStreamingSources() blocks it while
+  // repopulating — so this never re-saves a programmatic restore.
+  connect(ui_->comboStreaming, &QComboBox::currentTextChanged, this, [this](const QString& source) {
+    QSettings().setValue(kStreamingSourceKey, source);
+    emit streamingSourceChanged(source);
+  });
 
   // Buffer scrubber: restore from QSettings on construct. The buffer length only
   // matters once the user finishes adjusting it — reconfiguring the live stream
@@ -175,6 +188,26 @@ LeftPanel::LeftPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::LeftPanel) 
     QSettings().setValue(kStreamingBufferKey, seconds);
     emit streamingBufferChanged(seconds);
   });
+
+  // Cloud row (mirrors the streaming row): the combo lists the cloud-tagged
+  // toolboxes (populateCloudToolboxes), the button opens the selected one.
+  // Selection is persisted by plugin id; the signal only fires on genuine user
+  // selection — populateCloudToolboxes blocks it while repopulating.
+  connect(ui_->comboCloud, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+    const QString id = ui_->comboCloud->currentData().toString();
+    if (!id.isEmpty()) {
+      QSettings().setValue(kCloudSourceKey, id);
+    }
+  });
+  connect(ui_->buttonCloudOpen, &QPushButton::clicked, this, [this]() {
+    const QString id = ui_->comboCloud->currentData().toString();
+    if (!id.isEmpty()) {
+      emit cloudToolboxRequested(id);
+    }
+  });
+  // Empty until the extension catalog is scanned (populateCloudToolboxes).
+  ui_->comboCloud->setEnabled(false);
+  ui_->buttonCloudOpen->setEnabled(false);
 }
 
 LeftPanel::~LeftPanel() {
@@ -204,7 +237,10 @@ void LeftPanel::setStreamingSources(const QStringList& names) {
     QSignalBlocker block(ui_->comboStreaming);
     ui_->comboStreaming->clear();
     ui_->comboStreaming->addItems(names);
-    const int idx = ui_->comboStreaming->findText(previous);
+    // Keep the current selection across a mid-session refresh; on the first
+    // (empty) population fall back to the source persisted last session.
+    const QString desired = previous.isEmpty() ? QSettings().value(kStreamingSourceKey).toString() : previous;
+    const int idx = ui_->comboStreaming->findText(desired);
     if (idx >= 0) {
       ui_->comboStreaming->setCurrentIndex(idx);
     }
@@ -226,24 +262,24 @@ void LeftPanel::applyPauseButtonState(QString theme) {
 }
 
 QDomElement LeftPanel::saveSourcesState(QDomDocument& doc) const {
-  QDomElement element = doc.createElement(QStringLiteral("left_panel_state"));
+  QDomElement element = doc.createElement(u"left_panel_state"_s);
 
   // sources_tab: report which of the three autoExclusive tabs is checked.
   if (ui_->tabFile->isChecked()) {
-    element.setAttribute(QStringLiteral("sources_tab"), QStringLiteral("file"));
+    element.setAttribute(u"sources_tab"_s, u"file"_s);
   } else if (ui_->tabStream->isChecked()) {
-    element.setAttribute(QStringLiteral("sources_tab"), QStringLiteral("stream"));
+    element.setAttribute(u"sources_tab"_s, u"stream"_s);
   } else if (ui_->tabCloud->isChecked()) {
-    element.setAttribute(QStringLiteral("sources_tab"), QStringLiteral("cloud"));
+    element.setAttribute(u"sources_tab"_s, u"cloud"_s);
   }
 
-  element.setAttribute(QStringLiteral("streaming_source"), ui_->comboStreaming->currentText());
-  element.setAttribute(QStringLiteral("streaming_buffer"), QString::number(ui_->streamingSpinBox->value()));
+  element.setAttribute(u"streaming_source"_s, ui_->comboStreaming->currentText());
+  element.setAttribute(u"streaming_buffer"_s, QString::number(ui_->streamingSpinBox->value()));
   return element;
 }
 
 void LeftPanel::restoreSourcesState(const QDomElement& element) {
-  if (element.isNull() || element.tagName() != QStringLiteral("left_panel_state")) {
+  if (element.isNull() || element.tagName() != "left_panel_state"_L1) {
     return;
   }
 
@@ -251,13 +287,13 @@ void LeftPanel::restoreSourcesState(const QDomElement& element) {
   // connected lambdas (which switch the inputStack page). We deliberately
   // do NOT block these signals — switching the visible page is the
   // intended side-effect of selecting a tab.
-  if (element.hasAttribute(QStringLiteral("sources_tab"))) {
-    const QString tab = element.attribute(QStringLiteral("sources_tab"));
-    if (tab == QStringLiteral("file")) {
+  if (element.hasAttribute(u"sources_tab"_s)) {
+    const QString tab = element.attribute(u"sources_tab"_s);
+    if (tab == "file"_L1) {
       ui_->tabFile->setChecked(true);
-    } else if (tab == QStringLiteral("stream")) {
+    } else if (tab == "stream"_L1) {
       ui_->tabStream->setChecked(true);
-    } else if (tab == QStringLiteral("cloud")) {
+    } else if (tab == "cloud"_L1) {
       ui_->tabCloud->setChecked(true);
     }
     // Unknown tab string -> silent no-op.
@@ -267,8 +303,8 @@ void LeftPanel::restoreSourcesState(const QDomElement& element) {
   // findText means the source isn't currently in the combo (plugin
   // not installed) -> silent no-op. Block signals so we don't emit
   // streamingSourceChanged during restore.
-  if (element.hasAttribute(QStringLiteral("streaming_source"))) {
-    const QString src = element.attribute(QStringLiteral("streaming_source"));
+  if (element.hasAttribute(u"streaming_source"_s)) {
+    const QString src = element.attribute(u"streaming_source"_s);
     const int idx = ui_->comboStreaming->findText(src);
     if (idx >= 0) {
       const QSignalBlocker blocker(ui_->comboStreaming);
@@ -279,9 +315,9 @@ void LeftPanel::restoreSourcesState(const QDomElement& element) {
   // streaming_buffer: setValue triggers the connected lambda which
   // writes QSettings AND emits streamingBufferChanged. Block signals
   // to suppress both.
-  if (element.hasAttribute(QStringLiteral("streaming_buffer"))) {
+  if (element.hasAttribute(u"streaming_buffer"_s)) {
     bool ok = false;
-    const int seconds = element.attribute(QStringLiteral("streaming_buffer")).toInt(&ok);
+    const int seconds = element.attribute(u"streaming_buffer"_s).toInt(&ok);
     if (ok) {
       const QSignalBlocker blocker(ui_->streamingSpinBox);
       ui_->streamingSpinBox->setValue(seconds);
@@ -297,6 +333,7 @@ void LeftPanel::applyIcons(QString theme) {
   ui_->buttonReloadData->setIcon(loadSvg(":/resources/svg/restore_page.svg", theme));
   ui_->buttonRecentFiles->setIcon(loadSvg(kRecentIconCollapsed, theme));
   ui_->buttonStreamingOptions->setIcon(loadSvg(":/resources/svg/add.svg", theme));
+  ui_->buttonCloudOpen->setIcon(loadSvg(":/resources/svg/add.svg", theme));
   applyPauseButtonState(theme);
 
   const QSize icon_sz(chrome_metrics_.icon_size, chrome_metrics_.icon_size);
@@ -304,7 +341,7 @@ void LeftPanel::applyIcons(QString theme) {
   // Band height grows by 2 * layout_padding so the contentsMargins
   // applied to inner layouts are absorbed by the container instead of
   // squeezing the buttons.
-  const int band_extent = button_extent + (2 * chrome_metrics_.layout_padding);
+  const int band_extent = chrome_metrics_.bandHeight();
   // Every icon-bearing button in this panel uses the same square chrome
   // pattern; iterate by type rather than by name.
   for (auto* btn : findChildren<QToolButton*>()) {
@@ -313,12 +350,6 @@ void LeftPanel::applyIcons(QString theme) {
     btn->setIconSize(icon_sz);
   }
   for (auto* btn : findChildren<QPushButton*>()) {
-    // Cloud-launcher buttons are runtime-added text buttons, not the square
-    // icon chrome this loop styles — leave their natural sizing alone, else
-    // they get squashed to button_extent x button_extent and clip their label.
-    if (btn->objectName().startsWith(QStringLiteral("cloudToolboxOpen_"))) {
-      continue;
-    }
     btn->setMinimumSize(button_extent, button_extent);
     btn->setMaximumSize(button_extent, button_extent);
     btn->setIconSize(icon_sz);
@@ -331,6 +362,8 @@ void LeftPanel::applyIcons(QString theme) {
   ui_->widgetLabelInput->setMaximumHeight(band_extent);
   ui_->comboStreaming->setMinimumHeight(button_extent);
   ui_->comboStreaming->setMaximumHeight(button_extent);
+  ui_->comboCloud->setMinimumHeight(button_extent);
+  ui_->comboCloud->setMaximumHeight(button_extent);
   ui_->streamingSpinBox->setMinimumHeight(button_extent);
   ui_->streamingSpinBox->setMaximumHeight(button_extent);
   ui_->labelBuffer->setMinimumSize(button_extent, button_extent);
@@ -344,83 +377,77 @@ void LeftPanel::applyIcons(QString theme) {
       chrome_metrics_.layout_padding, chrome_metrics_.layout_padding, chrome_metrics_.layout_padding,
       chrome_metrics_.layout_padding);
   for (auto* layout : std::initializer_list<QLayout*>{
-           ui_->inputHeaderLayout, ui_->pageFile->layout(), ui_->pageStream->layout(), ui_->pageCloud->layout(),
-           ui_->streamSourceRow, ui_->streamBufferRow}) {
+           ui_->pageFile->layout(), ui_->pageStream->layout(), ui_->pageCloud->layout(), ui_->streamSourceRow,
+           ui_->streamBufferRow, ui_->cloudSourceRow}) {
     if (layout != nullptr) {
       layout->setContentsMargins(margins);
       layout->setSpacing(chrome_metrics_.layout_spacing);
     }
   }
+  // The "Sources" title band leads via labelInput's own canonical padding-left
+  // (Tight), so its layout adds no left inset — otherwise the two stack into a
+  // doubled leading that no longer matches the other section bands.
+  if (auto* layout = ui_->inputHeaderLayout) {
+    layout->setContentsMargins(
+        0, chrome_metrics_.layout_padding, chrome_metrics_.layout_padding, chrome_metrics_.layout_padding);
+    layout->setSpacing(chrome_metrics_.layout_spacing);
+  }
 }
 
 void LeftPanel::populateCloudToolboxes(const std::vector<RuntimeToolboxPlugin>& toolboxes) {
-  auto* container = ui_->pageCloud->findChild<QWidget*>("cloudToolboxContainer");
-  if (container == nullptr) {
-    return;
-  }
-  auto* layout = qobject_cast<QVBoxLayout*>(container->layout());
-  if (layout == nullptr) {
-    return;
-  }
-
-  // Wipe existing rows.
-  while (QLayoutItem* item = layout->takeAt(0)) {
-    if (QWidget* w = item->widget()) {
-      w->deleteLater();
-    }
-    delete item;
-  }
-
-  bool any_cloud = false;
-  for (const auto& tb : toolboxes) {
-    // The manifest lives on the loaded vtable as a constexpr char[]; a null
-    // vtable is a load failure already reported through the diagnostic sink.
-    const auto* vtable = tb.library.vtable();
-    if (vtable == nullptr || vtable->manifest_json == nullptr) {
-      continue;
-    }
-    auto manifest = nlohmann::json::parse(vtable->manifest_json, nullptr, /*allow_exceptions=*/false);
-    if (!manifest.is_object()) {
-      // The plugin loaded but ships a malformed manifest; warn so a toolbox that
-      // silently never appears in the cloud list is diagnosable, then skip it.
-      qWarning("LeftPanel: toolbox '%s' has an invalid manifest_json; skipping", tb.id.c_str());
-      continue;
-    }
-    bool is_cloud = false;
-    if (auto it = manifest.find("tags"); it != manifest.end() && it->is_array()) {
-      for (const auto& tag : *it) {
-        if (tag.is_string() && tag.get<std::string>() == "cloud") {
-          is_cloud = true;
-          break;
+  const QString previous = ui_->comboCloud->currentData().toString();
+  {
+    const QSignalBlocker block(ui_->comboCloud);
+    ui_->comboCloud->clear();
+    for (const auto& tb : toolboxes) {
+      // The manifest lives on the loaded vtable as a constexpr char[]; a null
+      // vtable is a load failure already reported through the diagnostic sink.
+      const auto* vtable = tb.library.vtable();
+      if (vtable == nullptr || vtable->manifest_json == nullptr) {
+        continue;
+      }
+      auto manifest = nlohmann::json::parse(vtable->manifest_json, nullptr, /*allow_exceptions=*/false);
+      if (!manifest.is_object()) {
+        // The plugin loaded but ships a malformed manifest; warn so a toolbox that
+        // silently never appears in the cloud list is diagnosable, then skip it.
+        qWarning("LeftPanel: toolbox '%s' has an invalid manifest_json; skipping", tb.id.c_str());
+        continue;
+      }
+      bool is_cloud = false;
+      if (auto it = manifest.find("tags"); it != manifest.end() && it->is_array()) {
+        for (const auto& tag : *it) {
+          if (tag.is_string() && tag.get<std::string>() == "cloud") {
+            is_cloud = true;
+            break;
+          }
         }
       }
-    }
-    if (!is_cloud) {
-      continue;
-    }
-    any_cloud = true;
+      if (!is_cloud) {
+        continue;
+      }
 
-    // One full-width button per cloud source; its label is the toolbox name
-    // and clicking it launches the panel.
-    auto* btn = new QPushButton(QString::fromStdString(tb.name), container);
-    btn->setObjectName(QStringLiteral("cloudToolboxOpen_") + QString::fromStdString(tb.id));
-    if (auto desc = manifest.find("description"); desc != manifest.end() && desc->is_string()) {
-      btn->setToolTip(QString::fromStdString(desc->get<std::string>()));
+      // One combo entry per cloud source: display name, plugin id as data
+      // (ids are stable across sessions; names/order are not).
+      ui_->comboCloud->addItem(QString::fromStdString(tb.name), QString::fromStdString(tb.id));
+      if (auto desc = manifest.find("description"); desc != manifest.end() && desc->is_string()) {
+        ui_->comboCloud->setItemData(
+            ui_->comboCloud->count() - 1, QString::fromStdString(desc->get<std::string>()), Qt::ToolTipRole);
+      }
     }
-    layout->addWidget(btn);
 
-    const QString id = QString::fromStdString(tb.id);
-    connect(btn, &QPushButton::clicked, this, [this, id]() { emit cloudToolboxRequested(id); });
+    // Restore selection: current pick wins over the persisted one (a rescan
+    // must not yank the user's live selection).
+    const QString desired = previous.isEmpty() ? QSettings().value(kCloudSourceKey).toString() : previous;
+    const int idx = ui_->comboCloud->findData(desired);
+    if (idx >= 0) {
+      ui_->comboCloud->setCurrentIndex(idx);
+    }
   }
 
-  if (!any_cloud) {
-    auto* placeholder = new QLabel(tr("(no cloud toolboxes installed)"), container);
-    placeholder->setObjectName(QStringLiteral("labelCloudPlaceholder"));
-    placeholder->setAlignment(Qt::AlignCenter);
-    placeholder->setEnabled(false);
-    layout->addWidget(placeholder);
-  }
-  layout->addStretch();
+  const bool any_cloud = ui_->comboCloud->count() > 0;
+  ui_->comboCloud->setPlaceholderText(any_cloud ? QString() : tr("(no cloud plugins)"));
+  ui_->comboCloud->setEnabled(any_cloud);
+  ui_->buttonCloudOpen->setEnabled(any_cloud);
 }
 
 }  // namespace PJ

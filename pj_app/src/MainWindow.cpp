@@ -18,13 +18,13 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QFontMetrics>
+#include <QHBoxLayout>
 #include <QHash>
 #include <QIcon>
 #include <QKeySequence>
 #include <QLabel>
 #include <QLoggingCategory>
 #include <QMenu>
-#include <QMessageBox>
 #include <QMouseEvent>
 #include <QPalette>
 #include <QPixmap>
@@ -39,6 +39,7 @@
 #include <QShortcut>
 #include <QShowEvent>
 #include <QSignalBlocker>
+#include <QSize>
 #include <QSizePolicy>
 #include <QSplitter>
 #include <QStackedWidget>
@@ -61,6 +62,7 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -68,13 +70,14 @@
 #include "DebugUi.h"
 #include "FileLoader.h"
 #include "LayoutXml.h"
-#include "PendingCurveBinder.h"
+#include "PendingDisplayBinder.h"
 #include "PreferencesDialog.h"
 #include "RasterKeyMap.h"
 #include "SourceTimelineController.h"
 #include "StreamingSourceManager.h"
 #include "Theme.h"
 #include "TitleBar.h"
+#include "TopicDemandController.h"
 #include "pj_base/dataset.hpp"
 #include "pj_base/types.hpp"
 #include "pj_datastore/data_processor.hpp"
@@ -107,6 +110,7 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
 #include "pj_runtime/ToolboxRuntimeHost.h"
+#include "pj_runtime/TopicDemandTracker.h"
 #include "pj_runtime/UpdateChecker.h"
 #include "pj_scene2d_widgets/Scene2DDockWidget.h"
 #include "pj_scene2d_widgets/media_viewer_widget.h"
@@ -116,9 +120,11 @@
 #include "pj_widgets/CoalescingTrigger.h"
 #include "pj_widgets/FileDialog.h"
 #include "pj_widgets/FlowLayout.h"
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/IngestProgressWidget.h"
 #include "pj_widgets/MessageBox.h"
 #include "pj_widgets/RasterStreamView.h"
+#include "pj_widgets/Scrollbar.h"
 #include "pj_widgets/SectionHeaderBand.h"
 #include "pj_widgets/SvgButton.h"
 #include "pj_widgets/SvgUtil.h"
@@ -133,6 +139,7 @@
 #include "ui/Scene3DConfigPanel.h"
 #include "ui/TimelineWidget.h"
 #include "ui_MainWindow.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -151,6 +158,20 @@ void checkGroupButton(QButtonGroup* group, int id) {
     const QSignalBlocker blocker(group);
     btn->setChecked(true);
   }
+}
+
+// Layout-relative form of `absolute_path` for persisting a data-source
+// reference: the relative path when the data lives at or beneath `layout_dir`,
+// else the absolute path. This diverges from PJ3 (which always stores relative)
+// — PJ4 avoids brittle ../.. paths so moving a layout file doesn't silently break
+// the data reference. A relative path counts as a "subpath" only when Qt's
+// relativeFilePath did NOT emit a "../" prefix or the literal ".." path; the
+// simpler `!rel.startsWith("..")` check would misclassify legitimate filenames
+// like "..foo" or "..bar/data.csv" as escaping the dir.
+[[nodiscard]] QString relocatableSubpath(const QString& absolute_path, const QDir& layout_dir) {
+  const QString relative = layout_dir.relativeFilePath(absolute_path);
+  const bool is_subpath = relative != ".."_L1 && !relative.startsWith("../"_L1);
+  return is_subpath ? relative : absolute_path;
 }
 
 constexpr auto kDefaultRegistryUrl =
@@ -187,7 +208,14 @@ constexpr auto kLastLayoutDirKey = "MainWindow.lastLayoutDirectory";
 // element carries zoom + scroll_left_ns + name_column_width + snap. Additive — older
 // readers ignore the new attributes/element; this build tolerates their absence in
 // pre-v3 layouts.
-constexpr int kLayoutSchemaVersion = 3;
+// v4 adds one <dataset> child per fan-out member under each <fileInfo>
+// (source_name + source_index + per-source display_offset_ns + timeline_order),
+// so a single file that fans out into several datasets round-trips each track
+// independently. The offset basis also changed: v3 wrote SessionManager::
+// displayOffset() (per-source alignment + global reference); v4 writes
+// sourceDisplayOffset() only, and the loader subtracts its current global
+// reference when reading a <=v3 layout (read-only migration, placement preserved).
+constexpr int kLayoutSchemaVersion = 4;
 constexpr double kTwoPi = 6.28318530717958647692;
 constexpr int kTestSampleCount = 1000;
 constexpr double kTestDurationSeconds = 10.0;
@@ -217,6 +245,10 @@ constexpr int kIconSizeDefault = 24;
 constexpr int kIconPaddingDefault = 4;
 constexpr int kLayoutPaddingDefault = 2;
 constexpr int kLayoutSpacingDefault = 2;
+
+// Scene scrubber drags emit workspaceChanged per tick; one history snapshot
+// publishes after the gesture goes quiet.
+constexpr int kSceneUndoDebounceMs = 200;
 
 Qt::Edges edgesAtPoint(const QSize& window_size, const QPoint& pos) {
   Qt::Edges edges;
@@ -279,16 +311,6 @@ std::array<PanelToggle, 3> panelToggles(Ui::MainWindow* ui) {
   }};
 }
 
-QUrl registryUrlFromSettings() {
-  const QString raw = QSettings().value(kRegistryUrlSettingsKey, kDefaultRegistryUrl).toString();
-  const QUrl url(raw);
-  if (!url.isValid() || url.scheme().isEmpty()) {
-    qCWarning(lcMain) << "Invalid" << kRegistryUrlSettingsKey << "in QSettings:" << raw << "— falling back to default.";
-    return QUrl(QString::fromLatin1(kDefaultRegistryUrl));
-  }
-  return url;
-}
-
 // Curve-Width radio mapping. Hoisted from buildLocalToolbar so the
 // layout-save path can encode the float value (rebuild-stable) and the
 // layout-load path can map the stored value back to a button.
@@ -308,7 +330,13 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       diagnostic_bridge_(new QtDiagnosticBridge(this)),
       app_settings_(std::make_unique<QSettings>()),
       session_(std::make_unique<AppSession>(std::move(extensions_dir), diagnostic_bridge_->sink())),
-      pending_binder_(std::make_unique<PendingCurveBinder>(session_->catalogModel())),
+      pending_binder_(
+          std::make_unique<PendingDisplayBinder>(session_->catalogModel(), &session_->topicDemandTracker())),
+      topic_demand_controller_(
+          std::make_unique<TopicDemandController>(
+              session_->catalogModel(), session_->topicDemandTracker(),
+              session_->sessionManager().dataProcessorService(), *pending_binder_,
+              session_->sessionManager().dataEngine())),
       theme_(std::make_unique<Theme>()) {
   // The 3D transform service owns the per-dataset TF buffers + load-time
   // ingest. It lives in the shell (not pj_runtime) so the runtime stays
@@ -338,25 +366,51 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // implicit gap below the menuWidget (TitleBar), which the user sees
   // as a strip of titlebar-background between the title bar and the
   // first chrome row of the central area.
-  setContentsMargins(0, 0, 0, 0);
-  ui_->centralWidget->setContentsMargins(0, 0, 0, 0);
-  ui_->upperArea->setContentsMargins(0, 0, 0, 0);
-  ui_->leftColumn->setContentsMargins(0, 0, 0, 0);
-  ui_->bottomPanel->setContentsMargins(0, 0, 0, 0);
-  ui_->leftPanel->setContentsMargins(0, 0, 0, 0);
-  ui_->curveListPanel->setContentsMargins(0, 0, 0, 0);
-  ui_->tabbedPlotWidget->setContentsMargins(0, 0, 0, 0);
-  ui_->timelineSplitter->setContentsMargins(0, 0, 0, 0);
-  ui_->mainSplitter->setContentsMargins(0, 0, 0, 0);
-  ui_->rightToolbarSplitter->setContentsMargins(0, 0, 0, 0);
-  ui_->plotsAndGlobalContainer->setContentsMargins(0, 0, 0, 0);
-  ui_->globalToolbarWidget->setContentsMargins(0, 0, 0, 0);
+  setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  ui_->centralWidget->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  ui_->upperArea->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  ui_->leftColumn->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  ui_->bottomPanel->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  ui_->leftPanel->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  ui_->curveListPanel->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  ui_->tabbedPlotWidget->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  ui_->timelineSplitter->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  ui_->mainSplitter->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  ui_->rightToolbarSplitter->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  ui_->plotsAndGlobalContainer->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  ui_->globalToolbarWidget->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
 
   // Qt 6.8 QRhiWidget needs an RHI-capable top-level backing store from
   // the first show(). Keep a zero-size viewer in an existing visible layout
   // so image docks created later can initialize their QRhi.
   auto* rhi_bootstrap = new MediaViewerWidget(ui_->globalToolbarWidget);
-  rhi_bootstrap->setObjectName(QStringLiteral("rhi_bootstrap"));
+  rhi_bootstrap->setObjectName(u"rhi_bootstrap"_s);
   rhi_bootstrap->setMaximumSize(0, 0);
   rhi_bootstrap->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
   if (auto* global_toolbar_layout = qobject_cast<QVBoxLayout*>(ui_->globalToolbarWidget->layout())) {
@@ -415,6 +469,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   title_bar_ = new TitleBar(this);
   connect(title_bar_, &TitleBar::diagnosticActivated, this, [this](const DiagnosticRecord& r) {
     auto* dlg = new DiagnosticsDetailDialog(r, this);
+    dlg->setChromeMetrics(chrome_metrics_);
     dlg->show();
   });
 
@@ -426,11 +481,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   action_load_layout_ = file_menu->addAction(tr("Load Layout..."), this, &MainWindow::onLoadLayout);
   action_save_layout_ = file_menu->addAction(tr("Save Layout..."), this, &MainWindow::onSaveLayout);
   file_menu->addSeparator();
-  // Extensions Marketplace temporarily hidden — uncomment to restore the
-  // File-menu entry. The actionMarketplace QAction, its triggered() wiring,
-  // and onOpenMarketplace() are all left intact below; this only removes the
-  // visible menu item.
-  // file_menu->addAction(ui_->actionMarketplace);
+  file_menu->addAction(ui_->actionMarketplace);
   action_preferences_ = file_menu->addAction(tr("Preferences..."), this, &MainWindow::onShowPreferencesDialog);
   file_menu->addSeparator();
   file_menu->addAction(ui_->actionExit);
@@ -446,13 +497,13 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   help_menu->addAction(tr("About PlotJuggler..."), this, &MainWindow::onShowAboutDialog);
   help_menu->addAction(tr("Check for Updates..."), this, &MainWindow::onCheckForUpdates);
   help_menu->addAction(
-      tr("Documentation"), this, []() { QDesktopServices::openUrl(QUrl(QStringLiteral("https://plotjuggler.io"))); });
+      tr("Documentation"), this, []() { QDesktopServices::openUrl(QUrl(u"https://plotjuggler.io"_s)); });
   help_menu->addAction(tr("Report an Issue"), this, []() {
-    QDesktopServices::openUrl(QUrl(QStringLiteral("https://github.com/PlotJuggler/PJ4/issues")));
+    QDesktopServices::openUrl(QUrl(u"https://github.com/PlotJuggler/PJ4/issues"_s));
   });
   help_menu->addSeparator();
   installed_extensions_menu_ = help_menu->addMenu(tr("Installed Extensions"));
-  installed_extensions_menu_->setObjectName(QStringLiteral("PJMenu"));
+  installed_extensions_menu_->setObjectName(u"PJMenu"_s);
   connect(installed_extensions_menu_, &QMenu::aboutToShow, this, &MainWindow::onRebuildExtensionsMenu);
 
   setMenuWidget(title_bar_);
@@ -496,9 +547,9 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
           //  - kSceneEntities is both 2D and 3D; is3d wins (markers are primarily
           //    3D), but a 2D dock still accepts markers dropped onto it.
           //  - Neither → "".
-          resolved_kind = isImageFamilyObjectType(seed->object_type) ? QStringLiteral("scene2d")
-                          : is3dSceneObjectType(seed->object_type)   ? QStringLiteral("scene3d")
-                          : is2dSceneObjectType(seed->object_type)   ? QStringLiteral("scene2d")
+          resolved_kind = isImageFamilyObjectType(seed->object_type) ? u"scene2d"_s
+                          : is3dSceneObjectType(seed->object_type)   ? u"scene3d"_s
+                          : is2dSceneObjectType(seed->object_type)   ? u"scene2d"_s
                                                                      : QString();
         }
         if (seed == nullptr) {
@@ -510,6 +561,16 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
           // (currentTimeChanged only fires on changes; this path also rebuilds
           // docks on undo/redo — M.1). An unknown kind yields nullptr, which on
           // this (seedless) path just means "not my kind" and is silent.
+          return makeSeededEmptyObjectDock(resolved_kind, dock_parent);
+        }
+
+        if (seed->topic_id == ObjectTopicId{}) {
+          // Placeholder drop: the topic is advertised (classified) but has no
+          // storage id yet — data only starts flowing once the drop registers
+          // demand. Build the empty dock of the resolved family; the drop site
+          // stages a pending drop that completes with the real ObjectTopicId
+          // when the subscription delivers the first sample
+          // (TopicDemandController::handleSceneDockPlaceholderDrop).
           return makeSeededEmptyObjectDock(resolved_kind, dock_parent);
         }
 
@@ -572,6 +633,8 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   connect(ui_->tabbedPlotWidget, &TabbedPlotWidget::tabAdded, this, &MainWindow::onPlotTabAdded);
   wireExistingPlots();
   ui_->curveListPanel->setCatalog(&session_->catalogModel());
+  ui_->curveListPanel->setTopicDemandTracker(&session_->topicDemandTracker());
+  ui_->curveListPanel->setTopicDemandController(topic_demand_controller_.get());
 
   // Keep data widgets coherent with catalog removals, whoever triggers them.
   // Each widget prunes its OWN pieces against the live catalog/store. One pass
@@ -581,14 +644,15 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
     syncWidgetsToCatalog();
   });
   connect(session_.get(), &AppSession::datasetsMerged, this, [this](DatasetId anchor, QList<DatasetId> consumed) {
-    if (transform_service_ == nullptr) {
-      return;
+    if (transform_service_ != nullptr) {
+      for (const DatasetId id : consumed) {
+        transform_service_->invalidateDataset(id);
+      }
+      transform_service_->invalidateDataset(anchor);
+      transform_service_->ingestFrameTransformsForDataset(anchor);
     }
-    for (const DatasetId id : consumed) {
-      transform_service_->invalidateDataset(id);
-    }
-    transform_service_->invalidateDataset(anchor);
-    transform_service_->ingestFrameTransformsForDataset(anchor);
+    syncWidgetsToCatalog();
+    resetUndoHistory();
   });
 
   connect(ui_->curveListPanel, &CurveListPanel::trashRequested, this, &MainWindow::onCatalogTrashRequested);
@@ -597,7 +661,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // The "+" in Custom Series opens the Transform Editor — now provided by the
   // toolbox plugin (the native panel was retired). Launch it like any toolbox.
   connect(ui_->curveListPanel, &CurveListPanel::createCustomSeriesRequested, this, [this]() {
-    launchToolbox(QStringLiteral("toolbox-transform-editor"));
+    launchToolbox(u"toolbox-transform-editor"_s);
   });
   // Edit (pencil): open the Transform Editor pre-populated with the selected custom
   // series' saved editor state (stored in the recipe's params_json at create time),
@@ -623,31 +687,28 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
         break;
       }
     }
-    launchToolbox(QStringLiteral("toolbox-transform-editor"), initial_config);
+    launchToolbox(u"toolbox-transform-editor"_s, initial_config);
   });
   connect(ui_->curveListPanel, &CurveListPanel::deleteCustomSeriesRequested, this, [this](const QString& catalog_key) {
-    QString output_name;
-    for (const auto& item : session_->catalogModel().items()) {
-      if (item.key == catalog_key) {
-        output_name = item.topic_name;
-        break;
-      }
+    const std::optional<CurveDescriptor> output = session_->catalogModel().curveDescriptor(catalog_key);
+    if (!output.has_value()) {
+      return;
     }
-    // Cascade FIRST to any derivative built on top of this one (and its chain):
-    // its output name is the input of those, so the transitive resolver finds them.
-    // Warns + removes them; cancel aborts (this series is left intact too).
-    if (!confirmAndRemoveDependentTransforms({output_name.toStdString()})) {
+    if (!confirmAndRemoveDependentTransforms({output->topic_id})) {
       return;
     }
     auto& dp = session_->sessionManager().dataProcessorService();
+    bool removed = false;
     for (const auto& recipe : dp.transformRecipes()) {
-      const bool owns = std::any_of(recipe.outputs.begin(), recipe.outputs.end(), [&](const std::string& o) {
-        return QString::fromStdString(o) == output_name;
-      });
+      const bool owns = std::find(recipe.output_topic_ids.begin(), recipe.output_topic_ids.end(), output->topic_id) !=
+                        recipe.output_topic_ids.end();
       if (owns) {
-        (void)dp.removeTransform(recipe.key);
+        removed = dp.removeTransform(recipe.key).has_value();
         break;
       }
+    }
+    if (!removed) {
+      return;
     }
     session_->catalogModel().rebuildFromDatastore();
     ui_->curveListPanel->removeCustomCurve(catalog_key);
@@ -673,9 +734,9 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
     // the engine (adapters gone, so DataEngine::removeDataset's invalidate-first contract
     // holds). Without the engine erase a later reload would reattach to the emptied shells.
     session_->catalogModel().clearAll(/*tombstone=*/false);
-    DataEngine& engine = session_->sessionManager().dataEngine();
-    for (const DatasetId id : engine.listDatasets()) {
-      engine.removeDataset(id);
+    SessionManager& session_manager = session_->sessionManager();
+    for (const DatasetId id : session_manager.dataEngine().listDatasets()) {
+      session_manager.removeDataset(id);
     }
     resetUndoHistory();
   });
@@ -684,14 +745,14 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // Right-toolbar global view toggles persisted across sessions. Buttons
   // themselves are created later by buildGlobalToolbar(); we load state
   // first so the buttons can pick up the correct initial check state.
-  show_points_ = settings.value(QStringLiteral("MainWindow.buttonShowpoint"), true).toBool();
-  activate_grid_ = settings.value(QStringLiteral("MainWindow.buttonActivateGrid"), false).toBool();
-  dots_ = settings.value(QStringLiteral("MainWindow.buttonDots"), false).toBool();
+  show_points_ = settings.value(u"MainWindow.buttonShowpoint"_s, true).toBool();
+  activate_grid_ = settings.value(u"MainWindow.buttonActivateGrid"_s, false).toBool();
+  dots_ = settings.value(u"MainWindow.buttonDots"_s, false).toBool();
   tracker_info_ = static_cast<CurveTracker::Parameter>(
-      settings.value(QStringLiteral("MainWindow.timeTrackerSetting"), static_cast<int>(CurveTracker::kValue)).toInt());
-  keep_ratio_ = settings.value(QStringLiteral("MainWindow.buttonRatio"), true).toBool();
+      settings.value(u"MainWindow.timeTrackerSetting"_s, static_cast<int>(CurveTracker::kValue)).toInt());
+  keep_ratio_ = settings.value(u"MainWindow.buttonRatio"_s, true).toBool();
   legend_status_ = static_cast<LegendStatus>(
-      settings.value(QStringLiteral("MainWindow.legendStatus"), static_cast<int>(LegendStatus::kHidden)).toInt());
+      settings.value(u"MainWindow.legendStatus"_s, static_cast<int>(LegendStatus::kHidden)).toInt());
 
   // Push the just-loaded toggle states into every plot already created by
   // wireExistingPlots(). New plots will pick this up via onPlotAdded.
@@ -758,8 +819,9 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   auto apply_theme_chrome = [this]() {
     qApp->setStyleSheet(theme_->expandedQss());
     const bool light = theme_->currentTheme().contains("light");
-    const QColor tip_bg = light ? QColor(0xF5, 0xF5, 0xF5) : QColor(0x44, 0x44, 0x44);
-    const QColor tip_fg = light ? QColor(0x11, 0x11, 0x11) : QColor(0xF0, 0xF0, 0xF0);
+    const auto token_theme = theme::themeFor(light);
+    const QColor tip_bg = theme::surface(theme::Surface::Backdrop, token_theme);
+    const QColor tip_fg = theme::text(token_theme);
     QPalette p = qApp->palette();
     p.setColor(QPalette::ToolTipBase, tip_bg);
     p.setColor(QPalette::ToolTipText, tip_fg);
@@ -837,7 +899,10 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   DebugUi::installInto(this, theme_.get());
 
   auto& playback = session_->playbackEngine();
-  playback.setRange(displayRange(0.0, 10.0));
+  // Start in the empty state: no data loaded means an empty range, so the
+  // transport renders disabled until the first dataset arrives (same state a
+  // full removal returns to).
+  playback.setRangeAndCurrentTime(displayRange(0.0, 0.0), displaySeconds(0.0));
   ui_->timelineWidget->setPlaybackEngine(&playback);
   // Cap the cursor-move fan-out at ~30 Hz (kTrackerBroadcastIntervalMs). currentTimeChanged
   // fires on playback ticks, scrubbing, and seeks — all of which can exceed 30 Hz (a fast
@@ -849,15 +914,35 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
     pending_tracker_time_ = time;
     tracker_broadcast_trigger_->request();
   });
-  // Frame change (the "Use time offset" toggle today, any future re-base): the
-  // blue reference line stores a frame-invariant instant, so re-project it
-  // through the new offset and re-push — keeping it pinned to its instant rather
-  // than stranded off the re-fitted axis.
-  connect(&session_->sessionManager(), qOverload<>(&SessionManager::displayOffsetChanged), this, [this]() {
-    // The global frame moved: re-project the reference and re-push it to the plots
-    // and (re-bridged into the Timeline frame) the Source Timeline.
-    broadcastReferenceLine();
-  });
+  Timestamp last_global_reference = session_->sessionManager().globalTimeReference();
+  connect(
+      &session_->sessionManager(), qOverload<>(&SessionManager::displayOffsetChanged), this,
+      [this, last_global_reference]() mutable {
+        SessionManager& manager = session_->sessionManager();
+        PlaybackEngine& engine = session_->playbackEngine();
+        const Timestamp new_global_reference = manager.globalTimeReference();
+        const DisplaySeconds old_time = engine.currentTime();
+        const double frame_delta = timestampDifferenceSeconds(last_global_reference, new_global_reference);
+        last_global_reference = new_global_reference;
+        if (active_streaming_dataset_id_ != 0) {
+          if (const auto range = manager.datasetDisplayRange(active_streaming_dataset_id_); range.has_value()) {
+            engine.setRange(*range);
+          }
+        } else {
+          session_->recomputeRange();
+        }
+        engine.setCurrentTime(DisplaySeconds{old_time.value + frame_delta});
+        broadcastReferenceLine();
+        pending_tracker_time_ = toAxisDouble(engine.currentTime());
+        tracker_broadcast_trigger_->request();
+      });
+  connect(
+      &session_->sessionManager(), qOverload<DatasetId>(&SessionManager::displayOffsetChanged), this,
+      [this](DatasetId) {
+        broadcastReferenceLine();
+        pending_tracker_time_ = toAxisDouble(session_->playbackEngine().currentTime());
+        tracker_broadcast_trigger_->request();
+      });
 
   // Mount the multi-track Source Timeline into the reserved bottom strip and
   // bind it to the runtime. timelineStrip is an empty native widget in the .ui;
@@ -866,9 +951,21 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   auto* source_timeline = new PJ::Timeline(ui_->timelineStrip);
   source_timeline_ = source_timeline;
   auto* strip_layout = new QVBoxLayout(ui_->timelineStrip);
-  strip_layout->setContentsMargins(0, 0, 0, 0);
+  strip_layout->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
   strip_layout->addWidget(source_timeline);
   source_timeline_controller_ = new PJ::SourceTimelineController(source_timeline, session_.get(), this);
+  connect(source_timeline_controller_, &SourceTimelineController::workspaceChangeCommitted, this, [this]() {
+    onUndoableChange(/*force_new_state=*/true);
+  });
+  connect(source_timeline_controller_, &SourceTimelineController::trackAdded, this, [this](DatasetId) {
+    if (applying_state_ || progressive_layout_in_flight_) {
+      return;
+    }
+    reconcileHistoryWithDataUniverse();
+  });
+  connect(source_timeline, &Timeline::viewStateChangeCommitted, this, [this]() { onUndoableChange(); });
   // Remember the user's name-column width so it sticks across rebuilds / panel
   // toggles (alignNameColumnToPlayback re-applies it over the playback-aligned
   // floor) and is persisted into layouts.
@@ -895,7 +992,21 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   });
 
   streaming_manager_ = std::make_unique<StreamingSourceManager>(
-      session_->sessionManager(), session_->extensionCatalog(), session_->catalogModel(), this, this);
+      session_->sessionManager(), session_->extensionCatalog(), session_->catalogModel(),
+      session_->topicDemandTracker(), this, this);
+  // Feed the stream dialog live chrome metrics so its SectionHeaderBands match
+  // the panel-hosted toolboxes' canonical band height.
+  streaming_manager_->setChromeMetricsProvider([this] { return chrome_metrics_; });
+  // Interactive placeholder drops stage pending binds OUTSIDE any layout restore
+  // (which has its own restore-scoped duplicate of this connection); flush them
+  // whenever the catalog gains topics. Idempotent — an entry binds once and the
+  // no-entries early-return makes the steady-state cost nil.
+  connect(&session_->catalogModel(), &CatalogModel::itemsAdded, this, [this](const std::vector<CatalogItem>& items) {
+    // Dock queues own scene completion. The binder observes the completed queue
+    // only afterwards and releases the corresponding demand reference.
+    retryPendingSceneRestores(items);
+    flushPendingCurveBindings(items);
+  });
   connect(
       ui_->leftPanel, &LeftPanel::streamingSourceChanged, streaming_manager_.get(),
       &StreamingSourceManager::onSourceChanged);
@@ -1059,6 +1170,17 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   connect(ui_->leftPanel, &LeftPanel::loadDataRequested, this, &MainWindow::onLoadDataRequested);
   connect(ui_->leftPanel, &LeftPanel::reloadDataRequested, this, &MainWindow::onReloadDataRequested);
   connect(ui_->leftPanel, &LeftPanel::cloudToolboxRequested, this, [this](const QString& id) { launchToolbox(id); });
+  scene_undo_debounce_.setSingleShot(true);
+  scene_undo_debounce_.setInterval(kSceneUndoDebounceMs);
+  connect(&scene_undo_debounce_, &QTimer::timeout, this, [this]() { onUndoableChange(); });
+
+  connect(file_loader_.get(), &FileLoader::sourceReplacementAboutToCommit, this, [this](const QString& path) {
+    if (progressive_layout_in_flight_) {
+      return;
+    }
+    pending_source_replacement_ =
+        PendingSourceReplacement{.workspace = capturePortableWorkspace(), .path = QFileInfo(path).absoluteFilePath()};
+  });
   connect(file_loader_.get(), &FileLoader::fileLoaded, this, &MainWindow::onFileLoaded);
   // Track successful loads for the recent-files popup.
   connect(
@@ -1067,13 +1189,13 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
           const QString& path, const QString& /*prefix*/, const QString& /*plugin_id*/,
           const QString& /*plugin_config_json*/) {
         QSettings recent_settings;
-        QStringList recent = recent_settings.value(QStringLiteral("File/recent")).toStringList();
+        QStringList recent = recent_settings.value(u"File/recent"_s).toStringList();
         recent.removeAll(path);
         recent.prepend(path);
         while (recent.size() > kMaxRecentEntries) {
           recent.removeLast();
         }
-        recent_settings.setValue(QStringLiteral("File/recent"), recent);
+        recent_settings.setValue(u"File/recent"_s, recent);
         ui_->leftPanel->setRecentEnabled(true);
       });
   // Recent files reopen through the normal load flow, including the dialog.
@@ -1085,8 +1207,8 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   connect(ui_->leftPanel, &LeftPanel::recentLayoutSelected, this, &MainWindow::onLoadRecentLayout);
   // Enable the popup immediately when prior sessions recorded recent files or
   // layouts (either section is enough to make the popup worth showing).
-  const bool had_recent = !settings.value(QStringLiteral("File/recent")).toStringList().isEmpty() ||
-                          !settings.value(QStringLiteral("Layout/recent")).toStringList().isEmpty();
+  const bool had_recent = !settings.value(u"File/recent"_s).toStringList().isEmpty() ||
+                          !settings.value(u"Layout/recent"_s).toStringList().isEmpty();
   ui_->leftPanel->setRecentEnabled(had_recent);
 
   // Title-bar load progress strip — the non-modal replacement for the import
@@ -1098,7 +1220,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // One icon-only stop button on the left. The three real choices (keep /
   // discard / resume) live in the confirmation dialog below, so the button
   // itself is meaning-light — its tooltip just invites a stop.
-  ingest_progress_->setPrimaryButton({}, QStringLiteral(":/resources/svg/cancel.svg"), tr("Stop loading…"));
+  ingest_progress_->setPrimaryButton({}, u":/resources/svg/cancel.svg"_s, tr("Stop loading…"));
   title_bar_->setCenterWidget(ingest_progress_);
   ingest_show_timer_ = new QTimer(this);
   ingest_show_timer_->setSingleShot(true);
@@ -1140,7 +1262,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       file_loader_.get(), &FileLoader::ingestStarted, this,
       [this](const QString& title, int index, int total, bool /*determinate*/) {
         ingest_progress_->setTitle(title);
-        ingest_progress_->setCounterText(total > 1 ? QStringLiteral("%1/%2").arg(index).arg(total) : QString());
+        ingest_progress_->setCounterText(total > 1 ? u"%1/%2"_s.arg(index).arg(total) : QString());
         ingest_progress_->setRange(0, 0);  // busy until the first determinate progress tick
         ingest_show_timer_->start(500);
       });
@@ -1186,8 +1308,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // their natural relative times so the Source Timeline reveals their offsets and
   // the user aligns them (manually, or via this toggle). No data yet, so this is a
   // no-op at startup; toggling it later bulk-writes each dataset's offset.
-  session_->sessionManager().setUseTimeOffset(
-      QSettings().value(QStringLiteral("MainWindow.useTimeOffset"), false).toBool());
+  session_->sessionManager().setUseTimeOffset(QSettings().value(u"MainWindow.useTimeOffset"_s, false).toBool());
 
   // Global column on the right of the plot area — Chart + Legend icons,
   // pinned at 24 px wide, never collapses. Always visible regardless of
@@ -1199,21 +1320,27 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // strips + CurveEditor). Pages 1 and 2 are per-family placeholders
   // (Scene2D, Scene3D); onDockFocused() picks the active page.
   auto* outer_layout = qobject_cast<QVBoxLayout*>(ui_->localToolbarWidget->layout());
-  outer_layout->setSpacing(0);
-  outer_layout->setContentsMargins(0, 0, 0, 0);
+  outer_layout->setSpacing(PJ::theme::space(theme::Space::None));
+  outer_layout->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
   right_panel_stack_ = new QStackedWidget(ui_->localToolbarWidget);
   outer_layout->addWidget(right_panel_stack_, /*stretch=*/1);
 
   plot_config_page_ = new QWidget(right_panel_stack_);
   auto* plot_config_layout = new QVBoxLayout(plot_config_page_);
-  plot_config_layout->setSpacing(0);
-  plot_config_layout->setContentsMargins(0, 0, 0, 0);
+  plot_config_layout->setSpacing(PJ::theme::space(theme::Space::None));
+  plot_config_layout->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
   right_panel_stack_->addWidget(plot_config_page_);
 
   auto make_placeholder = [this](const QString& text) {
     auto* page = new QWidget(right_panel_stack_);
     auto* layout = new QVBoxLayout(page);
-    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setContentsMargins(
+        PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+        PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None));
     layout->addStretch(1);
     auto* label = new QLabel(text, page);
     label->setAlignment(Qt::AlignCenter);
@@ -1282,17 +1409,26 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
 
   pushInitialUndoState();
   updateUndoRedoActions();
+
+  // Give every scroll area present in the shell at startup (Datasets / Custom
+  // Series / Sources trees, the curve list, …) the canonical overlay pill
+  // scrollbars. Dynamically-created panels attach their own (config panels in
+  // their ctors; plugin panels via the dialog host).
+  attachPillScrollbars(this);
 }
 
 IDataWidget* MainWindow::makeSceneDock(const QString& kind, QWidget* parent) {
   // Single construct + wire site for object-widget docks, shared by the drop
   // and layout-restore paths. Wiring (session / transform service / theme) is
   // identical regardless of how the dock is later populated.
-  if (kind == QStringLiteral("scene3d")) {
+  if (kind == "scene3d"_L1) {
     auto* widget = new Scene3DDockWidget(parent);
+    connect(widget, &SceneDockWidget::pendingRestoresChanged, this, &MainWindow::schedulePendingDisplayBindingRebuild);
+    connect(widget, &SceneDockWidget::workspaceChanged, &scene_undo_debounce_, qOverload<>(&QTimer::start));
     widget->setSessionManager(&session_->sessionManager());
     widget->setTransformService(transform_service_.get());
     widget->setSettings(app_settings_.get());
+    topic_demand_controller_->registerSceneDock(widget);
     // Seed the resolver's per-source remembered-roots map + auto search roots
     // from the most recent load. Single-path approximation (the dock's own
     // dataset may differ in a multi-file session); see setSourcePath's doc.
@@ -1316,9 +1452,12 @@ IDataWidget* MainWindow::makeSceneDock(const QString& kind, QWidget* parent) {
     // palette luminance and repaints on QEvent::PaletteChange.
     return widget;
   }
-  if (kind == QStringLiteral("scene2d")) {
+  if (kind == "scene2d"_L1) {
     auto* widget = new Scene2DDockWidget(parent);
+    connect(widget, &SceneDockWidget::pendingRestoresChanged, this, &MainWindow::schedulePendingDisplayBindingRebuild);
+    connect(widget, &SceneDockWidget::workspaceChanged, &scene_undo_debounce_, qOverload<>(&QTimer::start));
     widget->setSessionManager(&session_->sessionManager());
+    topic_demand_controller_->registerSceneDock(widget);
     return widget;
   }
   return nullptr;
@@ -1343,10 +1482,10 @@ void MainWindow::onObjectFamilyRequested(DockWidget* dock, VisualizationKind fam
   QString kind;
   switch (family) {
     case VisualizationKind::kScene2D:
-      kind = QStringLiteral("scene2d");
+      kind = u"scene2d"_s;
       break;
     case VisualizationKind::kScene3D:
-      kind = QStringLiteral("scene3d");
+      kind = u"scene3d"_s;
       break;
     case VisualizationKind::kPlot:
       return;
@@ -1360,7 +1499,30 @@ void MainWindow::onObjectFamilyRequested(DockWidget* dock, VisualizationKind fam
   dock->adoptObjectWidget(widget);  // null still reverts to a usable placeholder
 }
 
+void MainWindow::onPlaceholderTopicDropped(
+    DockWidget* dock, DatasetId dataset_id, QString topic_name, sdk::BuiltinObjectType object_type) {
+  if (dock == nullptr) {
+    return;
+  }
+  if (object_type == sdk::BuiltinObjectType::kNone) {
+    if (PlotWidget* plot = dock->plotWidget(); plot != nullptr) {
+      topic_demand_controller_->handlePlaceholderPlotDrop(plot, dataset_id, topic_name);
+    }
+    return;
+  }
+  IDataWidget* object_widget = dock->objectWidget();
+  if (auto* scene_dock = qobject_cast<SceneDockWidget*>(object_widget != nullptr ? object_widget->widget() : nullptr);
+      scene_dock != nullptr) {
+    topic_demand_controller_->handleSceneDockPlaceholderDrop(scene_dock, dataset_id, topic_name, object_type);
+  }
+}
+
 MainWindow::~MainWindow() {
+  // Pinned toolboxes hold plugin sessions (ToolboxRuntimeHost writing into
+  // the AppSession's DataEngine). Tear them down synchronously while the
+  // session, tab strip, and engines are all still alive — a deferred
+  // teardown would run after member destruction and touch a dead engine.
+  closeAllPinnedToolboxTabs();
   // Break the widget-owned pointers to services before session_ destroys
   // the engine — guarantees no late signal dereferences a dead pointer.
   ui_->timelineWidget->setPlaybackEngine(nullptr);
@@ -1414,8 +1576,11 @@ bool MainWindow::populateTestData() {
 
 void MainWindow::onOpenMarketplace() {
   auto& catalog = session_->extensionCatalog();
-  MarketplaceWindow dlg(&catalog.extensionManager(), registryUrlFromSettings(), this);
-  dlg.resize(900, 600);
+  MarketplaceWindow dlg(&catalog.extensionManager(), effectiveRegistryUrl(), this);
+  dlg.setChromeMetrics(chrome_metrics_);
+  // Master–detail marketplace needs room for both panes (list + detail) and the
+  // detail's button row; open wide enough that nothing is clipped at first show.
+  dlg.resize(1100, 640);
   dlg.exec();
   if (dlg.installationsChanged()) {
     catalog.reload();
@@ -1441,6 +1606,95 @@ void MainWindow::onReloadDataRequested() {
   file_loader_->loadFile(src->path, this, hints);
 }
 
+QSet<QString> MainWindow::captureHistoryDataUniverse() const {
+  QSet<QString> universe;
+  const QChar separator(QLatin1Char('\x1f'));
+  const auto signature = [separator](const QStringList& fields) { return fields.join(separator); };
+
+  // Processor outputs belong to workspace state and may be recreated by undo.
+  // Only raw inputs constrain whether an older snapshot remains restorable.
+  const DataProcessorService& processors = session_->sessionManager().dataProcessorService();
+  std::unordered_set<TopicId> processor_outputs = processors.ephemeralOutputTopics();
+  for (const DataProcessorService::FilterRecipe& recipe : processors.recipes()) {
+    processor_outputs.insert(recipe.output_topic_id);
+  }
+  for (const DataProcessorService::TransformRecipe& recipe : processors.transformRecipes()) {
+    processor_outputs.insert(recipe.output_topic_ids.begin(), recipe.output_topic_ids.end());
+  }
+
+  // Use datastore identities, including hidden catalog rows. A processor can
+  // retain a raw dependency after its input has disappeared from the browser.
+  SessionManager& session_manager = session_->sessionManager();
+  const DataEngine& engine = session_manager.dataEngine();
+  QHash<DatasetId, QStringList> dataset_identities;
+  {
+    auto lock = engine.lockEngine();
+    for (const DatasetId dataset_id : engine.listDatasets()) {
+      const DatasetInfo* dataset = engine.getDataset(dataset_id);
+      if (dataset == nullptr) {
+        continue;
+      }
+      const QStringList dataset_identity{
+          QString::number(dataset_id), QString::fromStdString(dataset->source_name),
+          session_manager.datasetSourcePath(dataset_id), QString::number(dataset->time_domain.id)};
+      dataset_identities.insert(dataset_id, dataset_identity);
+      for (const TopicId topic_id : engine.listTopics(dataset_id)) {
+        if (processor_outputs.contains(topic_id)) {
+          continue;
+        }
+        const TopicStorage* storage = engine.getTopicStorage(topic_id);
+        if (storage == nullptr) {
+          continue;
+        }
+        const TopicDescriptor& topic_descriptor = storage->descriptor();
+        QStringList topic_identity{u"scalar-topic"_s};
+        topic_identity.append(dataset_identity);
+        topic_identity.append(
+            {QString::number(topic_id), QString::fromStdString(topic_descriptor.name),
+             QString::number(topic_descriptor.schema_id)});
+        universe.insert(signature(topic_identity));
+        const auto& columns = storage->columnDescriptors();
+        for (std::size_t column = 0; column < columns.size(); ++column) {
+          const ColumnDescriptor& column_descriptor = columns[column];
+          QStringList column_identity{u"scalar-column"_s};
+          column_identity.append(dataset_identity);
+          column_identity.append(
+              {QString::number(topic_id), QString::number(static_cast<qulonglong>(column)),
+               QString::number(column_descriptor.field_id),
+               QString::number(static_cast<int>(column_descriptor.logical_type)),
+               QString::fromStdString(column_descriptor.field_path)});
+          universe.insert(signature(column_identity));
+        }
+      }
+    }
+  }
+
+  // ObjectStore has an independent lock; never nest it under DataEngine's.
+  const ObjectStore& objects = session_manager.objectStore();
+  for (const ObjectTopicId topic_id : objects.listTopics()) {
+    const ObjectTopicDescriptor object_descriptor = objects.descriptor(topic_id);
+    QStringList object_identity{u"object-topic"_s};
+    object_identity.append(dataset_identities.value(
+        object_descriptor.dataset_id, {QString::number(object_descriptor.dataset_id), QString(),
+                                       session_manager.datasetSourcePath(object_descriptor.dataset_id), QString()}));
+    object_identity.append(
+        {QString::number(topic_id.id), QString::fromStdString(object_descriptor.topic_name),
+         QString::fromStdString(object_descriptor.metadata_json)});
+    universe.insert(signature(object_identity));
+  }
+  return universe;
+}
+
+void MainWindow::reconcileHistoryWithDataUniverse() {
+  const QSet<QString> current_universe = captureHistoryDataUniverse();
+  if (!current_universe.contains(history_data_universe_)) {
+    resetUndoHistory();
+    return;
+  }
+  history_data_universe_ = current_universe;
+  hydrateCurrentUndoState(/*refresh_data_universe=*/false);
+}
+
 void MainWindow::onFileLoaded(
     const QString& path, const QString& prefix, const QString& plugin_id, const QString& plugin_config_json) {
   // MainWindow is the shell that wires load completion to the runtime —
@@ -1462,11 +1716,25 @@ void MainWindow::onFileLoaded(
   });
   // TODO(embedded-assets): route in-band embedded assets to Scene3D docks once the
   // load path surfaces the extracted asset map (resolver step 0).
+  if (pending_source_replacement_.has_value() && layout_xml::isSamePath(pending_source_replacement_->path, path)) {
+    const CapturedWorkspace replacement = pending_source_replacement_->workspace;
+    if (restoreWorkspaceState(
+            replacement, MissingCurvePolicy::kExact, TimelineRestoreMode::kPortableSourceReplacement) !=
+        RestoreResult::kApplied) {
+      emitDiagnostic(
+          DiagnosticLevel::kWarning, "Reload", "workspace-rebind-failed",
+          tr("The source was reloaded, but some workspace bindings could not be mapped to its new datasets."));
+    }
+    pending_source_replacement_.reset();
+  }
   session_->seedPlaybackFromSession();
   // A same-source reload evicts the old dataset's objects AFTER the removeDataset
   // signal fired, so re-run the coherence pass here to reset any 2D viewer still
   // bound to an evicted topic. Idempotent for a first/additive load.
   syncWidgetsToCatalog();
+  if (!progressive_layout_in_flight_) {
+    reconcileHistoryWithDataUniverse();
+  }
   // Seed every data widget AND the curve-list Value column with the just-set
   // playhead. seedPlaybackFromSession positions the cursor, but currentTimeChanged
   // only fires on an actual change — so a fresh load that lands the cursor where it
@@ -1476,34 +1744,47 @@ void MainWindow::onFileLoaded(
   ui_->leftPanel->setReloadEnabled(true);
 }
 
-bool MainWindow::confirmAndRemoveDependentTransforms(const std::vector<std::string>& removed_names) {
+bool MainWindow::confirmAndRemoveDependentTransforms(const std::vector<TopicId>& removed_topics) {
   auto& dp = session_->sessionManager().dataProcessorService();
-  const auto affected = dp.transformsDependingOn(removed_names);
-  if (affected.empty()) {
+  const std::vector<TopicId> outputs = dp.dependentProcessorOutputs(removed_topics);
+  if (outputs.empty()) {
     return true;  // nothing depends on it — proceed
   }
+  const std::unordered_set<TopicId> dependent_outputs(outputs.begin(), outputs.end());
+
+  // One catalog pass collects both what the dialog shows and what gets removed
+  // from the curve list after confirmation.
   QStringList names;
-  for (const auto& recipe : affected) {
-    for (const auto& out : recipe.outputs) {
-      names << QString::fromStdString(out);
+  QStringList dependent_curve_keys;
+  for (const CatalogItem& item : session_->catalogModel().items()) {
+    if (const ScalarFieldPayload* scalar = asScalarField(item);
+        scalar != nullptr && dependent_outputs.count(scalar->topic_id) != 0) {
+      names
+          << (scalar->field_path.isEmpty() ? item.topic_name : item.topic_name + QLatin1Char('/') + scalar->field_path);
+      dependent_curve_keys << item.key;
     }
   }
-  const auto answer = QMessageBox::warning(
+  names.removeDuplicates();
+  if (names.isEmpty()) {
+    names << tr("%n derived series", nullptr, static_cast<int>(dependent_outputs.size()));
+  }
+  const int choice = MessageBox::question(
       this, tr("Delete derived series?"),
       tr("These derived series depend on what you are deleting and will also be removed:\n\n• %1")
-          .arg(names.join(QStringLiteral("\n• "))),
-      QMessageBox::Ok | QMessageBox::Cancel, QMessageBox::Cancel);
-  if (answer != QMessageBox::Ok) {
+          .arg(names.join(u"\n• "_s)),
+      {{tr("Delete"), MessageBox::kDestructiveRole}, {tr("Cancel"), MessageBox::kCancelRole}});
+  if (choice != 0) {
     return false;  // user cancelled — leave everything intact
   }
-  // Remove each derivative: drop its Custom Series entry BY NAME (robust against
-  // catalog-key churn — same as PJ3's removeCurve(name)), then the transform node.
-  for (const auto& recipe : affected) {
-    for (const auto& out : recipe.outputs) {
-      ui_->curveListPanel->removeCustomCurveByName(QString::fromStdString(out));
-    }
-    (void)dp.removeTransform(recipe.key);
+  for (const QString& key : dependent_curve_keys) {
+    ui_->curveListPanel->removeCustomCurve(key);
   }
+  if (const Status removed = dp.removeProcessorsDependingOn(removed_topics); !removed.has_value()) {
+    emitDiagnostic(
+        DiagnosticLevel::kError, "Processors", "dependent-remove-failed", QString::fromStdString(removed.error()));
+    return false;
+  }
+  session_->catalogModel().rebuildFromDatastore();
   return true;
 }
 
@@ -1515,6 +1796,10 @@ void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
       active_streaming_dataset_id_ = 0;
       streaming_playback_seeded_ = false;
     }
+    if (pending_binder_ != nullptr) {
+      pending_binder_->clear();
+    }
+    clearPendingSceneRestores();
     // Free ObjectStore topics before the catalog wipe so the cleared()
     // subscription sees them gone and resets 2D viewers (symmetric with the
     // "Remove all Datasets" path). Keep lastLoadedSource for reload.
@@ -1525,27 +1810,25 @@ void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
     }
     // REAL delete: drop the catalog (no tombstone), then erase every dataset's scalar
     // storage from the engine. clearAll()'s cleared() tears down curve adapters first, so
-    // the engine erase satisfies DataEngine::removeDataset's invalidate-first contract.
+    // the engine erase satisfies DataEngine::removeDataset's invalidate-first contract
+    // (and resets the transport to empty via the AppSession cleared() hook).
     catalog.clearAll(/*tombstone=*/false);
-    DataEngine& engine = session_->sessionManager().dataEngine();
-    for (const DatasetId id : engine.listDatasets()) {
-      engine.removeDataset(id);
+    SessionManager& session_manager = session_->sessionManager();
+    for (const DatasetId id : session_manager.dataEngine().listDatasets()) {
+      session_manager.removeDataset(id);
     }
     resetUndoHistory();
     return;
   }
   // Cascade to derived series that depend on the trashed ones (warn + remove).
   {
-    std::vector<std::string> removed_names;
+    std::vector<TopicId> removed_topics;
     for (const QString& key : keys) {
       if (const auto d = catalog.curveDescriptor(key)) {
-        removed_names.push_back(d->topic_name.toStdString());
-        if (!d->field_name.isEmpty()) {
-          removed_names.push_back((d->topic_name + "/" + d->field_name).toStdString());
-        }
+        removed_topics.push_back(d->topic_id);
       }
     }
-    if (!confirmAndRemoveDependentTransforms(removed_names)) {
+    if (!confirmAndRemoveDependentTransforms(removed_topics)) {
       return;  // user cancelled
     }
   }
@@ -1557,6 +1840,9 @@ void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
   std::vector<ObjectTopicId> trashed_objects;
   for (const QString& key : keys) {
     if (const auto item = catalog.itemDescriptor(key); item.has_value()) {
+      forEachSceneDock([&item](SceneDockWidget* scene_dock) {
+        scene_dock->discardPendingRestoresForTopic(item->dataset_id, item->topic_name);
+      });
       if (const ObjectTopicPayload* obj = asObjectTopic(*item)) {
         trashed_objects.push_back(obj->object_topic_id);
       }
@@ -1564,6 +1850,9 @@ void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
   }
   session_->sessionManager().evictObjectTopics(trashed_objects);
   catalog.removeItems(std::vector<QString>(keys.begin(), keys.end()));
+  if (pending_binder_ != nullptr) {
+    static_cast<void>(pending_binder_->flush({}));
+  }
   // Shrink the playback range to the surviving visible data right away,
   // rather than only on the next load — unless a streaming dataset exists:
   // the slider is then scoped to the active stream (see the streaming range
@@ -1575,6 +1864,11 @@ void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
 }
 
 void MainWindow::removeDatasetData(DatasetId dataset_id) {
+  forEachSceneDock(
+      [dataset_id](SceneDockWidget* scene_dock) { scene_dock->discardPendingRestoresForDataset(dataset_id); });
+  if (pending_binder_ != nullptr) {
+    static_cast<void>(pending_binder_->flush({}));
+  }
   if (dataset_id == active_streaming_dataset_id_) {
     if (streaming_manager_ != nullptr) {
       streaming_manager_->stopDatasetAndWait(dataset_id, tr("dataset removed"));
@@ -1597,7 +1891,7 @@ void MainWindow::removeDatasetData(DatasetId dataset_id) {
   }
   session_->sessionManager().evictDatasetObjects(dataset_id);
   session_->catalogModel().removeDataset(dataset_id, /*tombstone=*/false);
-  session_->sessionManager().dataEngine().removeDataset(dataset_id);
+  session_->sessionManager().removeDataset(dataset_id);
   // Drop this dataset's file association (hygiene). Resurrection is prevented by
   // the layout-save liveness filter (appendDataSourceElement), not by mutating
   // loaded_sources_ — that list is kept whole so the quick-reload button still works.
@@ -1635,13 +1929,12 @@ void MainWindow::onRemoveDatasetsRequested(const QList<DatasetId>& dataset_ids) 
   // them). Warn + remove those transforms and their Custom Series entries; abort
   // the whole removal on cancel. No-op when nothing depends on the removed data.
   {
-    std::vector<std::string> removed_names;
-    for (const auto& item : session_->catalogModel().items()) {
-      if (std::find(dataset_ids.begin(), dataset_ids.end(), item.dataset_id) != dataset_ids.end()) {
-        removed_names.push_back(item.topic_name.toStdString());
-      }
+    std::vector<TopicId> removed_topics;
+    for (const DatasetId dataset_id : dataset_ids) {
+      const std::vector<TopicId> dataset_topics = session_->sessionManager().dataEngine().listTopics(dataset_id);
+      removed_topics.insert(removed_topics.end(), dataset_topics.begin(), dataset_topics.end());
     }
-    if (!confirmAndRemoveDependentTransforms(removed_names)) {
+    if (!confirmAndRemoveDependentTransforms(removed_topics)) {
       return;  // user cancelled
     }
   }
@@ -1649,9 +1942,12 @@ void MainWindow::onRemoveDatasetsRequested(const QList<DatasetId>& dataset_ids) 
   for (const DatasetId id : dataset_ids) {
     removeDatasetData(id);
   }
-  // Shrink the playback range to the remaining data right away — unless a streaming
-  // dataset exists (the slider is scoped to the active stream). Reset undo once.
+  // A confirmed removal changes the data universe under the playhead, so halt
+  // playback and shrink the range to the survivors (or reset to empty when none
+  // remain) — unless a live stream is active, where the slider stays scoped to
+  // the tip and follow-live keeps running. Reset undo once.
   if (active_streaming_dataset_id_ == 0) {
+    session_->playbackEngine().pause();
     session_->seedPlaybackFromSession();
   }
   resetUndoHistory();
@@ -1674,11 +1970,13 @@ void MainWindow::onMergeDatasetsRequested(const QList<DatasetId>& dataset_ids) {
 
 void MainWindow::onShowPreferencesDialog() {
   PreferencesDialog dlg(*theme_, this);
+  dlg.setChromeMetrics(chrome_metrics_);
   dlg.exec();
 }
 
 void MainWindow::onShowAboutDialog() {
   AboutDialog dialog(this);
+  dialog.setChromeMetrics(chrome_metrics_);
   dialog.exec();
 }
 
@@ -1706,9 +2004,9 @@ void MainWindow::checkForUpdates(bool interactive) {
       connect(update_checker_, &UpdateChecker::updateAvailable, this, [this](const ReleaseInfo& release) {
         QString message = tr("New release available: <b>%1</b>").arg(release.name.toHtmlEscaped());
         if (!release.html_url.isEmpty()) {
-          message += QStringLiteral("<br>") + tr("<a href=\"%1\">View on GitHub</a>").arg(release.html_url);
+          message += u"<br>"_s + tr("<a href=\"%1\">View on GitHub</a>").arg(release.html_url);
         }
-        showToast(message, QPixmap(QStringLiteral(":/resources/success_kid.png")));
+        showToast(message, QPixmap(u":/resources/success_kid.png"_s));
       });
 
   up_to_date_conn_ = connect(update_checker_, &UpdateChecker::upToDate, this, [this, interactive]() {
@@ -1813,6 +2111,41 @@ QStringList MainWindow::builtinPluginFolders() const {
   return session_->extensionCatalog().builtinPluginFolders();
 }
 
+QString MainWindow::registryUrlSetting() const {
+  return QSettings().value(QLatin1String(kRegistryUrlSettingsKey)).toString();
+}
+
+void MainWindow::setRegistryUrlSetting(const QString& url) {
+  QSettings settings;
+  if (url.isEmpty()) {
+    settings.remove(QLatin1String(kRegistryUrlSettingsKey));
+  } else {
+    settings.setValue(QLatin1String(kRegistryUrlSettingsKey), url);
+  }
+}
+
+QString MainWindow::defaultRegistryUrl() {
+  return QString::fromLatin1(kDefaultRegistryUrl);
+}
+
+bool MainWindow::isValidRegistryUrl(const QString& url) {
+  const QUrl parsed(url);
+  return parsed.isValid() &&
+         (parsed.scheme() == u"http"_s || parsed.scheme() == u"https"_s || parsed.scheme() == u"file"_s);
+}
+
+QUrl MainWindow::effectiveRegistryUrl() const {
+  const QString raw = registryUrlSetting();
+  if (raw.isEmpty()) {
+    return QUrl(defaultRegistryUrl());
+  }
+  if (!isValidRegistryUrl(raw)) {
+    qCWarning(lcMain) << "Invalid" << kRegistryUrlSettingsKey << "in QSettings:" << raw << "— falling back to default.";
+    return QUrl(defaultRegistryUrl());
+  }
+  return QUrl(raw);
+}
+
 void MainWindow::applyIcons(QString theme) {
   // Right-side buttons (Chart + Legend in the global column, Width and
   // Line-style in the local panel) are created programmatically by
@@ -1858,6 +2191,8 @@ void MainWindow::onPlotTabAdded(PlotDocker* docker) {
   connect(
       docker, &PlotDocker::firstObjectTopicAdded, this, &MainWindow::seedStreamingPlaybackFromDrop,
       Qt::UniqueConnection);
+  connect(
+      docker, &PlotDocker::placeholderTopicDropped, this, &MainWindow::onPlaceholderTopicDropped, Qt::UniqueConnection);
   for (int index = 0; index < docker->plotCount(); ++index) {
     if (DockWidget* dock = docker->plotAt(index)) {
       onPlotAdded(dock->plotWidget());
@@ -1880,9 +2215,15 @@ void MainWindow::onPlotAdded(PlotWidget* plot) {
   // one-shot per session, so file-curve drops and later stream drops are harmless.
   connect(plot, &PlotWidget::curvesDropped, this, &MainWindow::seedStreamingPlaybackFromDrop, Qt::UniqueConnection);
   connect(plot, &PlotWidget::filterEditorRequested, this, &MainWindow::openFilterEditor, Qt::UniqueConnection);
+  connect(
+      plot, &PlotWidget::pendingCurveIntentsChanged, this, &MainWindow::schedulePendingDisplayBindingRebuild,
+      Qt::UniqueConnection);
   connect(plot, &PlotWidget::statusMessageRequested, this, [this](const QString& message) {
     emitDiagnostic(DiagnosticLevel::kInfo, "Plot", "status", message);
   });
+  // registerPlot is idempotent (layout load/undo re-runs onPlotAdded for live
+  // plots) and owns the placeholderCurveDropped routing.
+  topic_demand_controller_->registerPlot(plot);
   plot->setTrackerPosition(toAxisDouble(session_->playbackEngine().currentTime()));
   applyGlobalToggles(plot);
   if (curve_editor_ != nullptr && curve_editor_->plot() == nullptr) {
@@ -1952,21 +2293,29 @@ void MainWindow::syncPanelPreviewDisplay() {
   // A plugin toolbox panel (e.g. the Transform Editor plugin) embeds a real
   // PlotWidget inside its chart QFrame. It has no originating plot to mirror, so its
   // preview keeps the PlotWidget default curve style/width; only the global grid
-  // toggle is pushed. Reach the plot generically as a child of the presented panel.
-  if (current_panel_ == nullptr) {
-    return;
-  }
-  for (auto* plot : current_panel_->findChildren<PlotWidget*>()) {
-    // Stash the grid state on the chart frame so the dialog-host binding can re-apply
-    // it on every preview rebuild (source/function changes recreate the curves).
-    if (QWidget* frame = plot->parentWidget()) {
-      frame->setProperty("_pj_view_set", true);
-      frame->setProperty("_pj_view_grid", activate_grid_);
+  // toggle is pushed. Reach the plot generically as a child of the presented panel
+  // — and of every pinned toolbox tab, whose previews track the grid the same way.
+  const auto apply_to_panel = [this](QWidget* panel_root) {
+    for (auto* plot : panel_root->findChildren<PlotWidget*>()) {
+      // Stash the grid state on the chart frame so the dialog-host binding can re-apply
+      // it on every preview rebuild (source/function changes recreate the curves).
+      if (QWidget* frame = plot->parentWidget()) {
+        frame->setProperty("_pj_view_set", true);
+        frame->setProperty("_pj_view_grid", activate_grid_);
+      }
+      // Apply immediately too, so a grid toggle updates the preview without waiting for
+      // the next chart tick.
+      plot->setGridVisible(activate_grid_);
+      plot->replot();
     }
-    // Apply immediately too, so a grid toggle updates the preview without waiting for
-    // the next chart tick.
-    plot->setGridVisible(activate_grid_);
-    plot->replot();
+  };
+  if (current_panel_ != nullptr) {
+    apply_to_panel(current_panel_);
+  }
+  for (const PinnedToolbox& toolbox : pinned_toolboxes_) {
+    if (!toolbox.container.isNull()) {
+      apply_to_panel(toolbox.container);
+    }
   }
 }
 
@@ -1977,17 +2326,17 @@ namespace {
 [[nodiscard]] QString legendCornerIcon(LegendStatus corner) {
   switch (corner) {
     case LegendStatus::kBottomRight:
-      return QStringLiteral(":/resources/svg/position_bottom_right.svg");
+      return u":/resources/svg/position_bottom_right.svg"_s;
     case LegendStatus::kBottomLeft:
-      return QStringLiteral(":/resources/svg/position_bottom_left.svg");
+      return u":/resources/svg/position_bottom_left.svg"_s;
     case LegendStatus::kTopRight:
-      return QStringLiteral(":/resources/svg/position_top_right.svg");
+      return u":/resources/svg/position_top_right.svg"_s;
     case LegendStatus::kTopLeft:
-      return QStringLiteral(":/resources/svg/position_top_left.svg");
+      return u":/resources/svg/position_top_left.svg"_s;
     case LegendStatus::kHidden:
-      return QStringLiteral(":/resources/svg/position_top_right.svg");
+      return u":/resources/svg/position_top_right.svg"_s;
   }
-  return QStringLiteral(":/resources/svg/position_top_right.svg");
+  return u":/resources/svg/position_top_right.svg"_s;
 }
 
 // Four-corner forward cycle. Used while the legend is visible to walk
@@ -2018,7 +2367,7 @@ void MainWindow::setLegendStatus(LegendStatus position) {
   if (position != LegendStatus::kHidden) {
     previous_legend_corner_ = position;
   }
-  QSettings().setValue(QStringLiteral("MainWindow.legendStatus"), static_cast<int>(legend_status_));
+  QSettings().setValue(u"MainWindow.legendStatus"_s, static_cast<int>(legend_status_));
   if (button_legend_ != nullptr) {
     const bool visible = (position != LegendStatus::kHidden);
     button_legend_->setChecked(visible);
@@ -2111,13 +2460,13 @@ void MainWindow::updateTimeTrackerIcon() {
   // someone designs them.
   switch (tracker_info_) {
     case CurveTracker::kLineOnly:
-      button_time_tracker_->setIcon(QIcon(QStringLiteral(":/style_light/line_tracker.png")));
+      button_time_tracker_->setIcon(QIcon(u":/style_light/line_tracker.png"_s));
       break;
     case CurveTracker::kValue:
-      button_time_tracker_->setIcon(QIcon(QStringLiteral(":/style_light/line_tracker_1.png")));
+      button_time_tracker_->setIcon(QIcon(u":/style_light/line_tracker_1.png"_s));
       break;
     case CurveTracker::kValueName:
-      button_time_tracker_->setIcon(QIcon(QStringLiteral(":/style_light/line_tracker_a.png")));
+      button_time_tracker_->setIcon(QIcon(u":/style_light/line_tracker_a.png"_s));
       break;
   }
 }
@@ -2134,7 +2483,7 @@ void MainWindow::onTimeTrackerButtonClicked() {
       tracker_info_ = CurveTracker::kLineOnly;
       break;
   }
-  QSettings().setValue(QStringLiteral("MainWindow.timeTrackerSetting"), static_cast<int>(tracker_info_));
+  QSettings().setValue(u"MainWindow.timeTrackerSetting"_s, static_cast<int>(tracker_info_));
   updateTimeTrackerIcon();
   forEachPlot([this](PlotWidget* plot) {
     plot->setTrackerParameter(tracker_info_);
@@ -2216,32 +2565,9 @@ void MainWindow::broadcastReferenceLine() {
 }
 
 void MainWindow::onUseTimeOffsetToggled(bool checked) {
-  auto& sm = session_->sessionManager();
-  auto& engine = session_->playbackEngine();
-
-  // Representative dataset frames the playhead; the blue reference re-projects
-  // through the same dataset (referenceDisplaySeconds, on displayOffsetChanged).
-  const DatasetId representative = representativeDatasetId();
-  const DisplayOffset old_offset = sm.displayOffset(representative);
-  const DisplaySeconds old_time = engine.currentTime();
-
-  sm.setUseTimeOffset(checked);  // emits displayOffsetChanged -> every plot re-fits in the new frame
-
-  const DisplayOffset new_offset = sm.displayOffset(representative);
-
-  // Re-seed the slider range in the new frame (same choke points as a load).
-  if (active_streaming_dataset_id_ != 0) {
-    if (const auto range = sm.datasetDisplayRange(active_streaming_dataset_id_); range.has_value()) {
-      engine.setRange(*range);
-    }
-  } else {
-    session_->seedPlaybackFromSession();
-  }
-  // Keep the cursor on the same real instant: freeze it as an absolute Timepoint
-  // in the old frame, then re-project into the new one — the Time.h round-trip,
-  // no hand-rolled chrono delta.
-  const Timepoint instant = toAbsolute(old_time, old_offset);
-  engine.setCurrentTime(toDisplaySeconds(instant, new_offset));
+  // The synchronous global displayOffsetChanged handler owns range/playhead
+  // translation for both explicit toggles and automatic origin rebases.
+  session_->sessionManager().setUseTimeOffset(checked);
 }
 
 void MainWindow::seedStreamingPlaybackFromDrop() {
@@ -2304,7 +2630,11 @@ void MainWindow::wireExistingPlots() {
 }
 
 void MainWindow::forEachDocker(const std::function<void(PlotDocker*)>& operation) {
-  for (int index = 0; index < ui_->tabbedPlotWidget->dockerCount(); ++index) {
+  // Hoisted: dockerCount()/dockerAt() are linear scans since widget tabs
+  // joined the tab vector; re-evaluating the count per iteration would make
+  // this loop quadratic.
+  const int docker_count = ui_->tabbedPlotWidget->dockerCount();
+  for (int index = 0; index < docker_count; ++index) {
     if (PlotDocker* docker = ui_->tabbedPlotWidget->dockerAt(index)) {
       operation(docker);
     }
@@ -2455,10 +2785,10 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     file_loader_->joinForShutdown();
   }
   QSettings settings;
-  settings.setValue(QStringLiteral("MainWindow.buttonLink"), button_link_->isChecked());
+  settings.setValue(u"MainWindow.buttonLink"_s, button_link_->isChecked());
   // Remember the left-panel width (the whole splitter layout) so the next launch
   // restores it instead of falling back to the narrow .ui default.
-  settings.setValue(QStringLiteral("MainWindow.mainSplitterState"), ui_->mainSplitter->saveState());
+  settings.setValue(u"MainWindow.mainSplitterState"_s, ui_->mainSplitter->saveState());
   QMainWindow::closeEvent(event);
 }
 
@@ -2471,7 +2801,7 @@ void MainWindow::showEvent(QShowEvent* event) {
   // and still wins (it re-applies splitter sizes through restoreChromeState).
   if (!left_splitter_restored_) {
     left_splitter_restored_ = true;
-    const QByteArray state = QSettings().value(QStringLiteral("MainWindow.mainSplitterState")).toByteArray();
+    const QByteArray state = QSettings().value(u"MainWindow.mainSplitterState"_s).toByteArray();
     if (state.isEmpty() || !ui_->mainSplitter->restoreState(state)) {
       // First-ever launch (nothing remembered) — or a stale/mismatched saved blob
       // that restoreState rejected: open the left panel at a comfortable default
@@ -2579,7 +2909,7 @@ void MainWindow::onRebuildExtensionsMenu() {
     for (const auto& plugin : plugins) {
       const QString name = QString::fromStdString(plugin.name);
       const QString version = QString::fromStdString(plugin.version);
-      const QString label = version.isEmpty() ? name : QStringLiteral("%1 (%2)").arg(name, version);
+      const QString label = version.isEmpty() ? name : u"%1 (%2)"_s.arg(name, version);
       QAction* action = menu->addAction(label);
       action->setEnabled(false);  // Informational only — manage via Marketplace.
       added_any = true;
@@ -2677,7 +3007,7 @@ void MainWindow::loadLayoutFromPath(const QString& path) {
   // schema.
   const QDomElement root = doc.documentElement();
   bool version_ok = false;
-  const int version = root.attribute(QStringLiteral("pj4_version"), QStringLiteral("0")).toInt(&version_ok);
+  const int version = root.attribute(u"pj4_version"_s, u"0"_s).toInt(&version_ok);
   if (version_ok && version > kLayoutSchemaVersion) {
     emitDiagnostic(
         DiagnosticLevel::kWarning, "Layout", "schema-newer",
@@ -2691,13 +3021,28 @@ void MainWindow::loadLayoutFromPath(const QString& path) {
   // (and source-bound ones whose file is missing or where the user opts out)
   // bind straight to the currently-loaded data. The binding attribute records
   // the save-time intent; this is the load-time override.
-  const QString binding = root.attribute(QStringLiteral("binding"), QStringLiteral("source"));
+  const QString binding = root.attribute(u"binding"_s, u"source"_s);
   const QDir layout_dir(QFileInfo(path).absoluteDir());
+  // Dataset-path qualifiers are stored relative whenever the data sits beside or
+  // beneath the layout. Resolve them to normalized absolute paths before any
+  // binder sees the document, so every widget compares full paths while a layout
+  // + data directory remains freely relocatable.
+  layout_xml::resolveDatasetSourcePaths(doc, layout_dir);
+  // A pre-path or source-only layout persisted a numeric id plus a basename-like
+  // source. That integer is unsafe outside the session that minted it: strip it on
+  // read as well as on write, leaving the source-only fallback to bind only when
+  // unique.
+  layout_xml::removeUnvalidatedDatasetIds(doc);
+  // Annotate legacy (pre-x_basis) plot ranges with their explicit X coordinate
+  // basis before any widget restore, so PlotWidget::xmlLoadState reads the basis
+  // straight off the <range> instead of re-inferring it from plot mode. No numeric
+  // range values change (see normalizePlotRangeBasis).
+  layout_xml::normalizePlotRangeBasis(doc);
   const QList<layout_xml::DataSourceRef> replays = layout_xml::extractDataSource(doc, layout_dir);
   // Set when the user chose "Reload original": the data loads (possibly async on
   // a worker), so the layout apply below must wait for the load queue to drain.
   bool reload_requested = false;
-  if (binding != QStringLiteral("generic") && !replays.empty()) {
+  if (binding != "generic"_L1 && !replays.empty()) {
     // Classify each referenced file: already loaded (skip), missing on disk
     // (warn + skip), or reloadable. A file counts as already loaded only while
     // the catalog has data — a remembered-but-cleared source must reload.
@@ -2734,7 +3079,7 @@ void MainWindow::loadLayoutFromPath(const QString& path) {
         QStringList file_lines;
         file_lines.reserve(pending.size());
         for (const auto& replay : pending) {
-          file_lines.push_back(QStringLiteral("  %1").arg(replay.resolved_path));
+          file_lines.push_back(u"  %1"_s.arg(replay.resolved_path));
         }
         // Themed prompt (frameless, vertical button column in the app chrome).
         // The button order below defines the index question() returns:
@@ -2850,20 +3195,21 @@ void MainWindow::applyRestoredLayout(QDomDocument doc, const QString& path) {
   }
 
   restoreChromeAndPanels(doc, path);
+  commitRestoredLayout(doc);
 }
 
 void MainWindow::restoreChromeAndPanels(const QDomDocument& doc, const QString& path) {
   // 4a. Restore curve-list content state (filters + show_topics/show_values toggles).
-  ui_->curveListPanel->restoreListState(doc.documentElement().firstChildElement(QStringLiteral("curve_list_state")));
+  ui_->curveListPanel->restoreListState(doc.documentElement().firstChildElement(u"curve_list_state"_s));
 
   // 4b. Restore right-panel state.
-  restoreRightPanelState(doc.documentElement().firstChildElement(QStringLiteral("right_panel_state")));
+  restoreRightPanelState(doc.documentElement().firstChildElement(u"right_panel_state"_s));
 
   // 4c. Restore LeftPanel Sources tab + streaming controls.
-  ui_->leftPanel->restoreSourcesState(doc.documentElement().firstChildElement(QStringLiteral("left_panel_state")));
+  ui_->leftPanel->restoreSourcesState(doc.documentElement().firstChildElement(u"left_panel_state"_s));
 
   // 4d. Restore chrome state (panel visibilities + splitter sizes).
-  restoreChromeState(doc.documentElement().firstChildElement(QStringLiteral("chrome_state")));
+  restoreChromeState(doc.documentElement().firstChildElement(u"chrome_state"_s));
 
   // 4e. Restore Source Timeline state (per-source display offsets + track order).
   // Runs after the datasets are (re)loaded so it re-binds them by path. The data
@@ -2871,11 +3217,34 @@ void MainWindow::restoreChromeAndPanels(const QDomDocument& doc, const QString& 
   // loadLayoutFromPath; re-extract them here (a pure parse of doc) so this restore
   // step has them in scope.
   const QDir timeline_layout_dir(QFileInfo(path).absoluteDir());
-  applyTimelineStateFromLayout(layout_xml::extractDataSource(doc, timeline_layout_dir));
+  const QList<layout_xml::DataSourceRef> timeline_sources = layout_xml::extractDataSource(doc, timeline_layout_dir);
+  const bool offset_changed = applyTimelineStateFromLayout(timeline_sources);
+  if (progressive_layout_in_flight_) {
+    // Async reload: the worker has not yet registered the in-flight dataset's source
+    // path, so applyTimelineStateFromLayout above found no candidates and skipped its
+    // offsets. Stash the refs so onProgressiveLayoutDrained re-applies them (and then
+    // re-frames viewports) once the paths settle. Skip-don't-guess is preserved: a
+    // ref already consumed on this leg re-applies idempotently (setDisplayOffset no-ops).
+    pending_timeline_sources_ = timeline_sources;
+  } else if (offset_changed) {
+    // Sync leg: the plots were framed by restoreWorkspaceState with the PRE-apply
+    // offset, and the per-dataset displayOffsetChanged handler only replots (never
+    // reframes). The saved-viewport stash survives xmlLoadState (clear_after=false),
+    // so re-convert the saved ABSOLUTE window with the now-settled offset and drop the
+    // stash. A plot with no/degenerate saved range falls back to zoomOut.
+    forEachPlot([](PlotWidget* plot) { plot->applySavedViewportOrZoom(/*clear_after=*/true); });
+  }
 
   // 4f. Restore the timeline's global view chrome (zoom/scroll/name-column/snap),
   // AFTER 4e so zoom/scroll map onto the offset-adjusted, rebuilt scene.
-  restoreSourceTimelineViewState(doc.documentElement().firstChildElement(QStringLiteral("source_timeline")));
+  restoreSourceTimelineViewState(doc.documentElement().firstChildElement(u"source_timeline"_s));
+
+  // NOTE: pinned toolbox tabs are deliberately NOT restored here. This
+  // function also runs on the progressive leg BEFORE the load can still be
+  // aborted/rolled back — replacing the pinned set that early would lose
+  // the user's live toolboxes on a cancelled restore. Both legs restore
+  // them at their COMMIT point instead (applyRestoredLayout's tail /
+  // onProgressiveLayoutDrained's tail).
 
   // 5. Recent files + diagnostic
   recordRecentLayout(path);
@@ -2884,24 +3253,22 @@ void MainWindow::restoreChromeAndPanels(const QDomDocument& doc, const QString& 
 
 void MainWindow::beginProgressiveLayoutRestore(QDomDocument doc, const QString& path) {
   cancelProgressiveLayoutRestore();
+  progressive_previous_workspace_ = capturePortableWorkspace();
   progressive_layout_in_flight_ = true;
+  progressive_layout_doc_ = doc;
 
   bool applied = false;
   {
     QScopedValueRollback guard(applying_state_, true);
-    const QDomElement root = doc.documentElement();
-    restoreDataProcessors(root);
-    // rebindCurvesToLoadedDatasets rewrites doc in place; its unresolved-paths return is
-    // not needed here — the progressive binder reports unresolved curves at drain.
+    // FileLoader is still producing topics. Tear down the previous graph now,
+    // but replay nothing until queueDrained, when missing inputs are meaningful.
+    static_cast<void>(restoreDataProcessors(QDomElement{}));
+    // rebindCurvesToLoadedDatasets rewrites doc in place; its unresolved-paths
+    // return is not needed here because the progressive binder reports them at
+    // drain.
     static_cast<void>(rebindCurvesToLoadedDatasets(doc));
     if (xmlLoadState(doc)) {
-      QHash<QString, PlotWidget*> plots_by_state_id;
-      forEachPlot([&plots_by_state_id](PlotWidget* plot) {
-        if (!plot->stateId().isEmpty()) {
-          plots_by_state_id.insert(plot->stateId(), plot);
-        }
-      });
-      pending_binder_->collect(doc, plots_by_state_id);
+      collectPendingDisplayBindings(doc);
       restoreChromeAndPanels(doc, path);
       broadcastTrackerTime(toAxisDouble(session_->playbackEngine().currentTime()));
       applied = true;
@@ -2909,21 +3276,21 @@ void MainWindow::beginProgressiveLayoutRestore(QDomDocument doc, const QString& 
   }
 
   if (!applied) {
-    cancelProgressiveLayoutRestore();
+    static_cast<void>(abortProgressiveRestore());
     MessageBox::warning(this, tr("Load Layout"), tr("Layout was parsed but could not be applied."));
     return;
   }
 
   pending_items_added_conn_ = connect(
       &session_->catalogModel(), &CatalogModel::itemsAdded, this, [this](const std::vector<CatalogItem>& items) {
-        flushPendingCurveBindings(items);
         retryPendingSceneRestores(items);
+        flushPendingCurveBindings(items);
       });
   pending_queue_drained_conn_ = connect(
       file_loader_.get(), &FileLoader::queueDrained, this, &MainWindow::onProgressiveLayoutDrained,
       Qt::SingleShotConnection);
-  flushPendingCurveBindings({});
   retryPendingSceneRestores({});
+  flushPendingCurveBindings({});
 }
 
 void MainWindow::cancelProgressiveLayoutRestore() {
@@ -2935,7 +3302,50 @@ void MainWindow::cancelProgressiveLayoutRestore() {
     pending_binder_->clear();
   }
   clearPendingSceneRestores();
+  pending_timeline_sources_.clear();
+  progressive_layout_doc_.clear();
+  progressive_previous_workspace_.reset();
   progressive_layout_in_flight_ = false;
+}
+
+bool MainWindow::rollbackProgressiveWorkspace() {
+  if (!progressive_previous_workspace_.has_value()) {
+    return false;
+  }
+  CapturedWorkspace previous = *progressive_previous_workspace_;
+  const std::vector<std::pair<DatasetId, QString>> live_datasets = session_->catalogModel().datasets();
+  previous.timeline.tracks.erase(
+      std::remove_if(
+          previous.timeline.tracks.begin(), previous.timeline.tracks.end(),
+          [&live_datasets](const auto& track) {
+            return std::none_of(live_datasets.begin(), live_datasets.end(), [&track](const auto& live) {
+              return live.first == track.dataset_id;
+            });
+          }),
+      previous.timeline.tracks.end());
+  std::vector<TimelineTrackState*> ordered_tracks;
+  for (TimelineTrackState& track : previous.timeline.tracks) {
+    if (track.timeline_order >= 0) {
+      ordered_tracks.push_back(&track);
+    }
+  }
+  std::sort(ordered_tracks.begin(), ordered_tracks.end(), [](const auto* lhs, const auto* rhs) {
+    return lhs->timeline_order < rhs->timeline_order;
+  });
+  for (int slot = 0; slot < static_cast<int>(ordered_tracks.size()); ++slot) {
+    ordered_tracks[static_cast<std::size_t>(slot)]->timeline_order = slot;
+  }
+  return restoreWorkspaceState(previous, MissingCurvePolicy::kExact, TimelineRestoreMode::kExact) ==
+         RestoreResult::kApplied;
+}
+
+bool MainWindow::abortProgressiveRestore() {
+  const bool rolled_back = rollbackProgressiveWorkspace();
+  cancelProgressiveLayoutRestore();
+  if (!rolled_back) {
+    resetUndoHistory();
+  }
+  return rolled_back;
 }
 
 void MainWindow::flushPendingCurveBindings(const std::vector<CatalogItem>& items) {
@@ -2949,6 +3359,74 @@ void MainWindow::flushPendingCurveBindings(const std::vector<CatalogItem>& items
     }
   }
   static_cast<void>(pending_binder_->flush(topics));
+}
+
+void MainWindow::collectPendingDisplayBindings(const QDomDocument& doc) {
+  if (pending_binder_ == nullptr) {
+    return;
+  }
+  QHash<QString, PlotWidget*> plots_by_state_id;
+  forEachPlot([&plots_by_state_id](PlotWidget* plot) {
+    if (plot != nullptr && !plot->stateId().isEmpty()) {
+      plots_by_state_id.insert(plot->stateId(), plot);
+    }
+  });
+  pending_binder_->collect(doc, plots_by_state_id);
+  forEachSceneDock([this](SceneDockWidget* scene_dock) {
+    for (const SceneDockWidget::PendingRestoreDemand& demand : scene_dock->pendingRestoreDemands()) {
+      pending_binder_->addPendingSceneLayer(scene_dock, demand.topic_name, demand.preferred_dataset);
+    }
+  });
+}
+
+void MainWindow::rebuildPendingDisplayBindings(const QDomDocument& doc) {
+  if (pending_binder_ == nullptr) {
+    return;
+  }
+  collectPendingDisplayBindings(doc);
+  static_cast<void>(pending_binder_->flush({}));
+}
+
+void MainWindow::schedulePendingDisplayBindingRebuild() {
+  if (pending_binding_rebuild_scheduled_) {
+    return;
+  }
+  pending_binding_rebuild_scheduled_ = true;
+  QTimer::singleShot(0, this, [this]() {
+    pending_binding_rebuild_scheduled_ = false;
+    if (applying_state_ || progressive_layout_in_flight_) {
+      return;
+    }
+    // Nothing staged and no plot holds an intent: skip the full-workspace
+    // serialization the rebuild would otherwise pay.
+    bool any_intents = pending_binder_ != nullptr && !pending_binder_->empty();
+    if (!any_intents) {
+      forEachPlot([&any_intents](PlotWidget* plot) {
+        any_intents = any_intents || (plot != nullptr && plot->pendingCurveIntentCount() > 0);
+      });
+    }
+    if (!any_intents) {
+      forEachSceneDock([&any_intents](SceneDockWidget* scene_dock) {
+        any_intents = any_intents || scene_dock->hasPendingRestoreDemands();
+      });
+    }
+    if (any_intents) {
+      rebuildPendingDisplayBindings(xmlSaveState());
+    }
+  });
+}
+
+MainWindow::SceneRestoreVerdict MainWindow::settleSceneRestores() {
+  // One final retry so a deferred element whose identity became resolvable is
+  // validated now, then fold every dock's verdict. Aggregation lives here —
+  // a dock cannot see its siblings.
+  retryPendingSceneRestores({});
+  SceneRestoreVerdict verdict;
+  forEachSceneDock([&verdict](SceneDockWidget* scene_dock) {
+    verdict.failed = verdict.failed || scene_dock->workspaceRestoreFailed();
+  });
+  verdict.blocking_topics = unresolvedPendingSceneRestores();
+  return verdict;
 }
 
 int MainWindow::retryPendingSceneRestores(const std::vector<CatalogItem>& items) {
@@ -2971,7 +3449,7 @@ QStringList MainWindow::unresolvedPendingSceneRestores() {
   QStringList unresolved;
   QSet<QString> seen;
   forEachSceneDock([&](SceneDockWidget* scene_dock) {
-    for (const QString& topic : scene_dock->unresolvedPendingRestores()) {
+    for (const QString& topic : scene_dock->unresolvedBlockingPendingRestores()) {
       if (!topic.isEmpty() && !seen.contains(topic)) {
         seen.insert(topic);
         unresolved.push_back(topic);
@@ -2989,17 +3467,54 @@ void MainWindow::onProgressiveLayoutDrained() {
   QObject::disconnect(pending_items_added_conn_);
   pending_items_added_conn_ = {};
 
+  // All file inputs now exist. Rebuild the complete saved processor graph
+  // before the binder's last pass so derived curves resolve to fresh outputs.
+  if (!progressive_layout_doc_.isNull() && !restoreDataProcessors(progressive_layout_doc_.documentElement())) {
+    const bool rolled_back = abortProgressiveRestore();
+    if (!rolled_back) {
+      MessageBox::warning(
+          this, tr("Load Layout"),
+          tr("A saved data processor could not be restored, and the previous workspace could not be fully "
+             "restored against the reloaded data. The partial layout was kept as the new undo baseline."));
+    } else {
+      MessageBox::warning(
+          this, tr("Load Layout"),
+          tr("A saved data processor could not be restored; the previous workspace was restored."));
+    }
+    return;
+  }
+
+  // A deferred scene identity can become available only at drain, which is
+  // also when its payload/type can finally be validated. A permanently
+  // rejected element is a transaction failure, not an "unresolved" warning:
+  // otherwise the invalid entry is consumed and the partial scene becomes the
+  // baseline. Independent of the binder's existence.
+  if (settleSceneRestores().failed) {
+    const bool rolled_back = abortProgressiveRestore();
+    MessageBox::warning(
+        this, tr("Load Layout"),
+        rolled_back ? tr("A saved scene element was invalid; the previous workspace was restored.")
+                    : tr("A saved scene element was invalid, and the previous workspace could not be fully restored "
+                         "against the reloaded data. The partial layout was kept as the new undo baseline."));
+    return;
+  }
+
   if (pending_binder_ != nullptr) {
     static_cast<void>(pending_binder_->flush({}));
+    // Now that the worker has registered the reloaded datasets' source paths, apply the
+    // timeline state (per-source offsets + track order) that restoreChromeAndPanels
+    // could not bind mid-load — it stashed the refs in pending_timeline_sources_. This
+    // MUST run before the viewport re-frame below so applySavedViewportOrZoom converts
+    // the saved ABSOLUTE window with the settled offset (otherwise the async leg would
+    // frame the pre-offset window, the FIX-1 bug on the progressive path).
+    static_cast<void>(applyPendingTimelineState());
     // Frame each restored plot to its layout-saved window with the now-settled display
-    // offset (the file has finished loading). This previously called zoomOut because the
-    // saved range was display-relative and the save vs reload offsets could differ; PR
-    // #248 made the saved X ABSOLUTE and applySavedViewportOrZoom converts it with the
-    // live offset, so re-applying it is correct — and it pins the plot to its final
-    // window so data fills in like streaming rather than the axis auto-fitting/growing.
-    // Plots with no/degenerate saved range fall back to zoomOut; clear_after drops the
-    // one-shot stash. Still under the in-flight gate, so onUndoableChange stays
-    // suppressed until the single snapshot below.
+    // offset (the file has finished loading). PR #248 made the saved X ABSOLUTE and
+    // applySavedViewportOrZoom converts it with the live offset, so re-applying it is
+    // correct — and it pins the plot to its final window so data fills in like streaming
+    // rather than the axis auto-fitting/growing. Plots with no/degenerate saved range
+    // fall back to zoomOut; clear_after drops the one-shot stash. Still under the
+    // in-flight gate, so onUndoableChange stays suppressed until the single snapshot below.
     forEachPlot([](PlotWidget* plot) { plot->applySavedViewportOrZoom(/*clear_after=*/true); });
 
     QStringList shown;
@@ -3011,20 +3526,32 @@ void MainWindow::onProgressiveLayoutDrained() {
         shown.push_back(display);
       }
     }
+    // Unresolved BLOCKING scene references join the same prompt: Remove drops
+    // them (so the committed baseline never carries blocking pends — an exact
+    // undo back to it must be able to succeed), Cancel aborts the restore.
+    for (const QString& topic : unresolvedPendingSceneRestores()) {
+      if (!topic.isEmpty() && !seen.contains(topic)) {
+        seen.insert(topic);
+        shown.push_back(topic);
+      }
+    }
     if (!shown.isEmpty()) {
       switch (promptMissingCurves(shown)) {
         case MissingCurveChoice::kRemove:
-          break;  // Remaining curves were never bound, so there is nothing to strip from live widgets.
-        case MissingCurveChoice::kCancel:
-          // The reload has already mutated the live session, so progressive restore is non-transactional:
-          // leave the partial layout in place instead of rolling back to a stale pre-load snapshot.
+          // Remaining curves were never bound (nothing to strip from live
+          // widgets); blocking scene pends are dropped so they cannot poison
+          // later exact snapshots.
+          forEachSceneDock([](SceneDockWidget* scene_dock) { scene_dock->clearBlockingPendingRestores(); });
           break;
+        case MissingCurveChoice::kCancel: {
+          static_cast<void>(abortProgressiveRestore());
+        }
+          return;
       }
     }
     pending_binder_->clear();
   }
 
-  retryPendingSceneRestores({});
   broadcastTrackerTime(toAxisDouble(session_->playbackEngine().currentTime()));
   const QStringList unresolved_scenes = unresolvedPendingSceneRestores();
   if (!unresolved_scenes.isEmpty()) {
@@ -3038,7 +3565,14 @@ void MainWindow::onProgressiveLayoutDrained() {
   QObject::disconnect(pending_queue_drained_conn_);
   pending_queue_drained_conn_ = {};
   progressive_layout_in_flight_ = false;
-  pushUndoState(/*force_new_state=*/true);
+  commitRestoredLayout(progressive_layout_doc_);
+  progressive_layout_doc_.clear();
+  progressive_previous_workspace_.reset();
+}
+
+void MainWindow::commitRestoredLayout(const QDomDocument& doc) {
+  restorePinnedToolboxes(doc.documentElement());
+  resetUndoHistory();
 }
 
 void MainWindow::saveLayoutToPath(const QString& path, bool include_data_source) {
@@ -3046,14 +3580,34 @@ void MainWindow::saveLayoutToPath(const QString& path, bool include_data_source)
   // Record the binding intent so load knows whether to reload the original
   // file (source-bound) or adopt the currently-loaded dataset (generic). The
   // data-source element below is only embedded for source-bound layouts.
-  doc.documentElement().setAttribute(
-      QStringLiteral("binding"), include_data_source ? QStringLiteral("source") : QStringLiteral("generic"));
+  doc.documentElement().setAttribute(u"binding"_s, include_data_source ? u"source"_s : u"generic"_s);
   if (include_data_source) {
     const QDir layout_dir(QFileInfo(path).absoluteDir());
     QDomElement ds = appendDataSourceElement(doc, layout_dir);
     if (!ds.isNull()) {
       doc.documentElement().appendChild(ds);
     }
+    // Widget serializers know DatasetIds but intentionally know nothing about
+    // FileLoader. Stamp one coherent full-path identity across plots (and any
+    // future processor/scene qualifiers) as a post-pass. Use the same relocatable
+    // subpath rule as <fileInfo>; load resolves it before binding.
+    layout_xml::stampDatasetSourcePaths(doc, [this, &layout_dir](std::uint32_t dataset_id) {
+      const QString source_path = file_loader_->sourcePathForDataset(dataset_id);
+      if (source_path.isEmpty()) {
+        return QString{};
+      }
+      return relocatableSubpath(QFileInfo(source_path).absoluteFilePath(), layout_dir);
+    });
+    // A non-file dataset has no path with which a future session can validate a
+    // numeric id. Keep its source fallback but drop that volatile id so a
+    // duplicate basename cannot silently capture the persisted layout.
+    layout_xml::removeUnvalidatedDatasetIds(doc);
+  } else {
+    // A generic layout is intentionally reusable on another recording. Keep exact
+    // DatasetId/source qualifiers in undo and source-bound documents, but strip
+    // them from this file copy so topic+field paths bind — only when unambiguous —
+    // to whatever data is present when the layout is opened.
+    layout_xml::removeDatasetQualifiersForGenericLayout(doc);
   }
   // Always save right-panel state — pure UI chrome, no privacy cost,
   // not gated by Save Data Source.
@@ -3069,6 +3623,10 @@ void MainWindow::saveLayoutToPath(const QString& path, bool include_data_source)
   // Timeline view chrome (zoom/scroll/name-column/snap). Pure UI, not gated by
   // Save Data Source; the per-source offsets/order ride <fileInfo> separately.
   doc.documentElement().appendChild(saveSourceTimelineViewState(doc));
+  // Pinned toolbox tabs (plugin id + config). Layout-only: undo snapshots
+  // deliberately exclude them (see TabbedPlotWidget::xmlSaveState), so this
+  // element rides the layout file, not xmlSaveState().
+  doc.documentElement().appendChild(savePinnedToolboxes(doc));
   // QSaveFile gives us write-temp + rename atomicity: a partial write
   // (disk full, signal, broken NFS) leaves the user's prior layout
   // untouched. commit() does the rename; cancelWriting() abandons the
@@ -3096,23 +3654,29 @@ void MainWindow::saveLayoutToPath(const QString& path, bool include_data_source)
 }
 
 QDomElement MainWindow::saveDataProcessors(QDomDocument& doc) const {
-  QDomElement element = doc.createElement(QStringLiteral("data_processors"));
+  QDomElement element = doc.createElement(u"data_processors"_s);
   for (const auto& recipe : session_->sessionManager().dataProcessorService().recipes()) {
     // Resolve the input column to a stable (topic, field) path so it rebinds on
     // reload exactly like a plotted curve.
-    const QString input_key = QStringLiteral("dataset:%1/topic:%2/column:%3")
-                                  .arg(recipe.dataset_id)
+    const QString input_key = u"dataset:%1/topic:%2/column:%3"_s.arg(recipe.dataset_id)
                                   .arg(recipe.input_topic_id)
                                   .arg(recipe.input_column_index);
     const std::optional<CurveDescriptor> input_desc = session_->catalogModel().curveDescriptor(input_key);
     if (!input_desc.has_value()) {
       continue;  // input field is gone; nothing to persist
     }
-    QDomElement processor = doc.createElement(QStringLiteral("processor"));
-    processor.setAttribute(QStringLiteral("input_topic"), input_desc->topic_name);
-    processor.setAttribute(QStringLiteral("input_field"), input_desc->field_path);
-    processor.setAttribute(QStringLiteral("processor_id"), QString::fromStdString(recipe.processor_id));
-    processor.setAttribute(QStringLiteral("output_name"), QString::fromStdString(recipe.output_name));
+    QDomElement processor = doc.createElement(u"processor"_s);
+    processor.setAttribute(u"input_topic"_s, input_desc->topic_name);
+    processor.setAttribute(u"input_field"_s, input_desc->field_path);
+    // Dataset qualifiers so the input rebinds to its own source dataset on restore,
+    // never a same-topic sibling (first-match was part of the reported undo bug).
+    // input_dataset_path is stamped by stampDatasetSourcePaths at layout-file save.
+    processor.setAttribute(u"input_dataset_id"_s, QString::number(recipe.dataset_id));
+    if (const auto source = session_->catalogModel().datasetSourceName(recipe.dataset_id); source.has_value()) {
+      processor.setAttribute(u"input_dataset_source"_s, *source);
+    }
+    processor.setAttribute(u"processor_id"_s, QString::fromStdString(recipe.processor_id));
+    processor.setAttribute(u"output_name"_s, QString::fromStdString(recipe.output_name));
     if (recipe.processor) {
       layout_xml::appendJsonAsCdata(doc, processor, QString::fromStdString(recipe.processor->saveParams()));
     }
@@ -3121,7 +3685,7 @@ QDomElement MainWindow::saveDataProcessors(QDomDocument& doc) const {
     // child element, NOT a second direct CDATA child — restore reads params via
     // directCdataText, which ignores child elements. Empty for native C++ builtins.
     if (!recipe.filter_source.empty()) {
-      QDomElement source_el = doc.createElement(QStringLiteral("source_fallback"));
+      QDomElement source_el = doc.createElement(u"source_fallback"_s);
       layout_xml::appendJsonAsCdata(doc, source_el, QString::fromStdString(recipe.filter_source));
       processor.appendChild(source_el);
     }
@@ -3134,32 +3698,41 @@ QDomElement MainWindow::saveDataProcessors(QDomDocument& doc) const {
   // DataProcessorService::restoreTransform. Inputs/outputs are topic NAMES (the
   // engine resolves them on restore), so no (topic, field) rebinding is needed here.
   for (const auto& recipe : session_->sessionManager().dataProcessorService().transformRecipes()) {
-    QDomElement transform = doc.createElement(QStringLiteral("transform"));
-    transform.setAttribute(QStringLiteral("owner_plugin"), QString::fromStdString(recipe.owner_plugin));
-    transform.setAttribute(QStringLiteral("id"), QString::fromStdString(recipe.user_id));
-    transform.setAttribute(QStringLiteral("backend"), QString::fromStdString(recipe.backend));
-    transform.setAttribute(QStringLiteral("api_version"), QString::fromStdString(recipe.api_version));
+    QDomElement transform = doc.createElement(u"transform"_s);
+    transform.setAttribute(u"owner_plugin"_s, QString::fromStdString(recipe.owner_plugin));
+    transform.setAttribute(u"id"_s, QString::fromStdString(recipe.user_id));
+    transform.setAttribute(u"backend"_s, QString::fromStdString(recipe.backend));
+    transform.setAttribute(u"api_version"_s, QString::fromStdString(recipe.api_version));
     if (!recipe.backend_version.empty()) {
-      transform.setAttribute(QStringLiteral("backend_version"), QString::fromStdString(recipe.backend_version));
+      transform.setAttribute(u"backend_version"_s, QString::fromStdString(recipe.backend_version));
     }
-    for (const auto& input_name : recipe.inputs) {
-      QDomElement in = doc.createElement(QStringLiteral("input"));
-      in.setAttribute(QStringLiteral("name"), QString::fromStdString(input_name));
+    for (std::size_t index = 0; index < recipe.inputs.size(); ++index) {
+      const std::string& input_name = recipe.inputs[index];
+      QDomElement in = doc.createElement(u"input"_s);
+      in.setAttribute(u"name"_s, QString::fromStdString(input_name));
+      if (index < recipe.input_bindings.size()) {
+        const auto& binding = recipe.input_bindings[index];
+        in.setAttribute(u"dataset_id"_s, QString::number(binding.dataset_id));
+        in.setAttribute(u"dataset_source"_s, QString::fromStdString(binding.dataset_source));
+        in.setAttribute(u"topic"_s, QString::fromStdString(binding.topic_name));
+        in.setAttribute(u"field"_s, QString::fromStdString(binding.field_path));
+        in.setAttribute(u"column"_s, QString::number(static_cast<qulonglong>(binding.column_index)));
+      }
       transform.appendChild(in);
     }
     for (const auto& output_name : recipe.outputs) {
-      QDomElement out = doc.createElement(QStringLiteral("output"));
-      out.setAttribute(QStringLiteral("name"), QString::fromStdString(output_name));
+      QDomElement out = doc.createElement(u"output"_s);
+      out.setAttribute(u"name"_s, QString::fromStdString(output_name));
       transform.appendChild(out);
     }
     // params (create(params), JSON) and script (the full backend payload, Luau today)
     // each get their own CDATA child so restore reads them back independently.
     if (!recipe.params_json.empty()) {
-      QDomElement params = doc.createElement(QStringLiteral("params"));
+      QDomElement params = doc.createElement(u"params"_s);
       layout_xml::appendJsonAsCdata(doc, params, QString::fromStdString(recipe.params_json));
       transform.appendChild(params);
     }
-    QDomElement script = doc.createElement(QStringLiteral("script"));
+    QDomElement script = doc.createElement(u"script"_s);
     layout_xml::appendJsonAsCdata(doc, script, QString::fromStdString(recipe.script));
     transform.appendChild(script);
     element.appendChild(transform);
@@ -3167,7 +3740,7 @@ QDomElement MainWindow::saveDataProcessors(QDomDocument& doc) const {
   return element;
 }
 
-void MainWindow::restoreDataProcessors(const QDomElement& root) {
+bool MainWindow::restoreDataProcessors(const QDomElement& root) {
   // Reconcile the live filter set to this snapshot: drop ALL current filters first,
   // then recreate the snapshot's set. This makes restore idempotent for undo/redo (no
   // duplicate or output-name-colliding filters) and correct for a layout load onto an
@@ -3175,25 +3748,25 @@ void MainWindow::restoreDataProcessors(const QDomElement& root) {
   // every filter; the rebuild at the end MUST run on both branches so the now-retired
   // outputs leave the catalog.
   auto& service = session_->sessionManager().dataProcessorService();
+  bool restored_all = true;
   service.clearAllFilters();
 
-  const QDomElement element = root.firstChildElement(QStringLiteral("data_processors"));
-  const auto datasets = session_->catalogModel().datasets();
+  const QDomElement element = root.firstChildElement(u"data_processors"_s);
   // A null <data_processors> yields a null firstChildElement, so this loop runs zero
   // times — the clear above is then the whole effect.
-  for (QDomElement processor = element.firstChildElement(QStringLiteral("processor")); !processor.isNull();
-       processor = processor.nextSiblingElement(QStringLiteral("processor"))) {
-    const QString input_topic = processor.attribute(QStringLiteral("input_topic"));
-    const QString input_field = processor.attribute(QStringLiteral("input_field"));
-    // Resolve the input against whichever loaded dataset holds it (first match in
-    // load order), so a multi-file layout restores each filter against its source.
+  for (QDomElement processor = element.firstChildElement(u"processor"_s); !processor.isNull();
+       processor = processor.nextSiblingElement(u"processor"_s)) {
+    const QString input_topic = processor.attribute(u"input_topic"_s);
+    const QString input_field = processor.attribute(u"input_field"_s);
+    // Resolve the input through the same dataset-qualified path a plotted curve
+    // uses: the exact source dataset when its qualifiers still agree, a unique
+    // fallback otherwise, and never a same-topic sibling by load order.
+    const layout_xml::SeriesPath input_path{
+        input_topic, input_field, static_cast<DatasetId>(processor.attribute(u"input_dataset_id"_s).toUInt()),
+        processor.attribute(u"input_dataset_source"_s), processor.attribute(u"input_dataset_path"_s)};
     std::optional<CurveDescriptor> input_desc;
-    for (const auto& [dataset_id, dataset_name] : datasets) {
-      (void)dataset_name;
-      if (auto descriptor = session_->catalogModel().descriptorForPath(dataset_id, input_topic, input_field)) {
-        input_desc = std::move(descriptor);
-        break;
-      }
+    if (const auto input_key = resolveSeriesPath(session_->catalogModel(), input_path); input_key.has_value()) {
+      input_desc = session_->catalogModel().curveDescriptor(*input_key);
     }
     if (!input_desc.has_value()) {
       // The filter's source signal isn't in any loaded dataset -> the filter is
@@ -3202,13 +3775,14 @@ void MainWindow::restoreDataProcessors(const QDomElement& root) {
       emitDiagnostic(
           DiagnosticLevel::kWarning, "Layout", "processor-input-missing",
           tr("Layout filter on '%1/%2' has no matching data; skipping.").arg(input_topic, input_field));
+      restored_all = false;
       continue;
     }
-    const std::string id = processor.attribute(QStringLiteral("processor_id")).toStdString();
+    const std::string id = processor.attribute(u"processor_id"_s).toStdString();
     // Params are the <processor>'s OWN direct CDATA — directCdataText ignores the
     // <source_fallback> child (QDomElement::text() would recurse and merge them).
     const QString params = layout_xml::directCdataText(processor);
-    const QString source_fallback = processor.firstChildElement(QStringLiteral("source_fallback")).text();
+    const QString source_fallback = processor.firstChildElement(u"source_fallback"_s).text();
     // Resolve order: live catalogue → embedded source → transitional C++ builtin.
     std::unique_ptr<proc::DataProcessor> built = service.makeRestoredProcessor(
         id, params.isEmpty() ? std::string("{}") : params.toStdString(), source_fallback.toStdString());
@@ -3216,15 +3790,17 @@ void MainWindow::restoreDataProcessors(const QDomElement& root) {
       emitDiagnostic(
           DiagnosticLevel::kWarning, "Layout", "processor-unknown",
           tr("Layout filter '%1' is unknown to this PlotJuggler; skipping.").arg(QString::fromStdString(id)));
+      restored_all = false;
       continue;
     }
     const auto applied = service.applyFilter(
         input_desc->topic_id, input_desc->dataset_id, std::move(built),
-        processor.attribute(QStringLiteral("output_name")).toStdString(), input_desc->column_index);
+        processor.attribute(u"output_name"_s).toStdString(), input_desc->column_index);
     if (!applied.has_value()) {
       emitDiagnostic(
           DiagnosticLevel::kWarning, "Layout", "processor-apply-failed",
           tr("Could not restore filter: %1").arg(QString::fromStdString(applied.error())));
+      restored_all = false;
     }
   }
 
@@ -3234,37 +3810,92 @@ void MainWindow::restoreDataProcessors(const QDomElement& root) {
   // resolve it by name. The clear runs unconditionally: a snapshot with no
   // <transform> children then simply leaves every transform torn down.
   service.clearAllTransforms();
-  for (QDomElement transform = element.firstChildElement(QStringLiteral("transform")); !transform.isNull();
-       transform = transform.nextSiblingElement(QStringLiteral("transform"))) {
+  for (QDomElement transform = element.firstChildElement(u"transform"_s); !transform.isNull();
+       transform = transform.nextSiblingElement(u"transform"_s)) {
     DataProcessorService::TransformRecipe recipe;
-    recipe.owner_plugin = transform.attribute(QStringLiteral("owner_plugin")).toStdString();
-    recipe.user_id = transform.attribute(QStringLiteral("id")).toStdString();
+    QString transform_parse_error;
+    recipe.owner_plugin = transform.attribute(u"owner_plugin"_s).toStdString();
+    recipe.user_id = transform.attribute(u"id"_s).toStdString();
     recipe.key = DataProcessorService::makeTransformKey(recipe.owner_plugin, recipe.user_id);
-    recipe.backend = transform.attribute(QStringLiteral("backend"), QStringLiteral("luau")).toStdString();
-    recipe.api_version = transform.attribute(QStringLiteral("api_version"), QStringLiteral("1")).toStdString();
-    recipe.backend_version = transform.attribute(QStringLiteral("backend_version")).toStdString();
-    for (QDomElement in = transform.firstChildElement(QStringLiteral("input")); !in.isNull();
-         in = in.nextSiblingElement(QStringLiteral("input"))) {
-      recipe.inputs.push_back(in.attribute(QStringLiteral("name")).toStdString());
+    recipe.backend = transform.attribute(u"backend"_s, u"luau"_s).toStdString();
+    recipe.api_version = transform.attribute(u"api_version"_s, u"1"_s).toStdString();
+    recipe.backend_version = transform.attribute(u"backend_version"_s).toStdString();
+    std::vector<DataProcessorService::TransformInputBinding> parsed_bindings;
+    bool has_persisted_binding = false;
+    for (QDomElement in = transform.firstChildElement(u"input"_s); !in.isNull();
+         in = in.nextSiblingElement(u"input"_s)) {
+      recipe.inputs.push_back(in.attribute(u"name"_s).toStdString());
+      DataProcessorService::TransformInputBinding binding;
+      const bool has_binding = in.hasAttribute(u"dataset_id"_s) || in.hasAttribute(u"dataset_source"_s) ||
+                               in.hasAttribute(u"dataset_path"_s) || in.hasAttribute(u"topic"_s) ||
+                               in.hasAttribute(u"field"_s) || in.hasAttribute(u"column"_s);
+      has_persisted_binding = has_persisted_binding || has_binding;
+      if (in.hasAttribute(u"dataset_id"_s)) {
+        bool ok = false;
+        const qulonglong raw = in.attribute(u"dataset_id"_s).toULongLong(&ok);
+        if (ok && raw <= std::numeric_limits<DatasetId>::max()) {
+          binding.dataset_id = static_cast<DatasetId>(raw);
+        } else {
+          transform_parse_error = tr("invalid input dataset id");
+        }
+      }
+      binding.dataset_source = in.attribute(u"dataset_source"_s).toStdString();
+      binding.topic_name = in.attribute(u"topic"_s).toStdString();
+      binding.field_path = in.attribute(u"field"_s).toStdString();
+      const QString saved_dataset_path = in.attribute(u"dataset_path"_s);
+      if (!saved_dataset_path.isEmpty()) {
+        const DatasetIdentityResolution resolved = session_->sessionManager().resolveDatasetIdentity(
+            binding.dataset_id, QString::fromStdString(binding.dataset_source), saved_dataset_path);
+        if (resolved.id.has_value()) {
+          binding.dataset_id = *resolved.id;
+          if (const DatasetInfo* live = session_->sessionManager().dataEngine().getDataset(*resolved.id)) {
+            binding.dataset_source = live->source_name;
+          }
+        } else {
+          transform_parse_error =
+              resolved.ambiguous ? tr("ambiguous input dataset path") : tr("input dataset path is not loaded");
+        }
+      }
+      if (in.hasAttribute(u"column"_s)) {
+        bool ok = false;
+        const qulonglong raw = in.attribute(u"column"_s).toULongLong(&ok);
+        if (ok && raw <= std::numeric_limits<std::size_t>::max()) {
+          binding.column_index = static_cast<std::size_t>(raw);
+        } else {
+          transform_parse_error = tr("invalid input column");
+        }
+      }
+      parsed_bindings.push_back(std::move(binding));
     }
-    for (QDomElement out = transform.firstChildElement(QStringLiteral("output")); !out.isNull();
-         out = out.nextSiblingElement(QStringLiteral("output"))) {
-      recipe.outputs.push_back(out.attribute(QStringLiteral("name")).toStdString());
+    if (has_persisted_binding) {
+      recipe.input_bindings = std::move(parsed_bindings);
     }
-    recipe.params_json =
-        layout_xml::directCdataText(transform.firstChildElement(QStringLiteral("params"))).toStdString();
+    for (QDomElement out = transform.firstChildElement(u"output"_s); !out.isNull();
+         out = out.nextSiblingElement(u"output"_s)) {
+      recipe.outputs.push_back(out.attribute(u"name"_s).toStdString());
+    }
+    recipe.params_json = layout_xml::directCdataText(transform.firstChildElement(u"params"_s)).toStdString();
     if (recipe.params_json.empty()) {
       recipe.params_json = "{}";
     }
-    recipe.script = layout_xml::directCdataText(transform.firstChildElement(QStringLiteral("script"))).toStdString();
+    recipe.script = layout_xml::directCdataText(transform.firstChildElement(u"script"_s)).toStdString();
+    if (!transform_parse_error.isEmpty()) {
+      emitDiagnostic(
+          DiagnosticLevel::kWarning, "Layout", "transform-restore-failed",
+          tr("Could not restore transform '%1': %2").arg(QString::fromStdString(recipe.key), transform_parse_error));
+      restored_all = false;
+      continue;
+    }
     if (const auto restored = service.restoreTransform(recipe); !restored.has_value()) {
       emitDiagnostic(
           DiagnosticLevel::kWarning, "Layout", "transform-restore-failed",
           tr("Could not restore transform '%1': %2")
               .arg(QString::fromStdString(recipe.key), QString::fromStdString(restored.error())));
+      restored_all = false;
     }
   }
   session_->catalogModel().rebuildFromDatastore();
+  return restored_all;
 }
 
 void MainWindow::recordRecentLayout(const QString& path) {
@@ -3373,13 +4004,214 @@ QList<layout_xml::SeriesPath> MainWindow::rebindCurvesToLoadedDatasets(QDomDocum
       doc, [this](const layout_xml::SeriesPath& p) { return resolveSeriesPath(session_->catalogModel(), p); });
 }
 
-MainWindow::RestoreResult MainWindow::restoreWorkspaceState(QDomDocument& doc, MissingCurvePolicy policy) {
+MainWindow::TimelineChromeState MainWindow::captureTimelineChrome() const {
+  TimelineChromeState state;
+  if (source_timeline_ != nullptr) {
+    state.zoom = source_timeline_->zoom();
+    state.scroll_left_ns = source_timeline_->viewportLeftDisplayNs();
+    state.scroll_top_px = source_timeline_->viewportTopOffsetPx();
+    state.name_column_width = source_timeline_->nameColumnWidth();
+    state.snap = source_timeline_->snapEnabled();
+  }
+  return state;
+}
+
+void MainWindow::applyTimelineChrome(const TimelineChromeState& state) {
+  if (source_timeline_ != nullptr) {
+    source_timeline_->setZoom(state.zoom);
+    source_timeline_->setViewportLeftDisplayNs(state.scroll_left_ns);
+    timeline_name_column_width_ = state.name_column_width;
+    source_timeline_->resizeNameColumn(state.name_column_width);
+    source_timeline_->setViewportTopOffsetPx(state.scroll_top_px);
+  }
+  auto* snap = ui_->timelineAlignRail != nullptr
+                   ? ui_->timelineAlignRail->findChild<QToolButton*>(u"buttonTimelineSnap"_s)
+                   : nullptr;
+  if (snap != nullptr) {
+    snap->setChecked(state.snap);
+  } else if (source_timeline_ != nullptr) {
+    source_timeline_->setSnapEnabled(state.snap);
+  }
+}
+
+MainWindow::TimelineState MainWindow::captureTimelineState() const {
+  const TimelineChromeState chrome = captureTimelineChrome();
+  TimelineState state;
+  state.zoom = chrome.zoom;
+  state.scroll_left_ns = chrome.scroll_left_ns;
+  state.scroll_top_px = chrome.scroll_top_px;
+  state.name_column_width = chrome.name_column_width;
+  state.snap = chrome.snap;
+
+  QHash<DatasetId, int> order_slots;
+  if (source_timeline_controller_ != nullptr) {
+    const std::vector<DatasetId> order = source_timeline_controller_->currentTrackOrder();
+    for (int slot = 0; slot < static_cast<int>(order.size()); ++slot) {
+      order_slots.insert(order[static_cast<std::size_t>(slot)], slot);
+    }
+  }
+  const auto datasets = session_->catalogModel().datasets();
+  QHash<QString, int> source_ordinals;
+  for (const auto& [dataset_id, label] : datasets) {
+    (void)label;
+    TimelineTrackState track;
+    track.dataset_id = dataset_id;
+    track.display_offset_ns = session_->sessionManager().sourceDisplayOffset(dataset_id).value.count();
+    track.timeline_order = order_slots.value(dataset_id, -1);
+    track.source_path = session_->sessionManager().datasetSourcePath(dataset_id);
+    track.source_name = session_->catalogModel().datasetSourceName(dataset_id).value_or(QString{});
+    if (!track.source_path.isEmpty()) {
+      const QString canonical_path = QFileInfo(track.source_path).canonicalFilePath();
+      if (!canonical_path.isEmpty()) {
+        track.source_index = source_ordinals.value(canonical_path, 0);
+        source_ordinals[canonical_path] = track.source_index + 1;
+      }
+    }
+    state.tracks.push_back(std::move(track));
+  }
+  return state;
+}
+
+MainWindow::CapturedWorkspace MainWindow::captureWorkspace() const {
+  return CapturedWorkspace{.xml = xmlSaveState().toByteArray(2), .timeline = captureTimelineState()};
+}
+
+MainWindow::CapturedWorkspace MainWindow::capturePortableWorkspace() const {
+  QDomDocument doc = xmlSaveState();
+  const TimelineState timeline = captureTimelineState();
+  const QByteArray unstamped = doc.toByteArray(2);
+  layout_xml::stampDatasetSourcePaths(doc, [this](std::uint32_t dataset_id) {
+    return file_loader_->sourcePathForDataset(static_cast<DatasetId>(dataset_id));
+  });
+  const QByteArray stamped = doc.toByteArray(2);
+  return CapturedWorkspace{.xml = stamped.isEmpty() ? unstamped : stamped, .timeline = timeline};
+}
+
+std::optional<DatasetId> MainWindow::resolveTimelineTrack(
+    const TimelineTrackState& track, TimelineRestoreMode mode,
+    const std::vector<std::pair<DatasetId, QString>>& live_datasets) const {
+  const auto live_it = std::find_if(live_datasets.begin(), live_datasets.end(), [&track](const auto& live) {
+    return live.first == track.dataset_id;
+  });
+  if (live_it != live_datasets.end()) {
+    return track.dataset_id;
+  }
+  if (mode == TimelineRestoreMode::kExact || track.source_path.isEmpty()) {
+    return std::nullopt;
+  }
+  std::vector<DatasetId> candidates;
+  for (const auto& [candidate_id, label] : live_datasets) {
+    (void)label;
+    if (layout_xml::isSamePath(session_->sessionManager().datasetSourcePath(candidate_id), track.source_path)) {
+      candidates.push_back(candidate_id);
+    }
+  }
+  std::vector<DatasetId> named;
+  for (const DatasetId candidate : candidates) {
+    const std::optional<QString> source_name = session_->catalogModel().datasetSourceName(candidate);
+    if (track.source_name.isEmpty() || (source_name.has_value() && *source_name == track.source_name)) {
+      named.push_back(candidate);
+    }
+  }
+  if (named.size() == 1) {
+    return named.front();
+  }
+  if (track.source_index >= 0 && track.source_index < static_cast<int>(candidates.size())) {
+    const DatasetId indexed = candidates[static_cast<std::size_t>(track.source_index)];
+    if (std::find(named.begin(), named.end(), indexed) != named.end()) {
+      return indexed;
+    }
+  }
+  return std::nullopt;
+}
+
+std::optional<MainWindow::TimelineResolutionPlan> MainWindow::validateTimelineState(
+    const TimelineState& state, TimelineRestoreMode mode) const {
+  if (!std::isfinite(state.zoom) || !(state.zoom > 0.0) || state.scroll_top_px < 0 || state.name_column_width <= 0) {
+    return std::nullopt;
+  }
+  const auto live_datasets = session_->catalogModel().datasets();
+
+  QSet<DatasetId> resolved_ids;
+  QSet<int> order_slots;
+  TimelineResolutionPlan plan;
+  plan.reserve(state.tracks.size());
+  for (const TimelineTrackState& track : state.tracks) {
+    const std::optional<DatasetId> resolved = resolveTimelineTrack(track, mode, live_datasets);
+    if (!resolved.has_value() || resolved_ids.contains(*resolved) || track.timeline_order < -1) {
+      return std::nullopt;
+    }
+    plan.push_back(*resolved);
+    resolved_ids.insert(*resolved);
+    if (track.timeline_order >= 0) {
+      if (order_slots.contains(track.timeline_order)) {
+        return std::nullopt;
+      }
+      order_slots.insert(track.timeline_order);
+    }
+    if (const auto raw = session_->datasetRawTimeRange(*resolved);
+        raw.has_value() && (!timelineDifferenceFits(raw->min, track.display_offset_ns) ||
+                            !timelineDifferenceFits(raw->max, track.display_offset_ns))) {
+      return std::nullopt;
+    }
+  }
+  for (int slot = 0; slot < order_slots.size(); ++slot) {
+    if (!order_slots.contains(slot)) {
+      return std::nullopt;
+    }
+  }
+  return plan;
+}
+
+bool MainWindow::applyTimelineState(const TimelineState& state, const TimelineResolutionPlan& plan) {
+  if (plan.size() != state.tracks.size()) {
+    return false;
+  }
+
+  std::vector<std::pair<int, DatasetId>> ordered;
+  for (std::size_t index = 0; index < state.tracks.size(); ++index) {
+    const TimelineTrackState& track = state.tracks[index];
+    const DatasetId dataset_id = plan[index];
+    session_->sessionManager().setDisplayOffset(dataset_id, DisplayOffset{Duration{track.display_offset_ns}});
+    if (track.timeline_order >= 0) {
+      ordered.emplace_back(track.timeline_order, dataset_id);
+    }
+  }
+  std::sort(ordered.begin(), ordered.end());
+  std::vector<DatasetId> order;
+  order.reserve(ordered.size());
+  for (const auto& [slot, dataset_id] : ordered) {
+    (void)slot;
+    order.push_back(dataset_id);
+  }
+  if (source_timeline_controller_ != nullptr) {
+    source_timeline_controller_->setDisplayOrder(std::move(order));
+  }
+  applyTimelineChrome(
+      TimelineChromeState{
+          .zoom = state.zoom,
+          .scroll_left_ns = state.scroll_left_ns,
+          .scroll_top_px = state.scroll_top_px,
+          .name_column_width = state.name_column_width,
+          .snap = state.snap,
+      });
+  return true;
+}
+
+MainWindow::RestoreResult MainWindow::applyWorkspace(
+    QDomDocument& doc, MissingCurvePolicy policy, const TimelineState* timeline_state,
+    const TimelineResolutionPlan* timeline_plan) {
   const QDomElement root = doc.documentElement();
   // 1. Recreate the snapshot's filters first, so each derived output topic is in the
   //    catalog and its plotted (derived) curve resolves like any other curve.
-  restoreDataProcessors(root);
+  if (!restoreDataProcessors(root)) {
+    return RestoreResult::kFailed;
+  }
   // 2. Rebind every curve's stable topic+field to a concrete catalog key.
   const QList<layout_xml::SeriesPath> unresolved = rebindCurvesToLoadedDatasets(doc);
+  if (policy == MissingCurvePolicy::kExact && !unresolved.isEmpty()) {
+    return RestoreResult::kFailed;
+  }
   if (policy == MissingCurvePolicy::kPrompt && !unresolved.isEmpty()) {
     QStringList shown;
     shown.reserve(unresolved.size());
@@ -3394,67 +4226,133 @@ MainWindow::RestoreResult MainWindow::restoreWorkspaceState(QDomDocument& doc, M
         break;
     }
   }
-  // kSilentDrop (undo/redo): unresolved curves are left to drop during xmlLoadState's
-  // bind — a snapshot survives an intervening data reload because it carries stable
-  // topic/field paths, not per-load keys.
+  // kSilentDrop compatibility restores leave unresolved curves for xmlLoadState
+  // to discard. Undo/redo uses kExact.
   // 3. Apply plots + global toggles.
   if (!xmlLoadState(doc)) {
     return RestoreResult::kFailed;
   }
+  // Plot reconstruction, the timeline, and scene docks are independent restore
+  // participants of this bool-and-rollback transaction.
+  if (timeline_state != nullptr && (timeline_plan == nullptr || !applyTimelineState(*timeline_state, *timeline_plan))) {
+    return RestoreResult::kFailed;
+  }
+  rebuildPendingDisplayBindings(doc);
+  // Scene layers/config topics can be deferred by their dock until the saved
+  // dataset identity exists. Blocking loads and history replay have no later
+  // queue-drain phase, so make one final attempt now and treat any permanent
+  // rejection — or any unresolved BLOCKING element in an exact snapshot — as a
+  // failed transaction rather than silently committing a partial scene.
+  const SceneRestoreVerdict scenes = settleSceneRestores();
+  if (scenes.failed || (policy == MissingCurvePolicy::kExact && !scenes.blocking_topics.isEmpty())) {
+    return RestoreResult::kFailed;
+  }
+  if (policy == MissingCurvePolicy::kPrompt && !scenes.blocking_topics.isEmpty()) {
+    emitDiagnostic(
+        DiagnosticLevel::kWarning, "Layout", "scene_restore_pending",
+        tr("%n scene layer(s) could not be rebound and were omitted.", nullptr,
+           static_cast<int>(scenes.blocking_topics.size())));
+    forEachSceneDock([](SceneDockWidget* scene_dock) { scene_dock->clearBlockingPendingRestores(); });
+  }
+  forEachPlot([](PlotWidget* plot) { plot->applySavedViewportOrZoom(/*clear_after=*/true); });
   // 4. Seed the just-recreated docks with the current playhead. currentTimeChanged
   // only fires on a CHANGE, so a freshly restored dock would sit at no-tracker-time
   // until the next scrub — scene docks then render blank (TF lookups / image decode
   // key off the tracker instant). Same seeding the drag-drop / click-create paths do
   // (MainWindow.cpp:480, makeSeededEmptyObjectDock); here it covers layout load + undo/redo.
   broadcastTrackerTime(toAxisDouble(session_->playbackEngine().currentTime()));
+  // 5. Re-route the right panel to the restored active dock's family. xmlLoadState
+  // rebuilds docks with focus suppressed (PlotDocker::restoring_state_), so no
+  // dockFocused signal fires — without this the panel keeps whatever page it last
+  // showed (page 0 / plot-config at startup), so a scene-only layout would display
+  // curve options over a 3D scene. activeFocusedDock() falls back to the first dock
+  // when focus is stale/null after the rebuild.
+  onDockFocused(activeFocusedDock());
   return RestoreResult::kApplied;
 }
 
+MainWindow::RestoreResult MainWindow::restoreWorkspaceStateImpl(
+    QDomDocument& doc, MissingCurvePolicy policy, const TimelineState* timeline_state,
+    TimelineRestoreMode timeline_mode, const CapturedWorkspace* rollback_to) {
+  std::optional<TimelineResolutionPlan> timeline_plan;
+  if (timeline_state != nullptr) {
+    timeline_plan = validateTimelineState(*timeline_state, timeline_mode);
+    if (!timeline_plan.has_value()) {
+      return RestoreResult::kFailed;
+    }
+  }
+
+  QScopedValueRollback applying_guard(applying_state_, true);
+  const CapturedWorkspace previous = rollback_to != nullptr ? *rollback_to : captureWorkspace();
+  const RestoreResult result =
+      applyWorkspace(doc, policy, timeline_state, timeline_plan.has_value() ? &*timeline_plan : nullptr);
+  if (result == RestoreResult::kApplied) {
+    return result;
+  }
+
+  QDomDocument previous_doc;
+  if (previous_doc.setContent(previous.xml)) {
+    const std::optional<TimelineResolutionPlan> previous_plan =
+        validateTimelineState(previous.timeline, TimelineRestoreMode::kExact);
+    if (previous_plan.has_value()) {
+      static_cast<void>(
+          applyWorkspace(previous_doc, MissingCurvePolicy::kSilentDrop, &previous.timeline, &*previous_plan));
+    }
+  }
+  return result;
+}
+
+MainWindow::RestoreResult MainWindow::restoreWorkspaceState(
+    QDomDocument& doc, MissingCurvePolicy policy, const CapturedWorkspace* rollback_to) {
+  return restoreWorkspaceStateImpl(doc, policy, nullptr, TimelineRestoreMode::kExact, rollback_to);
+}
+
+MainWindow::RestoreResult MainWindow::restoreWorkspaceState(
+    const CapturedWorkspace& target, MissingCurvePolicy policy, TimelineRestoreMode timeline_mode,
+    const CapturedWorkspace* rollback_to) {
+  QDomDocument doc;
+  if (!doc.setContent(target.xml)) {
+    return RestoreResult::kFailed;
+  }
+  return restoreWorkspaceStateImpl(doc, policy, &target.timeline, timeline_mode, rollback_to);
+}
+
 void MainWindow::onUndo() {
-  if (undo_states_.size() <= 1) {
+  if (progressive_layout_in_flight_ || undo_states_.size() <= 1) {
     return;
   }
 
-  redo_states_.push_back(undo_states_.back());
-  undo_states_.pop_back();
-  QDomDocument doc;
-  doc.setContent(undo_states_.back());
-  // Restore the COMPLETE snapshot (filters + curves + plots/toggles) under
-  // applying_state_ so the catalog-rebuild signals fired by the filter reconcile do not
-  // re-enter onUndoableChange and push spurious undo states.
-  const bool loaded = [&] {
-    QScopedValueRollback guard(applying_state_, true);
-    return restoreWorkspaceState(doc, MissingCurvePolicy::kSilentDrop) == RestoreResult::kApplied;
-  }();
-
-  if (!loaded) {
-    statusBar()->showMessage(tr("Unable to restore undo state"), 3000);
-  }
-  undo_timer_.restart();
-  updateUndoRedoActions();
+  const CapturedWorkspace target_state = undo_states_[undo_states_.size() - 2];
+  restoreHistoryState(target_state, /*undo=*/true);
 }
 
 void MainWindow::onRedo() {
-  if (redo_states_.empty()) {
+  if (progressive_layout_in_flight_ || redo_states_.empty()) {
     return;
   }
 
-  undo_states_.push_back(redo_states_.back());
-  redo_states_.pop_back();
-  QDomDocument doc;
-  doc.setContent(undo_states_.back());
-  // Restore the COMPLETE snapshot (filters + curves + plots/toggles) under
-  // applying_state_ so the catalog-rebuild signals fired by the filter reconcile do not
-  // re-enter onUndoableChange and push spurious undo states.
-  const bool loaded = [&] {
-    QScopedValueRollback guard(applying_state_, true);
-    return restoreWorkspaceState(doc, MissingCurvePolicy::kSilentDrop) == RestoreResult::kApplied;
-  }();
+  const CapturedWorkspace target_state = redo_states_.back();
+  restoreHistoryState(target_state, /*undo=*/false);
+}
 
+void MainWindow::restoreHistoryState(const CapturedWorkspace& target, bool undo) {
+  const CapturedWorkspace current_state = captureWorkspace();
+  const bool loaded =
+      restoreWorkspaceState(target, MissingCurvePolicy::kExact, TimelineRestoreMode::kExact, &current_state) ==
+      RestoreResult::kApplied;
   if (!loaded) {
-    statusBar()->showMessage(tr("Unable to restore redo state"), 3000);
+    statusBar()->showMessage(undo ? tr("Unable to restore undo state") : tr("Unable to restore redo state"), 3000);
+  } else if (undo) {
+    redo_states_.push_back(current_state);
+    undo_states_.pop_back();
+    hydrateCurrentUndoState(/*refresh_data_universe=*/false);
+  } else {
+    undo_states_.back() = current_state;
+    undo_states_.push_back(target);
+    redo_states_.pop_back();
+    hydrateCurrentUndoState(/*refresh_data_universe=*/false);
   }
-  undo_timer_.restart();
+  undo_timer_.invalidate();
   updateUndoRedoActions();
 }
 
@@ -3471,15 +4369,9 @@ QDomElement MainWindow::appendDataSourceElement(QDomDocument& doc, const QDir& l
   // next reload — while loaded_sources_ itself stays intact for the quick-reload
   // button (which keys off lastLoadedSource, not this list). FileLoader owns the
   // DatasetId->path link the engine's basename-only DatasetInfo can't provide.
-  QSet<QString> live_paths;
-  QHash<QString, DatasetId> dataset_for_path;  // reverse of sourcePathForDataset, for offset lookup
-  for (const auto& [id, name] : session_->catalogModel().datasets()) {
-    (void)name;
-    if (const QString src_path = file_loader_->sourcePathForDataset(id); !src_path.isEmpty()) {
-      live_paths.insert(src_path);
-      dataset_for_path.insert(src_path, id);
-    }
-  }
+  // Keep every DatasetId for each file (in catalog/load order): one file replay
+  // may fan out into N datasets, each with its own TimeDomain and timeline track.
+  const std::vector<std::pair<DatasetId, QString>> live_datasets = session_->catalogModel().datasets();
 
   // Source Timeline arrangement: the bar's top-to-bottom slot, persisted per
   // file so the vertical order round-trips (re-bound by path on reload). Build
@@ -3492,43 +4384,54 @@ QDomElement MainWindow::appendDataSourceElement(QDomDocument& doc, const QDir& l
     }
   }
 
-  QDomElement wrapper = doc.createElement(QStringLiteral("previouslyLoaded_Datafiles"));
+  QDomElement wrapper = doc.createElement(u"previouslyLoaded_Datafiles"_s);
 
   // One <fileInfo> per loaded file, in load order, so a multi-file session
   // round-trips. Old PJ4 readers that only read the first child degrade to the
   // first file; new readers restore them all.
   for (const auto& src : sources) {
-    if (!live_paths.contains(src.path)) {
+    // Every live dataset this file backs, in catalog/load order. source_index is
+    // that stable position (two fan-out members with identical display names
+    // must not swap offsets on reload).
+    std::vector<DatasetId> datasets_for_file;
+    for (const auto& [id, name] : live_datasets) {
+      (void)name;
+      const QString source_path = file_loader_->sourcePathForDataset(id);
+      if (!source_path.isEmpty() && layout_xml::isSamePath(source_path, src.path)) {
+        datasets_for_file.push_back(id);
+      }
+    }
+    if (datasets_for_file.empty()) {
       continue;  // dataset removed since load; don't resurrect it on reload
     }
-    QDomElement file_info = doc.createElement(QStringLiteral("fileInfo"));
+    QDomElement file_info = doc.createElement(u"fileInfo"_s);
 
-    const QFileInfo info(src.path);
-    const QString abs = info.absoluteFilePath();
-    const QString rel = layout_dir.relativeFilePath(abs);
-    // Prefer the relative form when the data lives at or beneath the layout
-    // dir; fall back to absolute when it escapes. This diverges from PJ3,
-    // which always stores relative — PJ4 avoids brittle ../.. paths so that
-    // moving a layout file doesn't silently break the data reference.
-    // A relative path is a "subpath" only when Qt's relativeFilePath did
-    // NOT emit a "../" prefix or the literal ".." path. The earlier check
-    // (`!rel.startsWith("..")`) would misclassify legitimate filenames
-    // like "..foo" or "..bar/data.csv" as escaping the dir.
-    const bool is_subpath = rel != QStringLiteral("..") && !rel.startsWith(QStringLiteral("../"));
-    file_info.setAttribute(QStringLiteral("filename"), is_subpath ? rel : abs);
-    file_info.setAttribute(QStringLiteral("prefix"), src.prefix);
+    const QString abs = QFileInfo(src.path).absoluteFilePath();
+    file_info.setAttribute(u"filename"_s, relocatableSubpath(abs, layout_dir));
+    file_info.setAttribute(u"prefix"_s, src.prefix);
 
-    // Source Timeline state for this file, re-bound by path on reload. The
-    // display offset is read live from the SessionManager (the per-source
-    // display shift the user dragged); timeline_order is its bar's vertical
-    // slot. Both keyed by the dataset this path currently backs.
-    if (const auto it = dataset_for_path.constFind(src.path); it != dataset_for_path.constEnd()) {
-      const DatasetId id = it.value();
-      file_info.setAttribute(
-          QStringLiteral("display_offset_ns"),
-          QString::number(session_->sessionManager().displayOffset(id).value.count()));
+    // One <dataset> child per fan-out member. The offset is sourceDisplayOffset()
+    // — the per-source alignment WITHOUT the global reference (schema v4 basis).
+    // Mirror the first child's state onto the legacy <fileInfo> attributes so a
+    // <=v3 reader still gets a single-track view of the file.
+    for (std::size_t index = 0; index < datasets_for_file.size(); ++index) {
+      const DatasetId id = datasets_for_file[index];
+      QDomElement dataset_el = doc.createElement(u"dataset"_s);
+      dataset_el.setAttribute(u"source_index"_s, QString::number(index));
+      if (const std::optional<QString> source_name = session_->catalogModel().datasetSourceName(id)) {
+        dataset_el.setAttribute(u"source_name"_s, *source_name);
+      }
+      const QString offset = QString::number(session_->sessionManager().sourceDisplayOffset(id).value.count());
+      dataset_el.setAttribute(u"display_offset_ns"_s, offset);
       if (const auto order_it = timeline_order.constFind(id); order_it != timeline_order.constEnd()) {
-        file_info.setAttribute(QStringLiteral("timeline_order"), QString::number(order_it.value()));
+        dataset_el.setAttribute(u"timeline_order"_s, QString::number(order_it.value()));
+      }
+      file_info.appendChild(dataset_el);
+      if (index == 0) {
+        file_info.setAttribute(u"display_offset_ns"_s, offset);
+        if (dataset_el.hasAttribute(u"timeline_order"_s)) {
+          file_info.setAttribute(u"timeline_order"_s, dataset_el.attribute(u"timeline_order"_s));
+        }
       }
     }
 
@@ -3539,8 +4442,8 @@ QDomElement MainWindow::appendDataSourceElement(QDomDocument& doc, const QDir& l
     // plugin_id means the loader didn't capture a plugin (legacy path
     // or saveConfig failure); only that case skips the child.
     if (!src.plugin_id.isEmpty()) {
-      QDomElement plugin = doc.createElement(QStringLiteral("plugin"));
-      plugin.setAttribute(QStringLiteral("ID"), src.plugin_id);
+      QDomElement plugin = doc.createElement(u"plugin"_s);
+      plugin.setAttribute(u"ID"_s, src.plugin_id);
       // CDATA so the JSON survives round-tripping without XML escape mangling.
       // appendJsonAsCdata splits across multiple CDATA sections when the JSON
       // contains a literal "]]>" sequence (otherwise it'd terminate the
@@ -3559,34 +4462,104 @@ QDomElement MainWindow::appendDataSourceElement(QDomDocument& doc, const QDir& l
   return wrapper;
 }
 
-void MainWindow::applyTimelineStateFromLayout(const QList<layout_xml::DataSourceRef>& sources) {
+bool MainWindow::applyTimelineStateFromLayout(const QList<layout_xml::DataSourceRef>& sources) {
   if (sources.isEmpty()) {
-    return;
+    return false;
   }
   SessionManager& mgr = session_->sessionManager();
 
-  // Re-bind each saved <fileInfo> to whichever loaded dataset came from that
-  // file (DatasetIds are re-minted per session; the path is the stable key),
-  // apply its display offset, and collect (id, slot) for the order rebuild.
+  // Re-bind each saved <fileInfo> to every loaded dataset produced from that
+  // file. DatasetIds are re-minted per session, so path + fan-out
+  // (source_name, source_index) is the stable identity. Apply each track's
+  // offset and collect (id, slot) for the vertical-order rebuild.
   std::vector<std::pair<int, DatasetId>> ordered;  // (timeline_order, id)
+  QSet<DatasetId> matched_ids;
+  bool offset_changed = false;
+  const auto apply_state = [this, &mgr, &ordered, &matched_ids, &offset_changed](
+                               DatasetId matched, qint64 offset_ns, bool has_offset, bool includes_global_reference,
+                               int order) {
+    // Multiple <fileInfo>/<dataset> aliases can resolve to one physical dataset.
+    // First match wins; never apply its offset twice or draw it in two slots.
+    if (matched_ids.contains(matched)) {
+      return;
+    }
+    matched_ids.insert(matched);
+    if (has_offset) {
+      // v3 wrote displayOffset() (per-source alignment + the global reference);
+      // v4 writes sourceDisplayOffset() only. Subtract the current global
+      // reference for a v3 read so total placement stays equal without
+      // double-applying it (setDisplayOffset writes the per-source alignment).
+      if (includes_global_reference) {
+        const std::optional<qint64> migrated = checkedTimelineDifference(offset_ns, mgr.globalTimeReference());
+        if (!migrated.has_value()) {
+          has_offset = false;
+        } else {
+          offset_ns = *migrated;
+        }
+      }
+      if (const auto raw = session_->datasetRawTimeRange(matched);
+          raw.has_value() &&
+          (!timelineDifferenceFits(raw->min, offset_ns) || !timelineDifferenceFits(raw->max, offset_ns))) {
+        has_offset = false;
+      }
+      // Track whether this write actually MOVES the offset: plots restored earlier
+      // (restoreWorkspaceState) framed their viewport with the pre-apply offset, so
+      // the caller must re-frame only when an offset really changed here.
+      if (has_offset && mgr.sourceDisplayOffset(matched).value.count() != offset_ns) {
+        offset_changed = true;
+      }
+      if (has_offset) {
+        mgr.setDisplayOffset(matched, DisplayOffset{Duration{offset_ns}});
+      }
+    }
+    if (order >= 0) {
+      ordered.emplace_back(order, matched);
+    }
+  };
+
+  // datasets() copies the whole catalog list per call; the candidate scan below
+  // reads it once per saved source, so hoist the single snapshot out of the loop.
+  const std::vector<std::pair<DatasetId, QString>> live_datasets = session_->catalogModel().datasets();
+
   for (const layout_xml::DataSourceRef& ref : sources) {
-    DatasetId matched = 0;
-    for (const auto& [id, name] : session_->catalogModel().datasets()) {
+    std::vector<DatasetId> candidates;
+    for (const auto& [id, name] : live_datasets) {
       (void)name;
       const QString src_path = file_loader_->sourcePathForDataset(id);
       if (!src_path.isEmpty() && layout_xml::isSamePath(src_path, ref.resolved_path)) {
-        matched = id;
-        break;
+        candidates.push_back(id);
       }
     }
-    if (matched == 0) {
+    if (candidates.empty()) {
       continue;  // file referenced by the layout isn't loaded — nothing to restore
     }
-    if (ref.has_display_offset) {
-      mgr.setDisplayOffset(matched, DisplayOffset{Duration{ref.display_offset_ns}});
+
+    if (ref.datasets.isEmpty()) {
+      // Legacy (<=v3) layout: one state on <fileInfo>, no fan-out description.
+      // Deterministically apply it to the first dataset the file created,
+      // matching the historical one-track behavior.
+      apply_state(
+          candidates.front(), ref.display_offset_ns, ref.has_display_offset,
+          ref.display_offset_includes_global_reference, ref.timeline_order);
+      continue;
     }
-    if (ref.timeline_order >= 0) {
-      ordered.emplace_back(ref.timeline_order, matched);
+
+    // Fan-out apply: bind each saved <dataset> back to a live candidate through
+    // the shared shape-guarded matcher (see layout_xml::matchFanoutDatasets for
+    // the name/index policy), then apply each bound child's offset and order.
+    const std::vector<std::uint32_t> matches = layout_xml::matchFanoutDatasets(
+        ref.datasets, std::vector<std::uint32_t>(candidates.begin(), candidates.end()), [this](std::uint32_t id) {
+          return session_->catalogModel().datasetSourceName(static_cast<DatasetId>(id)).value_or(QString{});
+        });
+    for (qsizetype child_index = 0; child_index < ref.datasets.size(); ++child_index) {
+      const DatasetId matched = static_cast<DatasetId>(matches[static_cast<std::size_t>(child_index)]);
+      if (matched == 0) {
+        continue;  // missing/ambiguous fan-out entry: never shift a sibling
+      }
+      const layout_xml::DataSourceDatasetRef& saved = ref.datasets[child_index];
+      apply_state(
+          matched, saved.display_offset_ns, saved.has_display_offset, saved.display_offset_includes_global_reference,
+          saved.timeline_order);
     }
   }
 
@@ -3603,21 +4576,26 @@ void MainWindow::applyTimelineStateFromLayout(const QList<layout_xml::DataSource
     }
     source_timeline_controller_->setDisplayOrder(std::move(order));
   }
+  return offset_changed;
+}
+
+bool MainWindow::applyPendingTimelineState() {
+  if (pending_timeline_sources_.isEmpty()) {
+    return false;
+  }
+  const QList<layout_xml::DataSourceRef> sources = std::move(pending_timeline_sources_);
+  pending_timeline_sources_.clear();
+  return applyTimelineStateFromLayout(sources);
 }
 
 QDomElement MainWindow::saveSourceTimelineViewState(QDomDocument& doc) const {
-  // Read the view chrome off the widgets; layout_xml owns the XML schema.
-  layout_xml::SourceTimelineViewState state;
-  if (source_timeline_ != nullptr) {
-    state.zoom = source_timeline_->zoom();
-    state.scroll_left_ns = source_timeline_->viewportLeftDisplayNs();
-    state.name_column_width = source_timeline_->nameColumnWidth();
-  }
-  if (ui_->timelineAlignRail != nullptr) {
-    if (auto* snap = ui_->timelineAlignRail->findChild<QToolButton*>(QStringLiteral("buttonTimelineSnap"))) {
-      state.snap = snap->isChecked();
-    }
-  }
+  const TimelineChromeState chrome = captureTimelineChrome();
+  layout_xml::SourceTimelineViewState state{
+      .zoom = chrome.zoom,
+      .scroll_left_ns = chrome.scroll_left_ns,
+      .name_column_width = chrome.name_column_width,
+      .snap = chrome.snap,
+  };
   return layout_xml::writeSourceTimelineViewState(doc, state);
 }
 
@@ -3625,37 +4603,25 @@ void MainWindow::restoreSourceTimelineViewState(const QDomElement& element) {
   if (source_timeline_ == nullptr) {
     return;
   }
-  const layout_xml::SourceTimelineViewState state = layout_xml::readSourceTimelineViewState(element);
-  // Zoom first: it rebuilds the scene (width + scrollbar range), so the scroll
-  // restore below maps onto the intended zoom.
-  if (state.zoom) {
-    source_timeline_->setZoom(*state.zoom);
+  const layout_xml::SourceTimelineViewState saved = layout_xml::readSourceTimelineViewState(element);
+  TimelineChromeState state = captureTimelineChrome();
+  if (saved.zoom) {
+    state.zoom = *saved.zoom;
   }
-  if (state.scroll_left_ns) {
-    source_timeline_->setViewportLeftDisplayNs(*state.scroll_left_ns);
+  if (saved.scroll_left_ns) {
+    state.scroll_left_ns = *saved.scroll_left_ns;
   }
-  if (state.name_column_width) {
-    // Remember it so the deferred alignNameColumnToPlayback keeps the column at
-    // this width (over the playback-aligned floor), then apply it now.
-    timeline_name_column_width_ = *state.name_column_width;
-    source_timeline_->resizeNameColumn(*state.name_column_width);
+  if (saved.name_column_width) {
+    state.name_column_width = *saved.name_column_width;
   }
-  if (state.snap) {
-    // Drive the rail toggle so its checked state and the widget stay in sync
-    // (toggled -> Timeline::setSnapEnabled). Fall back to the widget directly.
-    auto* btn = ui_->timelineAlignRail != nullptr
-                    ? ui_->timelineAlignRail->findChild<QToolButton*>(QStringLiteral("buttonTimelineSnap"))
-                    : nullptr;
-    if (btn != nullptr) {
-      btn->setChecked(*state.snap);
-    } else {
-      source_timeline_->setSnapEnabled(*state.snap);
-    }
+  if (saved.snap) {
+    state.snap = *saved.snap;
   }
+  applyTimelineChrome(state);
 }
 
 QDomElement MainWindow::saveRightPanelState(QDomDocument& doc) const {
-  QDomElement element = doc.createElement(QStringLiteral("right_panel_state"));
+  QDomElement element = doc.createElement(u"right_panel_state"_s);
 
   // The right panel's open/closed state (the panel-visibility toggle button) is
   // an app-wide QSettings preference, NOT document state, so it is deliberately
@@ -3669,7 +4635,7 @@ QDomElement MainWindow::saveRightPanelState(QDomDocument& doc) const {
   if (width_button_group_ != nullptr) {
     const int id = width_button_group_->checkedId();
     if (id >= 0 && id < static_cast<int>(kWidthButtonSpecs.size())) {
-      element.setAttribute(QStringLiteral("width"), QString::number(kWidthButtonSpecs[id].second, 'g'));
+      element.setAttribute(u"width"_s, QString::number(kWidthButtonSpecs[id].second, 'g'));
     }
   }
 
@@ -3678,7 +4644,7 @@ QDomElement MainWindow::saveRightPanelState(QDomDocument& doc) const {
   if (style_button_group_ != nullptr) {
     const int id = style_button_group_->checkedId();
     if (id >= 0) {
-      element.setAttribute(QStringLiteral("style"), QString::number(id));
+      element.setAttribute(u"style"_s, QString::number(id));
     }
   }
 
@@ -3689,7 +4655,7 @@ QDomElement MainWindow::saveRightPanelState(QDomDocument& doc) const {
     for (int s : sizes) {
       parts.push_back(QString::number(s));
     }
-    element.setAttribute(QStringLiteral("splitter_sizes"), parts.join(QLatin1Char(',')));
+    element.setAttribute(u"splitter_sizes"_s, parts.join(QLatin1Char(',')));
   }
 
   return element;
@@ -3760,7 +4726,7 @@ void MainWindow::alignNameColumnToPlayback() {
   // edge is where the blue track starts. Its x within the playback bar — which
   // shares the bottom panel's left origin with the name column — is the column
   // width that lines the separator up exactly under that track start.
-  auto* slider = ui_->timelineWidget->findChild<QWidget*>(QStringLiteral("timeSlider"));
+  auto* slider = ui_->timelineWidget->findChild<QWidget*>(u"timeSlider"_s);
   if (slider == nullptr) {
     return;
   }
@@ -3778,7 +4744,7 @@ void MainWindow::alignNameColumnToPlayback() {
 }
 
 void MainWindow::restoreRightPanelState(const QDomElement& element) {
-  if (element.isNull() || element.tagName() != QStringLiteral("right_panel_state")) {
+  if (element.isNull() || element.tagName() != "right_panel_state"_L1) {
     return;
   }
 
@@ -3787,9 +4753,9 @@ void MainWindow::restoreRightPanelState(const QDomElement& element) {
   // Curve Width: look up the button whose canonical value fuzzy-matches
   // the layout's stored value. Block group signals so the idClicked
   // lambda doesn't refresh the previews on this passive resync.
-  if (element.hasAttribute(QStringLiteral("width")) && width_button_group_ != nullptr) {
+  if (element.hasAttribute(u"width"_s) && width_button_group_ != nullptr) {
     bool ok = false;
-    const double wanted = element.attribute(QStringLiteral("width")).toDouble(&ok);
+    const double wanted = element.attribute(u"width"_s).toDouble(&ok);
     if (ok) {
       for (int i = 0; i < static_cast<int>(kWidthButtonSpecs.size()); ++i) {
         if (qFuzzyCompare(kWidthButtonSpecs[i].second, wanted)) {
@@ -3802,9 +4768,9 @@ void MainWindow::restoreRightPanelState(const QDomElement& element) {
 
   // Curve Style: checkedId is the CurveStyle enum value; pass through.
   // Same preview-refresh suppression via QSignalBlocker.
-  if (element.hasAttribute(QStringLiteral("style")) && style_button_group_ != nullptr) {
+  if (element.hasAttribute(u"style"_s) && style_button_group_ != nullptr) {
     bool ok = false;
-    const int wanted = element.attribute(QStringLiteral("style")).toInt(&ok);
+    const int wanted = element.attribute(u"style"_s).toInt(&ok);
     if (ok) {
       checkGroupButton(style_button_group_, wanted);
     }
@@ -3813,9 +4779,8 @@ void MainWindow::restoreRightPanelState(const QDomElement& element) {
   // Splitter sizes: only apply when the parsed list length matches the
   // splitter's current widget count. A mismatch means the splitter shape
   // changed across PJ4 versions; layout silently skips this piece.
-  if (element.hasAttribute(QStringLiteral("splitter_sizes")) && ui_->rightToolbarSplitter != nullptr) {
-    const QStringList parts =
-        element.attribute(QStringLiteral("splitter_sizes")).split(QLatin1Char(','), Qt::SkipEmptyParts);
+  if (element.hasAttribute(u"splitter_sizes"_s) && ui_->rightToolbarSplitter != nullptr) {
+    const QStringList parts = element.attribute(u"splitter_sizes"_s).split(QLatin1Char(','), Qt::SkipEmptyParts);
     if (parts.size() == ui_->rightToolbarSplitter->count()) {
       QList<int> sizes;
       sizes.reserve(parts.size());
@@ -3837,7 +4802,7 @@ void MainWindow::restoreRightPanelState(const QDomElement& element) {
 }
 
 QDomElement MainWindow::saveChromeState(QDomDocument& doc) const {
-  QDomElement element = doc.createElement(QStringLiteral("chrome_state"));
+  QDomElement element = doc.createElement(u"chrome_state"_s);
 
   // Persist only the main splitter's left-panel width. Panel visibility and the
   // timeline-strip height are fixed launch state (see the constructor), not saved.
@@ -3853,14 +4818,14 @@ QDomElement MainWindow::saveChromeState(QDomDocument& doc) const {
   };
 
   if (ui_->mainSplitter != nullptr) {
-    element.setAttribute(QStringLiteral("main_splitter_sizes"), join_sizes(ui_->mainSplitter));
+    element.setAttribute(u"main_splitter_sizes"_s, join_sizes(ui_->mainSplitter));
   }
 
   return element;
 }
 
 void MainWindow::restoreChromeState(const QDomElement& element) {
-  if (element.isNull() || element.tagName() != QStringLiteral("chrome_state")) {
+  if (element.isNull() || element.tagName() != "chrome_state"_L1) {
     return;
   }
 
@@ -3888,8 +4853,8 @@ void MainWindow::restoreChromeState(const QDomElement& element) {
     splitter->setSizes(sizes);
   };
 
-  if (element.hasAttribute(QStringLiteral("main_splitter_sizes"))) {
-    apply_splitter(ui_->mainSplitter, element.attribute(QStringLiteral("main_splitter_sizes")));
+  if (element.hasAttribute(u"main_splitter_sizes"_s)) {
+    apply_splitter(ui_->mainSplitter, element.attribute(u"main_splitter_sizes"_s));
   }
 }
 
@@ -3897,15 +4862,15 @@ MainWindow::MissingCurveChoice MainWindow::promptMissingCurves(const QStringList
   static constexpr int kMaxShown = 10;
   const int name_count = static_cast<int>(names.size());
   QString body = tr("The layout references %n curve(s) not present in the current data:", "", name_count);
-  body += QStringLiteral("\n\n");
+  body += u"\n\n"_s;
   const int shown = std::min(name_count, kMaxShown);
   for (int i = 0; i < shown; ++i) {
-    body += QStringLiteral("  • ") + names[i] + QStringLiteral("\n");
+    body += u"  • "_s + names[i] + u"\n"_s;
   }
   if (name_count > kMaxShown) {
     body += tr("  … and %n more\n", "", name_count - kMaxShown);
   }
-  body += QStringLiteral("\n");
+  body += u"\n"_s;
   body += tr("Choose how to handle them:");
 
   // Themed prompt. "Remove from plots" takes the destructive role (purple ink);
@@ -3921,12 +4886,11 @@ MainWindow::MissingCurveChoice MainWindow::promptMissingCurves(const QStringList
 
 QDomDocument MainWindow::xmlSaveState() const {
   QDomDocument doc;
-  doc.appendChild(
-      doc.createProcessingInstruction(QStringLiteral("xml"), QStringLiteral("version='1.0' encoding='UTF-8'")));
+  doc.appendChild(doc.createProcessingInstruction(u"xml"_s, u"version='1.0' encoding='UTF-8'"_s));
 
-  QDomElement root = doc.createElement(QStringLiteral("root"));
-  root.setAttribute(QStringLiteral("format"), QStringLiteral("PlotJuggler"));
-  root.setAttribute(QStringLiteral("pj4_version"), QString::number(kLayoutSchemaVersion));
+  QDomElement root = doc.createElement(u"root"_s);
+  root.setAttribute(u"format"_s, u"PlotJuggler"_s);
+  root.setAttribute(u"pj4_version"_s, QString::number(kLayoutSchemaVersion));
   doc.appendChild(root);
 
   root.appendChild(ui_->tabbedPlotWidget->xmlSaveState(doc));
@@ -3949,18 +4913,18 @@ QDomDocument MainWindow::xmlSaveState() const {
 
 bool MainWindow::xmlLoadState(const QDomDocument& state_document) {
   const QDomElement root = state_document.documentElement();
-  if (root.isNull() || root.tagName() != QStringLiteral("root")) {
+  if (root.isNull() || root.tagName() != "root"_L1) {
     qCWarning(lcMain) << "No <root> element found at the top-level of the XML document";
     return false;
   }
 
   QDomElement main_tabbed_widget;
-  for (auto tabbed = root.firstChildElement(QStringLiteral("tabbed_widget")); !tabbed.isNull();
-       tabbed = tabbed.nextSiblingElement(QStringLiteral("tabbed_widget"))) {
+  for (auto tabbed = root.firstChildElement(u"tabbed_widget"_s); !tabbed.isNull();
+       tabbed = tabbed.nextSiblingElement(u"tabbed_widget"_s)) {
     if (main_tabbed_widget.isNull()) {
       main_tabbed_widget = tabbed;
     }
-    if (tabbed.attribute(QStringLiteral("parent")) == QStringLiteral("main_window")) {
+    if (tabbed.attribute(u"parent"_s) == "main_window"_L1) {
       main_tabbed_widget = tabbed;
       break;
     }
@@ -3989,8 +4953,9 @@ bool MainWindow::xmlLoadState(const QDomDocument& state_document) {
 void MainWindow::pushInitialUndoState() {
   undo_states_.clear();
   redo_states_.clear();
-  undo_states_.push_back(xmlSaveState().toByteArray(2));
-  undo_timer_.start();
+  undo_states_.push_back(captureWorkspace());
+  history_data_universe_ = captureHistoryDataUniverse();
+  undo_timer_.invalidate();
   updateUndoRedoActions();
 }
 
@@ -4002,7 +4967,7 @@ void MainWindow::resetUndoHistory() {
 }
 
 void MainWindow::pushUndoState(bool force_new_state) {
-  const QByteArray state = xmlSaveState().toByteArray(2);
+  const CapturedWorkspace state = captureWorkspace();
   if (!undo_states_.empty() && undo_states_.back() == state) {
     updateUndoRedoActions();
     return;
@@ -4020,16 +4985,34 @@ void MainWindow::pushUndoState(bool force_new_state) {
     undo_states_.pop_front();
   }
   redo_states_.clear();
-  undo_timer_.restart();
+  if (force_new_state) {
+    // A forced edit is discrete on both sides; the following ordinary edit
+    // must not coalesce forward into it.
+    undo_timer_.invalidate();
+  } else {
+    undo_timer_.restart();
+  }
+  updateUndoRedoActions();
+}
+
+void MainWindow::hydrateCurrentUndoState(bool refresh_data_universe) {
+  if (applying_state_ || progressive_layout_in_flight_ || undo_states_.empty()) {
+    return;
+  }
+  undo_states_.back() = captureWorkspace();
+  if (refresh_data_universe) {
+    history_data_universe_ = captureHistoryDataUniverse();
+  }
+  undo_timer_.invalidate();
   updateUndoRedoActions();
 }
 
 void MainWindow::updateUndoRedoActions() {
   if (undo_action_ != nullptr) {
-    undo_action_->setEnabled(undo_states_.size() > 1);
+    undo_action_->setEnabled(!progressive_layout_in_flight_ && undo_states_.size() > 1);
   }
   if (redo_action_ != nullptr) {
-    redo_action_->setEnabled(!redo_states_.empty());
+    redo_action_->setEnabled(!progressive_layout_in_flight_ && !redo_states_.empty());
   }
 }
 
@@ -4126,8 +5109,10 @@ void MainWindow::buildGlobalToolbar() {
   if (outer == nullptr) {
     return;
   }
-  outer->setSpacing(0);
-  outer->setContentsMargins(0, 0, 0, 0);
+  outer->setSpacing(PJ::theme::space(theme::Space::None));
+  outer->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
 
   auto add_button = [this, outer](const char* object_name, const char* icon_path, const char* tooltip) -> SvgButton* {
     auto* btn = new SvgButton(ui_->globalToolbarWidget);
@@ -4149,7 +5134,7 @@ void MainWindow::buildGlobalToolbar() {
   // buttonTimeTracker cycles through 3 pre-rendered PNG icons by state, so it
   // skips the theme-tinted LoadSvg path baked into add_button. Built inline.
   button_time_tracker_ = new QToolButton(ui_->globalToolbarWidget);
-  button_time_tracker_->setObjectName(QStringLiteral("buttonTimeTracker"));
+  button_time_tracker_->setObjectName(u"buttonTimeTracker"_s);
   button_time_tracker_->setFocusPolicy(Qt::NoFocus);
   button_time_tracker_->setAutoRaise(true);
   button_time_tracker_->setFixedSize(24, 24);
@@ -4207,7 +5192,7 @@ void MainWindow::buildGlobalToolbar() {
     btn->setCheckable(true);
     btn->setChecked(initial_checked);
   };
-  make_checkable(button_link_, QSettings().value(QStringLiteral("MainWindow.buttonLink"), true).toBool());
+  make_checkable(button_link_, QSettings().value(u"MainWindow.buttonLink"_s, true).toBool());
   make_checkable(button_show_point_, show_points_);
   make_checkable(button_grid_, activate_grid_);
   make_checkable(button_ratio_, keep_ratio_);
@@ -4222,14 +5207,14 @@ void MainWindow::buildGlobalToolbar() {
     onUndoableChange();
   });
   connect(button_link_, &QToolButton::toggled, this, [](bool checked) {
-    QSettings().setValue(QStringLiteral("MainWindow.buttonLink"), checked);
+    QSettings().setValue(u"MainWindow.buttonLink"_s, checked);
   });
   connect(button_show_point_, &QToolButton::toggled, this, [this](bool checked) {
     if (applying_state_) {
       return;
     }
     show_points_ = checked;
-    QSettings().setValue(QStringLiteral("MainWindow.buttonShowpoint"), checked);
+    QSettings().setValue(u"MainWindow.buttonShowpoint"_s, checked);
     forEachPlot([checked](PlotWidget* plot) { plot->setShowPoints(checked); });
     applyShowPointsTo2DWidgets();
   });
@@ -4238,7 +5223,7 @@ void MainWindow::buildGlobalToolbar() {
       return;
     }
     activate_grid_ = checked;
-    QSettings().setValue(QStringLiteral("MainWindow.buttonActivateGrid"), checked);
+    QSettings().setValue(u"MainWindow.buttonActivateGrid"_s, checked);
     forEachPlot([checked](PlotWidget* plot) { plot->setGridVisible(checked); });
     syncFilterEditorPreviewDisplay();
     syncPanelPreviewDisplay();
@@ -4248,7 +5233,7 @@ void MainWindow::buildGlobalToolbar() {
       return;
     }
     dots_ = checked;
-    QSettings().setValue(QStringLiteral("MainWindow.buttonDots"), checked);
+    QSettings().setValue(u"MainWindow.buttonDots"_s, checked);
     forEachPlot([this](PlotWidget* plot) {
       applyDots(plot);
       plot->replot();
@@ -4260,7 +5245,7 @@ void MainWindow::buildGlobalToolbar() {
       return;
     }
     keep_ratio_ = checked;
-    QSettings().setValue(QStringLiteral("MainWindow.buttonRatio"), checked);
+    QSettings().setValue(u"MainWindow.buttonRatio"_s, checked);
     forEachPlot([checked](PlotWidget* plot) { plot->setKeepRatioXY(checked); });
   });
   // Session-only state — not persisted to QSettings, not in xmlSaveState.
@@ -4283,7 +5268,7 @@ void MainWindow::buildGlobalToolbar() {
     if (applying_state_) {
       return;
     }
-    QSettings().setValue(QStringLiteral("MainWindow.useTimeOffset"), checked);
+    QSettings().setValue(u"MainWindow.useTimeOffset"_s, checked);
     onUseTimeOffsetToggled(checked);
   });
 
@@ -4321,8 +5306,10 @@ void MainWindow::buildTimelineAlignRail() {
   if (outer == nullptr) {
     return;
   }
-  outer->setSpacing(0);
-  outer->setContentsMargins(0, 0, 0, 0);
+  outer->setSpacing(PJ::theme::space(theme::Space::None));
+  outer->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
 
   auto add_button = [this, outer](const char* object_name, const char* icon_path, const char* tooltip) -> QToolButton* {
     auto* btn = new SvgButton(ui_->timelineAlignRail);
@@ -4421,7 +5408,8 @@ void MainWindow::buildLocalToolbar() {
     // kept for widget-tree selectors; the chrome-metrics handler resizes it.
     auto* header = new SectionHeaderBand(heading, plot_config_page_);
     header->setObjectName(header_object_name);
-    header->setFixedHeight(chrome_metrics_.icon_size + chrome_metrics_.icon_padding);
+    header->onChromeMetricsChanged(chrome_metrics_);
+    connect(this, &MainWindow::chromeMetricsChanged, header, &SectionHeaderBand::onChromeMetricsChanged);
     outer->addWidget(header);
 
     // Icon strip: FlowLayout, spacing 0 so icons sit flush with each
@@ -4438,7 +5426,10 @@ void MainWindow::buildLocalToolbar() {
     QSizePolicy strip_policy(QSizePolicy::Preferred, QSizePolicy::Minimum);
     strip_policy.setHeightForWidth(true);
     strip->setSizePolicy(strip_policy);
-    auto* flow = new FlowLayout(strip, /*margin=*/0, /*h_spacing=*/0, /*v_spacing=*/0);
+    auto* flow = new FlowLayout(
+        strip, /*margin=*/PJ::theme::space(theme::Space::None),
+        /*h_spacing=*/PJ::theme::space(theme::Space::None),
+        /*v_spacing=*/PJ::theme::space(theme::Space::None));
     for (const auto& spec : specs) {
       auto* btn = new SvgButton(strip);
       btn->setObjectName(QString::fromLatin1(spec.object_name));
@@ -4453,7 +5444,7 @@ void MainWindow::buildLocalToolbar() {
   };
 
   curve_width_header_ = build_section(
-      tr("Curve Width"), QStringLiteral("widgetLabelCurveWidth"),
+      tr("Curve Width"), u"widgetLabelCurveWidth"_s,
       {
           {"globalWidth1_0", ":/resources/svg/line_width_1_0.svg", "Line width 1.0", on_width(1.0)},
           {"globalWidth1_5", ":/resources/svg/line_width_1_5.svg", "Line width 1.5", on_width(1.5)},
@@ -4487,7 +5478,7 @@ void MainWindow::buildLocalToolbar() {
   });
 
   curve_style_header_ = build_section(
-      tr("Curve Style"), QStringLiteral("widgetLabelCurveStyle"),
+      tr("Curve Style"), u"widgetLabelCurveStyle"_s,
       {
           {"globalStyleLines", ":/resources/svg/style_lines.svg", "Lines",
            on_style(static_cast<int>(PlotWidgetBase::kLines))},
@@ -4599,26 +5590,96 @@ void MainWindow::applyActivePlotStyle(int style) {
   onUndoableChange();
 }
 
+MainWindow::WrappedToolboxPanel MainWindow::wrapToolboxPanel(
+    QWidget* content, const QString& title, const std::function<void()>& on_close,
+    const std::function<void()>& on_migrate) {
+  auto* container = new QWidget;
+  container->setObjectName(QStringLiteral("toolboxPanelContainer"));
+  auto* column = new QVBoxLayout(container);
+  column->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  column->setSpacing(PJ::theme::space(theme::Space::None));
+
+  // Banner header (Surface::Banner): title far-left, close far-right — mirrors
+  // the PJ::Dialog title bar so a docked toolbox reads like every app dialog.
+  auto* banner = new QWidget(container);
+  banner->setObjectName(QStringLiteral("toolboxBanner"));
+  auto* row = new QHBoxLayout(banner);
+  // No left inset: the title leads via toolboxBannerTitle's own canonical
+  // padding-left (Tight), matching every other section band's leading.
+  row->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  row->setSpacing(PJ::theme::space(theme::Space::None));
+
+  auto* title_label = new QLabel(title, banner);
+  title_label->setObjectName(QStringLiteral("toolboxBannerTitle"));
+  row->addWidget(title_label);
+  row->addStretch(1);
+
+  // "Migrate to tab" pins the toolbox as a persistent central tab instead of
+  // the ephemeral chart-area takeover. Every toolbox gets it — the button is
+  // host chrome, so plugins need no awareness of the gesture. SvgButton
+  // self-retints on theme change, no wiring needed.
+  auto* migrate_button = new SvgButton(u":/resources/svg/tab_move.svg"_s, SvgButton::Size::kDefault, banner);
+  migrate_button->setObjectName(u"buttonMigrateTab"_s);
+  migrate_button->setCursor(Qt::PointingHandCursor);
+  migrate_button->setToolTip(tr("Move to a tab"));
+
+  auto* close_button = new QToolButton(banner);
+  close_button->setObjectName(QStringLiteral("buttonClose"));
+
+  // Banner + buttons ride the canonical band height so a docked toolbox
+  // reads at the same height as every section band and every chrome button,
+  // and rescales with the icon size. Seed from the current metrics, then keep
+  // in step via the chromeMetricsChanged broadcast.
+  const auto size_banner = [banner, migrate_button, close_button](const ChromeMetrics& metrics) {
+    banner->setFixedHeight(metrics.bandHeight());
+    migrate_button->setExtent(metrics.bandHeight(), metrics.icon_size);
+    close_button->setFixedSize(metrics.bandHeight(), metrics.bandHeight());
+    close_button->setIconSize(QSize(metrics.icon_size, metrics.icon_size));
+  };
+  size_banner(chrome_metrics_);
+  connect(this, &MainWindow::chromeMetricsChanged, banner, size_banner);
+
+  // Pinning strips the takeover-only banner buttons — the tab frame provides
+  // name + close. Owned here because only this function knows which banner
+  // widgets are takeover chrome.
+  const auto enter_pinned_chrome = [migrate_button, close_button]() {
+    migrate_button->hide();
+    close_button->hide();
+  };
+  connect(migrate_button, &QToolButton::clicked, this, [enter_pinned_chrome, on_migrate]() {
+    enter_pinned_chrome();
+    on_migrate();
+  });
+  row->addWidget(migrate_button);
+
+  close_button->setAutoRaise(true);
+  close_button->setFocusPolicy(Qt::NoFocus);
+  close_button->setCursor(Qt::PointingHandCursor);
+  close_button->setToolTip(tr("Close"));
+  const auto tint_close = [close_button](const QString& theme) {
+    close_button->setIcon(loadSvg(QStringLiteral(":/resources/svg/close_windows_light.svg"), theme));
+  };
+  tint_close(theme_->currentTheme());
+  connect(this, &MainWindow::stylesheetChanged, close_button, tint_close);
+  connect(close_button, &QToolButton::clicked, this, [on_close]() { on_close(); });
+  row->addWidget(close_button);
+
+  column->addWidget(banner);
+  column->addWidget(content, /*stretch=*/1);
+  return {.container = container, .enter_pinned_chrome = enter_pinned_chrome};
+}
+
 bool MainWindow::presentPanel(QWidget* panel) {
   if (panel == nullptr) {
     return false;
   }
   // A panel is already presented: dismiss it so launching a new toolbox/panel
-  // replaces the open one instead of refusing. For a toolbox panel, close its
-  // PanelEngine first (same teardown as the reject path) so its host/handle are
-  // released; restoreCentralArea() then swaps the chart back and clears the
-  // panel state, after which we present the new panel below. Non-toolbox panels
-  // (null engine) just restore.
-  if (current_panel_ != nullptr) {
-    PanelEngine* previous_engine = current_panel_engine_;
-    if (previous_engine != nullptr) {
-      previous_engine->close();
-    }
-    restoreCentralArea();
-    if (previous_engine != nullptr) {
-      previous_engine->deleteLater();
-    }
-  }
+  // replaces the open one instead of refusing.
+  dismissTakeoverPanel();
 
   // The chart area (ui_->tabbedPlotWidget) lives as a direct child of a
   // QSplitter in MainWindow.ui. Swap the panel into the chart's splitter slot
@@ -4660,32 +5721,57 @@ bool MainWindow::presentPanel(QWidget* panel) {
   return true;
 }
 
-void MainWindow::restoreCentralArea() {
+QWidget* MainWindow::releaseCentralPanel() {
   if (current_panel_ == nullptr) {
-    return;
+    return nullptr;
   }
   auto* splitter = qobject_cast<QSplitter*>(panel_parent_);
   if (splitter != nullptr && panel_layout_index_ >= 0) {
     // Swap the chart back into its slot; replaceWidget removes the panel and
-    // hands it back reparented out of the splitter (we delete it below).
+    // hands it back reparented out of the splitter.
     const QList<int> saved_sizes = splitter->sizes();
     splitter->replaceWidget(panel_layout_index_, ui_->tabbedPlotWidget);
     splitter->setSizes(saved_sizes);
   } else {
-    qWarning("MainWindow::restoreCentralArea: panel_parent_ is no longer a splitter; chart not restored to slot");
+    qWarning("MainWindow::releaseCentralPanel: panel_parent_ is no longer a splitter; chart not restored to slot");
   }
   ui_->tabbedPlotWidget->show();
-  current_panel_->hide();
-  current_panel_->setParent(nullptr);
-  current_panel_->deleteLater();
+  QWidget* released = current_panel_;
+  released->hide();
+  released->setParent(nullptr);
   current_panel_ = nullptr;
   filter_editor_origin_ = nullptr;  // no Filter Editor preview to drive once the panel is gone
-  // The engine (when this was a toolbox panel) is deleted by the caller that
-  // tore it down (the onCloseRequested handler or presentPanel's replace path);
-  // here we only drop our non-owning reference.
+  // The engine (when this was a toolbox panel) is owned by whoever tore the
+  // panel down (the onCloseRequested handler, presentPanel's replace path, or
+  // the migrate gesture); here we only drop our non-owning reference.
   current_panel_engine_ = nullptr;
   panel_layout_index_ = -1;
   panel_parent_ = nullptr;
+  return released;
+}
+
+void MainWindow::restoreCentralArea() {
+  if (QWidget* released = releaseCentralPanel()) {
+    released->deleteLater();
+  }
+}
+
+void MainWindow::dismissTakeoverPanel() {
+  if (current_panel_ == nullptr) {
+    return;
+  }
+  // For a toolbox panel, close its PanelEngine first (same teardown as the
+  // reject path) so its host/handle are released; restoreCentralArea() then
+  // swaps the chart back and clears the panel state. Non-toolbox panels
+  // (null engine) just restore.
+  PanelEngine* previous_engine = current_panel_engine_;
+  if (previous_engine != nullptr) {
+    previous_engine->close();
+  }
+  restoreCentralArea();
+  if (previous_engine != nullptr) {
+    previous_engine->deleteLater();
+  }
 }
 
 void MainWindow::openEmbeddedConsole() {
@@ -4696,24 +5782,56 @@ void MainWindow::openEmbeddedConsole() {
     return;
   }
   connect(view, &RasterStreamView::sessionEnded, this, [this]() { restoreCentralArea(); });
-  const QString dir = QCoreApplication::applicationDirPath() + QStringLiteral("/thirdparty/retro/");
-  QString helper = QStandardPaths::findExecutable(QStringLiteral("pj-raster-helper"), {dir});
+  const QString dir = QCoreApplication::applicationDirPath() + u"/thirdparty/retro/"_s;
+  QString helper = QStandardPaths::findExecutable(u"pj-raster-helper"_s, {dir});
   if (helper.isEmpty()) {
-    helper = dir + QStringLiteral("pj-raster-helper");
+    helper = dir + u"pj-raster-helper"_s;
   }
-  view->start(helper, dir + QStringLiteral("base.wad"));
+  view->start(helper, dir + u"base.wad"_s);
 }
 
-void MainWindow::launchToolbox(const QString& plugin_id, const QString& initial_config) {
+void MainWindow::launchToolbox(
+    const QString& plugin_id, const QString& initial_config, ToolboxLaunchTarget target, const QString& pin_tab_name) {
   // Surface every failure on the diagnostic channel (the same sink the toolbox's
   // own on_message uses below), not just stderr, so a user-initiated launch that
   // fails is visible in the UI instead of silently doing nothing.
   auto report_error = [this](const QString& source, const QString& detail) {
     if (diagnostic_history_ != nullptr) {
-      diagnostic_history_->record(DiagnosticLevel::kError, source, QStringLiteral("toolbox"), detail);
+      diagnostic_history_->record(DiagnosticLevel::kError, source, u"toolbox"_s, detail);
     }
     qWarning("MainWindow::launchToolbox: %s", qPrintable(detail));
   };
+
+  // 0. One live instance per toolbox id: launching an already-pinned toolbox
+  //    focuses its tab — dismissing any open takeover first, which would
+  //    otherwise hide the tab strip the focus lands in. (Takeover relaunches
+  //    keep the presentPanel replace semantics: the open panel is torn down
+  //    and the toolbox starts fresh.)
+  if (auto pinned_it = pinned_toolboxes_.constFind(plugin_id); pinned_it != pinned_toolboxes_.constEnd()) {
+    if (!pinned_it->container.isNull()) {
+      if (initial_config.isEmpty()) {
+        dismissTakeoverPanel();
+        ui_->tabbedPlotWidget->focusWidgetTab(pinned_it->container);
+        return;
+      }
+      // An in-place edit (non-empty initial_config) must reach loadConfig()
+      // BEFORE the dialog is built, which only a fresh instance can do:
+      // relaunch the pinned toolbox with the config, keeping its tab surface
+      // and (possibly renamed) label. Closing erases the registry entry, so
+      // the recursive call takes the normal build path.
+      const QString pinned_name = ui_->tabbedPlotWidget->widgetTabName(pinned_it->container);
+      ui_->tabbedPlotWidget->closeWidgetTab(pinned_it->container);
+      launchToolbox(plugin_id, initial_config, ToolboxLaunchTarget::kPinnedTab, pinned_name);
+      return;
+    }
+    pinned_toolboxes_.remove(plugin_id);
+  }
+  if (target == ToolboxLaunchTarget::kPinnedTab) {
+    // Pinning directly (layout restore): the takeover surface must not
+    // survive — it hides the tab strip the new tab lives in, and it may BE
+    // this same plugin, which must not end up with two live instances.
+    dismissTakeoverPanel();
+  }
 
   // 1. Find the toolbox in the catalog.
   const auto& toolboxes = session_->extensionCatalog().toolboxes();
@@ -4764,9 +5882,18 @@ void MainWindow::launchToolbox(const QString& plugin_id, const QString& initial_
   const std::string plugin_id_std = plugin_id.toStdString();
   callbacks.on_data_changed = [this, plugin_id_std](std::vector<DatasetId> ingested_datasets) {
     session_->catalogModel().rebuildFromDatastore();
+    // FileLoader parity: re-scan each ingested dataset's time reference. Without
+    // this the "use time offset" origin memo can stay pinned at the 0 it
+    // acquired before any data existed (setUseTimeOffset queries
+    // globalTimeReference() eagerly), so cloud-imported series keep an ABSOLUTE
+    // epoch axis and the t0 toggle looks dead — files never hit it because the
+    // file loader always refreshes.
+    for (const DatasetId id : ingested_datasets) {
+      session_->sessionManager().refreshDatasetTimeReference(id);
+    }
     // Bridge ingested kFrameTransforms object topics into the 3D scene's TF
-    // buffers — the SAME step the file loader does (FileLoader.cpp ~713-727).
-    // Without it a toolbox/cloud dataset registers its /tf object topic in the
+    // buffers — the SAME step the file loader does. Without it a toolbox/cloud
+    // dataset registers its /tf object topic in the
     // ObjectStore but the per-dataset TransformBuffer stays empty, so the 3D
     // frame dropdown is blank and pointclouds (which resolve through TF) never
     // render. Runs AFTER the catalog rebuild so the object topics + their
@@ -4814,7 +5941,7 @@ void MainWindow::launchToolbox(const QString& plugin_id, const QString& initial_
     } else if (level == PJ_TOOLBOX_MESSAGE_WARNING) {
       diag = DiagnosticLevel::kWarning;
     }
-    diagnostic_history_->record(diag, source, QStringLiteral("toolbox"), QString::fromStdString(message));
+    diagnostic_history_->record(diag, source, u"toolbox"_s, QString::fromStdString(message));
   };
 
   // Parser-ingest deps: the plugin catalog for ensureParserBinding lookups and
@@ -4895,6 +6022,15 @@ void MainWindow::launchToolbox(const QString& plugin_id, const QString& initial_
     child->setAcceptDrops(false);
   }
 
+  // A plugin .ui's SectionHeaderBand (e.g. the FFT "Frequencies" band) is
+  // inflated by QUiLoader at the widget default height and has no wiring to the
+  // app. Route the chrome-metrics broadcast into it so it matches every other
+  // section band and the toolbox banner above, and rescales with the icon size.
+  for (auto* band : panel->findChildren<SectionHeaderBand*>()) {
+    band->onChromeMetricsChanged(chrome_metrics_);
+    connect(this, &MainWindow::chromeMetricsChanged, band, &SectionHeaderBand::onChromeMetricsChanged);
+  }
+
   // 5. Close -> restore + teardown. The captured session keeps the services +
   //    plugin alive until the panel is gone; deleteLater defers the teardown
   //    (incl. the handle's worker-thread join) past any in-flight signals, and
@@ -4906,13 +6042,49 @@ void MainWindow::launchToolbox(const QString& plugin_id, const QString& initial_
     engine->deleteLater();
   });
 
-  // 6. Present in the chart area.
-  if (!presentPanel(panel)) {
+  // 6. Wrap the panel in the canonical Banner header (title left, migrate +
+  //    close right) and present it in the chart area. The banner close runs
+  //    the same host-initiated teardown as presentPanel's replace path; the
+  //    migrate button lifts the live panel out of the takeover and pins it as
+  //    a central tab. save_config keeps the plugin session alive while pinned
+  //    (the registry holds it) and reads its config for layout save.
+  auto save_config = [session]() -> QString {
+    std::string config_json;
+    if (session->handle == nullptr || !session->handle->saveConfig(config_json)) {
+      return {};
+    }
+    return QString::fromStdString(config_json);
+  };
+  const WrappedToolboxPanel wrapped = wrapToolboxPanel(
+      panel, source,
+      /*on_close=*/
+      [this, engine]() {
+        engine->close();
+        restoreCentralArea();
+        engine->deleteLater();
+      },
+      /*on_migrate=*/
+      [this, engine, plugin_id, source, save_config]() {
+        QWidget* released = releaseCentralPanel();
+        if (released == nullptr) {
+          return;
+        }
+        pinToolboxPanel(released, plugin_id, source, engine, save_config);
+      });
+
+  if (target == ToolboxLaunchTarget::kPinnedTab) {
+    wrapped.enter_pinned_chrome();
+    pinToolboxPanel(wrapped.container, plugin_id, pin_tab_name.isEmpty() ? source : pin_tab_name, engine, save_config);
+    QTimer::singleShot(250, this, [this]() { syncPanelPreviewDisplay(); });
+    return;
+  }
+  if (!presentPanel(wrapped.container)) {
     report_error(source, tr("Cannot show '%1': another panel is already open").arg(source));
-    // presentPanel did not parent `panel` on the reject path, and the engine keeps
-    // only a non-owning QPointer to it, so it would leak unless we delete it here.
+    // presentPanel did not parent the container on the reject path, and the engine
+    // keeps only a non-owning QPointer to the inner panel, so delete the wrapper
+    // (which owns `panel`) here to avoid a leak.
     engine->close();
-    panel->deleteLater();
+    wrapped.container->deleteLater();
     engine->deleteLater();
     return;
   }
@@ -4922,6 +6094,114 @@ void MainWindow::launchToolbox(const QString& plugin_id, const QString& initial_
   // Apply the app's grid/curve-style/width to the panel's embedded PlotWidget once
   // the panel engine has built it (deferred: the plot is created on the first tick).
   QTimer::singleShot(250, this, [this]() { syncPanelPreviewDisplay(); });
+}
+
+void MainWindow::pinToolboxPanel(
+    QWidget* container, const QString& plugin_id, const QString& title, PanelEngine* engine,
+    std::function<QString()> save_config) {
+  pinned_toolboxes_.insert(
+      plugin_id, PinnedToolbox{.container = container, .engine = engine, .save_config = std::move(save_config)});
+
+  // A plugin-initiated requestClose (e.g. the toolbox's own Close button)
+  // must now close the TAB, funnelling into the same on_close teardown as
+  // the tab's X — not the takeover restore path this engine was wired with
+  // at launch. Re-entrant double-teardown is harmless: PanelEngine::close()
+  // is idempotent, deleteLater coalesces, and the registry erase is a no-op
+  // the second time.
+  QPointer<QWidget> container_guard(container);
+  engine->onCloseRequested([this, container_guard](const std::string& /*reason*/) {
+    if (!container_guard.isNull()) {
+      ui_->tabbedPlotWidget->closeWidgetTab(container_guard);
+    }
+  });
+
+  QPointer<PanelEngine> engine_guard(engine);
+  ui_->tabbedPlotWidget->addWidgetTab(title, container, [this, plugin_id, engine_guard]() {
+    // Quiesce the plugin BEFORE dropping the registry entry: the entry's
+    // save_config owns the PanelSession, and close() reaches plugin code
+    // through a borrowed handle — the session must still be alive here, not
+    // kept so only incidentally by the migrate-button connection's capture.
+    if (!engine_guard.isNull()) {
+      engine_guard->close();
+      engine_guard->deleteLater();
+    }
+    pinned_toolboxes_.remove(plugin_id);
+  });
+}
+
+QDomElement MainWindow::savePinnedToolboxes(QDomDocument& doc) const {
+  QDomElement root = doc.createElement(u"pinned_toolboxes"_s);
+  // Deterministic order (QHash iteration is not) so identical workspaces
+  // produce identical layout files.
+  QStringList plugin_ids = pinned_toolboxes_.keys();
+  plugin_ids.sort();
+  for (const QString& plugin_id : plugin_ids) {
+    const auto toolbox_it = pinned_toolboxes_.constFind(plugin_id);
+    if (toolbox_it == pinned_toolboxes_.constEnd() || toolbox_it->container.isNull()) {
+      continue;
+    }
+    QDomElement element = doc.createElement(u"toolbox"_s);
+    element.setAttribute(u"plugin_id"_s, plugin_id);
+    // The tab strip's label is the sole store of a user rename (same
+    // in-place rename plot tabs have), so capture it here.
+    const QString tab_name = ui_->tabbedPlotWidget->widgetTabName(toolbox_it->container);
+    if (!tab_name.isEmpty()) {
+      element.setAttribute(u"tab_name"_s, tab_name);
+    }
+    if (toolbox_it->save_config) {
+      const QString config = toolbox_it->save_config();
+      if (!config.isEmpty()) {
+        // CDATA (with ]]> splitting), matching every other plugin-JSON-in-
+        // layout site — a plain text node entity-escapes on each round trip.
+        layout_xml::appendJsonAsCdata(doc, element, config);
+      }
+    }
+    root.appendChild(element);
+  }
+  return root;
+}
+
+void MainWindow::restorePinnedToolboxes(const QDomElement& root) {
+  // The layout's pinned set REPLACES the live one — a layout saved without
+  // pinned toolboxes restores to none.
+  closeAllPinnedToolboxTabs();
+  const QDomElement pinned = root.firstChildElement(u"pinned_toolboxes"_s);
+  for (QDomElement element = pinned.firstChildElement(u"toolbox"_s); !element.isNull();
+       element = element.nextSiblingElement(u"toolbox"_s)) {
+    const QString plugin_id = element.attribute(u"plugin_id"_s);
+    if (plugin_id.isEmpty()) {
+      continue;
+    }
+    // A plugin missing from the catalog surfaces launchToolbox's own
+    // diagnostic and the tab is simply dropped (no placeholder). The saved
+    // rename rides along so the tab is born with it (directCdataText, not
+    // QDomElement::text(): the latter recurses into any future child
+    // elements).
+    launchToolbox(
+        plugin_id, layout_xml::directCdataText(element), ToolboxLaunchTarget::kPinnedTab,
+        element.attribute(u"tab_name"_s));
+  }
+}
+
+void MainWindow::closeAllPinnedToolboxTabs() {
+  // Iterate a copy: each close mutates the registry through its on_close.
+  const auto pinned = pinned_toolboxes_;
+  for (const PinnedToolbox& toolbox : pinned) {
+    QWidget* container = toolbox.container.data();
+    if (container != nullptr) {
+      ui_->tabbedPlotWidget->closeWidgetTab(container);
+    }
+    // Bulk closes (layout replace, shutdown) finish the teardown
+    // SYNCHRONOUSLY instead of via the deferred deletes closeWidgetTab
+    // scheduled: the engine must be gone and the container's captured
+    // PanelSession released before a relaunch of the same plugin binds a
+    // fresh instance (exclusive plugin resources), and before ~MainWindow
+    // destroys the DataEngine the session writes into. The pending
+    // deleteLater events are cancelled by the direct deletes.
+    delete toolbox.engine.data();
+    delete container;
+  }
+  pinned_toolboxes_.clear();  // drop any stale entries whose widget died
 }
 
 }  // namespace PJ

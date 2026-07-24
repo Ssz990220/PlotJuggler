@@ -3,6 +3,7 @@
 
 #include "TitleBar.h"
 
+#include <QAbstractButton>
 #include <QAction>
 #include <QEvent>
 #include <QLabel>
@@ -11,11 +12,12 @@
 #include <QTimer>
 #include <QToolButton>
 #include <QWindow>
-#include <array>
+#include <vector>
 
 #include "pj_widgets/SvgUtil.h"
 #include "ui/DiagnosticsPopup.h"
 #include "ui_TitleBar.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -56,11 +58,11 @@ TitleBar::TitleBar(QWidget* parent) : QWidget(parent), ui_(new Ui::TitleBar) {
   help_menu_ = new QMenu(tr("&Help"), this);
   ui_->menuBar->setNativeMenuBar(false);
   for (QMenu* menu : {file_menu_, toolbox_menu_, help_menu_}) {
-    menu->setObjectName(QStringLiteral("PJMenu"));
+    menu->setObjectName(u"PJMenu"_s);
     ui_->menuBar->addMenu(menu);
   }
   diagnostics_popup_ = new DiagnosticsPopup(this);
-  diagnostics_popup_->setObjectName(QStringLiteral("DiagnosticsPopup"));
+  diagnostics_popup_->setObjectName(u"DiagnosticsPopup"_s);
   connect(diagnostics_popup_, &DiagnosticsPopup::diagnosticActivated, this, &TitleBar::diagnosticActivated);
 
   // Bell flash: 5-s single-shot timer flips the icon back to its
@@ -115,8 +117,11 @@ void TitleBar::addRightClusterWidget(QWidget* widget) {
   }
   // Appends to the bell's group so the added widgets share its tight
   // intra-group spacing; the spacer + outer layout spacing keep the
-  // group visually separate from the window controls.
+  // group visually separate from the window controls. Re-apply the
+  // metrics so the new widget is sized to the chrome extent immediately
+  // (callers add widgets after the initial metrics broadcast).
   ui_->rightClusterLayout->addWidget(widget);
+  applyIconMetrics();
 }
 
 void TitleBar::setCenterWidget(QWidget* widget) {
@@ -169,9 +174,9 @@ void TitleBar::onChromeMetricsChanged(const ChromeMetrics& metrics) {
 
 void TitleBar::applyIconMetrics() {
   const int button_extent = chrome_metrics_.icon_size + chrome_metrics_.icon_padding;
-  // Bar = button + 2 * layout_padding + 1 (the QSS bottom border draws
-  // inside our geometry, so the inner content rect is bar_height - 1).
-  const int bar_height = button_extent + (2 * chrome_metrics_.layout_padding) + 1;
+  // Canonical chrome height (the QSS bottom border draws inside our geometry, so
+  // the inner content rect is bar_height - 1). Dialog chrome uses the same call.
+  const int bar_height = chrome_metrics_.titleBarHeight();
   setMinimumHeight(bar_height);
   setMaximumHeight(bar_height);
   setFixedHeight(bar_height);
@@ -182,11 +187,18 @@ void TitleBar::applyIconMetrics() {
     layout->setSpacing(chrome_metrics_.layout_spacing);
   }
 
-  // Square chrome buttons — fixed extent on both axes.
+  // Square chrome buttons — fixed extent on both axes. The right cluster
+  // is sized as a group (bell + every widget added via
+  // addRightClusterWidget, e.g. the panel-toggle buttons) so all of them
+  // share the bell's extent and sit centered in the bar like it does.
   const QSize icon_sz(chrome_metrics_.icon_size, chrome_metrics_.icon_size);
-  const std::array<QToolButton*, 4> square_buttons{
-      ui_->buttonNotifications, ui_->buttonMinimize, ui_->buttonMaximize, ui_->buttonClose};
-  for (QToolButton* btn : square_buttons) {
+  std::vector<QAbstractButton*> square_buttons{ui_->buttonMinimize, ui_->buttonMaximize, ui_->buttonClose};
+  for (int i = 0; i < ui_->rightClusterLayout->count(); ++i) {
+    if (auto* btn = qobject_cast<QAbstractButton*>(ui_->rightClusterLayout->itemAt(i)->widget())) {
+      square_buttons.push_back(btn);
+    }
+  }
+  for (QAbstractButton* btn : square_buttons) {
     btn->setMinimumSize(button_extent, button_extent);
     btn->setMaximumSize(button_extent, button_extent);
     btn->setIconSize(icon_sz);
@@ -194,9 +206,10 @@ void TitleBar::applyIconMetrics() {
   ui_->appIcon->setMinimumHeight(button_extent);
   ui_->appIcon->setMaximumHeight(button_extent);
   ui_->appIcon->setIconSize(icon_sz);
-  // The menubar tracks the chrome-button height so its highlight rect
-  // matches the buttons around it.
-  ui_->menuBar->setFixedHeight(button_extent);
+  // The menubar keeps its natural (content) height, capped at the chrome
+  // extent, and is vertically centered by the layout — stretching it to
+  // the row height left its item highlights hanging from the top edge.
+  ui_->menuBar->setMaximumHeight(button_extent);
 
   // Tool buttons hosted in the center widget (the ingest stop button) hug their
   // icon exactly — no surrounding chrome padding — so they sit flush against the

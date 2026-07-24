@@ -8,13 +8,14 @@
 #include <QRegularExpression>
 #include <QStorageInfo>
 #include <QUuid>
-#include <QVersionNumber>
 #include <filesystem>
 
 #include "pj_marketplace/download_manager.hpp"
 #include "pj_marketplace/extension_manager.hpp"
 #include "pj_marketplace/platform_utils.hpp"
+#include "pj_marketplace/version_compare.hpp"
 #include "pj_plugins/host/plugin_catalog.hpp"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -107,20 +108,20 @@ DirectoryDiscovery discoverExtensionDirectory(const QString& ext_root) {
       result.error = QString::fromStdString(scan->diagnostics.front().message);
       return result;
     }
-    result.error = QStringLiteral("no valid plugin DSO found");
+    result.error = u"no valid plugin DSO found"_s;
     return result;
   }
 
   const PluginDescriptor& first = scan->plugins.front();
   for (const PluginDescriptor& descriptor : scan->plugins) {
     if (descriptor.id != first.id) {
-      result.error = QStringLiteral("multiple embedded plugin ids in one extension directory: \"%1\" and \"%2\"")
-                         .arg(QString::fromStdString(first.id), QString::fromStdString(descriptor.id));
+      result.error = u"multiple embedded plugin ids in one extension directory: \"%1\" and \"%2\""_s.arg(
+          QString::fromStdString(first.id), QString::fromStdString(descriptor.id));
       return result;
     }
     if (descriptor.version != first.version) {
-      result.error = QStringLiteral("multiple embedded plugin versions in one extension directory for \"%1\"")
-                         .arg(QString::fromStdString(first.id));
+      result.error = u"multiple embedded plugin versions in one extension directory for \"%1\""_s.arg(
+          QString::fromStdString(first.id));
       return result;
     }
   }
@@ -196,7 +197,7 @@ PendingInstallIntent readPendingInstallIntent(const QString& root) {
     intent.error = QString("Staged install registry intent has unsafe id: %1").arg(id_error);
     return intent;
   }
-  static const QRegularExpression k_version_re(QStringLiteral("^[0-9A-Za-z._+-]+$"));
+  static const QRegularExpression k_version_re(u"^[0-9A-Za-z._+-]+$"_s);
   if (!k_version_re.match(version).hasMatch()) {
     intent.error = QString("Staged install registry intent has unsafe version \"%1\"").arg(version);
     return intent;
@@ -295,9 +296,14 @@ void ExtensionManager::doInstall(const Extension& ext, bool staging, bool allow_
   const QString dest_dir = staging ? pending_dir_ : extensions_dir_;
   QDir().mkpath(dest_dir);
   const QString transaction_root = makeTransactionRoot(dest_dir, ext.id);
+  // Create the transaction root eagerly so the refresh guard has a real path
+  // to protect from the moment install() returns — otherwise a Refresh that
+  // fires during the download window would find no directory to skip and the
+  // guard would appear untested even though it is exercised in practice.
+  QDir().mkpath(transaction_root);
 
   pending_id_ = ext.id;
-  pending_extract_dir_ = transaction_root;
+  pending_extract_dir_ = QDir::cleanPath(transaction_root);
   emit installStarted(ext.id);
 
   dl_progress_conn_ =
@@ -318,6 +324,14 @@ void ExtensionManager::doInstall(const Extension& ext, bool staging, bool allow_
 
         const int percent = (total > 0) ? static_cast<int>(received * 100 / total) : 0;
         emit installProgress(pending_id_, percent);
+      });
+
+  dl_phase_conn_ =
+      connect(downloader_, &DownloadManager::phaseChanged, this, [this](int id, DownloadManager::WorkPhase phase) {
+        if (id != pending_op_id_) {
+          return;
+        }
+        emit installPhase(pending_id_, phase);
       });
 
   dl_finished_conn_ =
@@ -377,6 +391,9 @@ void ExtensionManager::doInstall(const Extension& ext, bool staging, bool allow_
         }
 
         const QString dst = extRoot(extensions_dir_, ext.id);
+        // Replace any prior copy of this id stored under a different directory
+        // name so we don't leave a duplicate alongside the promoted "<id>" dir.
+        replaceConflictingInstallDirs(ext.id, dst);
         if (QDir(dst).exists() && !QDir(dst).removeRecursively()) {
           fail_after_extraction(QString("Could not replace existing extension directory \"%1\"").arg(dst));
           return;
@@ -451,6 +468,20 @@ void ExtensionManager::uninstall(const QString& extension_id) {
     return;
   }
 
+  // A core extension AT its bundled version cannot be removed — it ships with the
+  // application. One updated ABOVE its bundled version can be reverted (the UI's
+  // "downgrade to bundled"): allow the uninstall here, and the seed restores the
+  // bundled version on the next launch. This is the backend guard mirroring the UI.
+  if (isBundled(extension_id)) {
+    if (compareSemver(installed_[extension_id].version.toStdString(), bundledVersion(extension_id).toStdString()) <=
+        0) {
+      emitUninstallFailure(
+          extension_id,
+          QString("Extension \"%1\" ships with the application and cannot be uninstalled").arg(extension_id));
+      return;
+    }
+  }
+
   const QString dir_path = installed_[extension_id].path;
 
   if (!QDir(dir_path).removeRecursively()) {
@@ -473,6 +504,37 @@ void ExtensionManager::uninstall(const QString& extension_id) {
   emit uninstallFinished(extension_id, true);
 }
 
+void ExtensionManager::downgradeToBundled(const QString& extension_id) {
+  refreshInstalledFromDisk();
+
+  if (!installed_.contains(extension_id)) {
+    emitUninstallFailure(extension_id, QString("Extension \"%1\" is not installed").arg(extension_id));
+    return;
+  }
+  if (!isBundled(extension_id)) {
+    emitUninstallFailure(
+        extension_id, QString("Extension \"%1\" does not ship with the application").arg(extension_id));
+    return;
+  }
+  if (compareSemver(installed_[extension_id].version.toStdString(), bundledVersion(extension_id).toStdString()) <= 0) {
+    emitUninstallFailure(extension_id, QString("Extension \"%1\" is already at its bundled version").arg(extension_id));
+    return;
+  }
+
+  // Stage the removal of the updated copy — do NOT delete now: an immediate remove
+  // would hot-swap the loaded DSO and the card would read "Install". Mark it for
+  // restart cleanup so the card shows "Needs Restart"; on the next launch
+  // applyPendingUninstalls removes it and the host seed restores the bundled
+  // version (always compatible, since it ships with the app).
+  const QString dir_path = installed_[extension_id].path;
+  if (!schedulePendingUninstall(dir_path)) {
+    emitUninstallFailure(extension_id, QString("Could not stage the downgrade of \"%1\"").arg(extension_id));
+    return;
+  }
+  installed_.remove(extension_id);
+  emit downgradePendingRestart(extension_id);
+}
+
 void ExtensionManager::update(const Extension& ext) {
   refreshInstalledFromDisk();
 
@@ -489,7 +551,57 @@ void ExtensionManager::update(const Extension& ext) {
     return;
   }
 
+  // An update already staged for this id — install OR uninstall — would just
+  // be re-downloaded and re-staged on top of the pending marker; the installed
+  // version does not change until restart, so a caller relying on hasUpdate()
+  // can ask again. Refuse rather than redo the work. Both markers matter: on
+  // Windows the uninstall path stages the removal, so a subsequent update()
+  // during that window would resurrect an id the user just asked to remove.
+  if (hasPendingInstall(ext.id) || hasPendingUninstall(ext.id)) {
+    emitInstallFailure(ext.id, QString("Update for \"%1\" is already staged; restart to apply it").arg(ext.id));
+    return;
+  }
+
   doInstall(ext, /*staging=*/true, /*allow_existing=*/true);
+}
+
+void ExtensionManager::replaceConflictingInstallDirs(const QString& id, const QString& keep_dir) {
+  const QString keep = QDir::cleanPath(keep_dir);
+  const QString pending_clean = QDir::cleanPath(pending_dir_);
+  const QDir dir(extensions_dir_);
+  for (const QFileInfo& entry : dir.entryInfoList(QDir::Dirs | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot)) {
+    const QString root = entry.absoluteFilePath();
+    const QString clean = QDir::cleanPath(root);
+    // Never touch the promotion target itself, the staging area, or transaction/
+    // quarantine scratch dirs.
+    if (clean == keep || clean == pending_clean) {
+      continue;
+    }
+    const QString name = entry.fileName();
+    if (isTransactionDirectoryName(name) || name.startsWith(kQuarantinePrefix)) {
+      continue;
+    }
+    const DirectoryDiscovery item = discoverExtensionDirectory(root);
+    if (!item.found_plugin || item.record.id != id) {
+      continue;  // ids are unique per extension, so only a true prior copy matches
+    }
+    // Move the shadow copy into the backup area (kept for recovery); fall back to
+    // outright removal if the rename fails. Either way it must leave extensions_dir_
+    // so the promoted "<id>" directory becomes the sole install of this extension.
+    QDir().mkpath(PlatformUtils::backupDir());
+    const QString backup = QDir(PlatformUtils::backupDir())
+                               .absoluteFilePath(id + "-replaced-" + QUuid::createUuid().toString(QUuid::Id128));
+    if (QDir().rename(root, backup)) {
+      qWarning(
+          "ExtensionManager: replaced prior install of '%s' at '%s' (backed up to '%s')", qPrintable(id),
+          qPrintable(root), qPrintable(backup));
+    } else if (QDir(root).removeRecursively()) {
+      qWarning("ExtensionManager: removed prior install of '%s' at '%s'", qPrintable(id), qPrintable(root));
+    } else {
+      qWarning("ExtensionManager: could not remove prior install of '%s' at '%s'", qPrintable(id), qPrintable(root));
+    }
+    installed_.remove(id);
+  }
 }
 
 void ExtensionManager::applyPendingInstalls() {
@@ -557,6 +669,10 @@ void ExtensionManager::applyPendingInstalls() {
     }
 
     const QString dst = extRoot(extensions_dir_, intent.id);
+
+    // Replace any prior copy of this id stored under a different directory name
+    // (e.g. a bundled plugin) so promoting to "<id>" does not leave a duplicate.
+    replaceConflictingInstallDirs(intent.id, dst);
 
     // Back up the existing install before the staged version takes its place:
     // move the current dir aside first, so promoting an update never silently
@@ -637,6 +753,22 @@ bool ExtensionManager::isInstalled(const QString& id) const {
   return installed_.contains(id);
 }
 
+void ExtensionManager::setBundledVersions(const QMap<QString, QString>& id_to_version) {
+  bundled_versions_ = id_to_version;
+}
+
+bool ExtensionManager::isBundled(const QString& id) const {
+  // "Core" = the id ships with the application. The host computes the bundled
+  // id -> version map from the bundled plugin directory and hands it in via
+  // setBundledVersions(); no per-folder marker. Empty (standalone marketplace app
+  // or a --plugin-dir run) means nothing is core.
+  return bundled_versions_.contains(id);
+}
+
+QString ExtensionManager::bundledVersion(const QString& id) const {
+  return bundled_versions_.value(id);
+}
+
 bool ExtensionManager::hasPendingInstall(const QString& id) const {
   if (!invalidExtensionIdReason(id).isEmpty()) {
     return false;
@@ -659,9 +791,7 @@ bool ExtensionManager::hasNewerInstalledVersion(const Extension& ext) const {
     return false;
   }
 
-  const QVersionNumber installed_ver = QVersionNumber::fromString(installed_[ext.id].version);
-  const QVersionNumber registry_ver = QVersionNumber::fromString(ext.version);
-  return QVersionNumber::compare(installed_ver, registry_ver) > 0;
+  return compareSemver(installed_[ext.id].version.toStdString(), ext.version.toStdString()) > 0;
 }
 
 bool ExtensionManager::hasUpdate(const Extension& ext) const {
@@ -669,9 +799,7 @@ bool ExtensionManager::hasUpdate(const Extension& ext) const {
     return false;
   }
 
-  const QVersionNumber installed_ver = QVersionNumber::fromString(installed_[ext.id].version);
-  const QVersionNumber latest = QVersionNumber::fromString(ext.version);
-  return QVersionNumber::compare(latest, installed_ver) > 0;
+  return compareSemver(ext.version.toStdString(), installed_[ext.id].version.toStdString()) > 0;
 }
 
 QMap<QString, InstalledExtension> ExtensionManager::installedExtensions() const {
@@ -684,6 +812,15 @@ QList<ExtensionDiagnostic> ExtensionManager::diagnostics() const {
 
 void ExtensionManager::clearDiagnostics() {
   diagnostics_.clear();
+  diagnostics_surfaced_ = diagnostics_recorded_;
+}
+
+bool ExtensionManager::hasUnsurfacedDiagnostics() const {
+  return !diagnostics_.isEmpty() && diagnostics_recorded_ > diagnostics_surfaced_;
+}
+
+void ExtensionManager::markDiagnosticsSurfaced() {
+  diagnostics_surfaced_ = diagnostics_recorded_;
 }
 
 // ---------------------------------------------------------------------------
@@ -692,6 +829,7 @@ void ExtensionManager::clearDiagnostics() {
 
 void ExtensionManager::disconnectDlConns() {
   disconnect(dl_progress_conn_);
+  disconnect(dl_phase_conn_);
   disconnect(dl_finished_conn_);
   disconnect(dl_failed_conn_);
   disconnect(dl_cancelled_conn_);
@@ -707,6 +845,7 @@ bool ExtensionManager::schedulePendingUninstall(const QString& path) {
 
 void ExtensionManager::reportDiagnostic(const QString& id, const QString& message, bool is_error) {
   diagnostics_.append(ExtensionDiagnostic{id, message, is_error, QDateTime::currentDateTimeUtc()});
+  ++diagnostics_recorded_;
   while (diagnostics_.size() > kMaxDiagnostics) {
     diagnostics_.removeFirst();
   }
@@ -752,7 +891,16 @@ void ExtensionManager::refreshInstalledFromDisk() {
   for (const QFileInfo& entry : dir.entryInfoList(QDir::Dirs | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot)) {
     const QString root = entry.absoluteFilePath();
     if (isTransactionDirectoryName(entry.fileName())) {
-      removeDirectoryIfSet(root);
+      // Skip the transaction dir of an install that is still in progress —
+      // the worker is writing into it in the background, and its completion
+      // handler owns cleanup. Wiping it here (triggered by Refresh, or by
+      // starting an install/uninstall/update of a different plugin) would
+      // race with the worker and truncate a partial install into a broken
+      // final state. Both sides are normalized so the guard tolerates
+      // trailing slashes, `..` segments, and case-insensitive filesystems.
+      if (QDir::cleanPath(root) != pending_extract_dir_) {
+        removeDirectoryIfSet(root);
+      }
       continue;
     }
     if (QFile::exists(root + "/" + kPendingUninstallMarker)) {
@@ -765,10 +913,19 @@ void ExtensionManager::refreshInstalledFromDisk() {
       continue;
     }
     if (discovered.contains(item.record.id)) {
+      // Two directories embed the same id (e.g. a promoted update left alongside
+      // a differently-named prior copy). Keep the HIGHEST version rather than
+      // whichever the directory scan happened to hit first, so the resolution is
+      // deterministic and an update never loses to a stale lower-version copy.
+      if (compareSemver(item.record.version.toStdString(), discovered[item.record.id].version.toStdString()) <= 0) {
+        qWarning(
+            "ExtensionManager: duplicate embedded id '%s' in '%s'; keeping higher version already found",
+            qPrintable(item.record.id), qPrintable(root));
+        continue;
+      }
       qWarning(
-          "ExtensionManager: duplicate embedded extension id '%s' in '%s'; keeping first", qPrintable(item.record.id),
-          qPrintable(root));
-      continue;
+          "ExtensionManager: duplicate embedded id '%s'; '%s' supersedes the lower-version copy",
+          qPrintable(item.record.id), qPrintable(root));
     }
     discovered[item.record.id] = item.record;
   }

@@ -23,7 +23,9 @@
 #include "pj_scene2d_core/image_pipeline_source.h"
 #include "pj_scene2d_core/media_source.h"
 #include "pj_scene2d_widgets/scene2d_pipelines.h"
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/ToggleSwitch.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -38,7 +40,7 @@ bool topicUsesCanonicalImageCodec(const std::string& metadata_json) {
     }
     return false;
   }
-  return doc.object().value(QStringLiteral("image_codec")).toString() == QStringLiteral("pj_image_v1");
+  return doc.object().value(u"image_codec"_s).toString() == "pj_image_v1"_L1;
 }
 
 // Build a frame_id -> CameraInfo map by running each "<ns>/camera_info" topic's
@@ -92,7 +94,7 @@ std::unordered_map<std::string, sdk::CameraInfo> collectCameraInfoByFrameId(
 
 ImageLayer::ImageLayer(
     ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& display_name, QObject* parent)
-    : Scene2DLayer(topic_id, object_type, display_name, QStringLiteral("Image"), parent) {}
+    : Scene2DLayer(topic_id, object_type, display_name, u"Image"_s, parent) {}
 
 std::unique_ptr<MediaSource> ImageLayer::createMediaSource(const SceneLayerContext& ctx) {
   auto* session = ctx.session;
@@ -141,7 +143,9 @@ std::unique_ptr<MediaSource> ImageLayer::createMediaSource(const SceneLayerConte
 QWidget* ImageLayer::createConfigWidget(QWidget* parent) {
   auto* widget = new QWidget(parent);
   auto* layout = new QFormLayout(widget);
-  layout->setContentsMargins(0, 0, 0, 0);
+  layout->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
 
   auto* rectify = new ToggleSwitch(widget);
   rectify->setChecked(rectify_enabled_, /*animate=*/false);  // snap to state without emitting toggled
@@ -165,6 +169,7 @@ void ImageLayer::setRectifyEnabled(bool enabled) {
   }
   rectify_enabled_ = enabled;
   applyOptions();
+  emit configurationChanged();
 }
 
 void ImageLayer::applyOptions() {
@@ -182,17 +187,21 @@ void ImageLayer::applyOptions() {
 }
 
 void ImageLayer::saveOptions(QDomElement& element) const {
-  element.setAttribute(
-      QStringLiteral("rectify_enabled"), rectify_enabled_ ? QStringLiteral("true") : QStringLiteral("false"));
+  element.setAttribute(u"rectify_enabled"_s, rectify_enabled_ ? u"true"_s : u"false"_s);
 }
 
 bool ImageLayer::loadOptions(const QDomElement& element) {
   // Absent attribute (layout saved before this toggle existed) keeps the current
   // default (true) -> rectification stays on, preserving the historical behaviour.
-  rectify_enabled_ = element.attribute(
-                         QStringLiteral("rectify_enabled"),
-                         rectify_enabled_ ? QStringLiteral("true") : QStringLiteral("false")) == QStringLiteral("true");
-  applyOptions();
+  const QString saved = element.attribute(u"rectify_enabled"_s, rectify_enabled_ ? u"true"_s : u"false"_s);
+  if (saved != u"true"_s && saved != u"false"_s) {
+    return false;
+  }
+  const bool restored = saved == u"true"_s;
+  if (rectify_enabled_ != restored) {
+    rectify_enabled_ = restored;
+    applyOptions();
+  }
   return true;
 }
 

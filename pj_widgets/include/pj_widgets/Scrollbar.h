@@ -4,6 +4,9 @@
 #include <QColor>
 #include <QPointer>
 #include <QWidget>
+#include <functional>
+
+#include "pj_widgets/FrameworkTokens.h"
 
 class QAbstractScrollArea;
 class QGraphicsOpacityEffect;
@@ -22,18 +25,9 @@ inline constexpr double kHoverStripPx = 14.0;
 /// strip, in which case the normal hover path keeps it shown.
 inline constexpr int kScrollRevealHoldMs = 900;
 
-/// Default pill accent per theme. The app sets QPalette::Window per theme but
-/// never QPalette::Highlight, so trusting the highlight leaks the OS accent
-/// (e.g. Ubuntu/Yaru orange). We instead pick from these by window lightness.
-/// Light theme: the app's info-blue accent (QSS `accent_info` #148CD2).
-/// Dark theme: a soft pale grey.
-inline const QColor kPillAccentLight(0x14, 0x8C, 0xD2);
-inline const QColor kPillAccentDark(0xD0, 0xD0, 0xD0);
-
 /// Pick the default pill accent for the theme identified by `window_color`
-/// (QPalette::Window): a dark window (lightness < 128) yields kPillAccentDark,
-/// otherwise kPillAccentLight. Pure helper so the choice is unit-testable
-/// without a live widget/palette.
+/// (QPalette::Window). Pure helper so the choice is unit-testable without a
+/// live widget/palette.
 [[nodiscard]] QColor defaultAccent(const QColor& window_color);
 
 /// Handle geometry along the scroll axis: `pos` is the start offset in px
@@ -153,6 +147,10 @@ class Scrollbar : public QWidget {
     return click_to_scroll_;
   }
 
+ signals:
+  /// A user pill drag ended after changing the backing scrollbar.
+  void scrollChangeCommitted();
+
  protected:
   void paintEvent(QPaintEvent* event) override;
   bool eventFilter(QObject* watched, QEvent* event) override;
@@ -195,6 +193,20 @@ class Scrollbar : public QWidget {
   /// pill lives).
   bool pointInStrip(const QPoint& viewport_pos) const;
 
+  /// Drive the hover show/hide from a position already mapped into viewport
+  /// coordinates: reveal when inside the strip, hide when outside (unless a
+  /// scroll/interaction reveal is still holding the pill). Shared by the
+  /// viewport filter and the covering-child observers.
+  void applyHoverAt(const QPoint& viewport_pos);
+
+  /// Recursively enable mouse tracking on `widget` and install this overlay as
+  /// its event filter, so hover MouseMoves reach applyHoverAt() even when child
+  /// widgets fully cover the viewport (e.g. a QScrollArea packed with cards);
+  /// without it the pill would only ever reveal on scroll/click. New children
+  /// are picked up via QEvent::ChildAdded in eventFilter(). Observe-only — these
+  /// events are never consumed, so the widgets' own interaction is untouched.
+  void installHoverObserver(QWidget* widget);
+
   Qt::Orientation orientation_;
   QAbstractScrollArea* area_ = nullptr;
   // Cached viewport, held as a QPointer so it auto-nulls if the viewport is
@@ -227,6 +239,7 @@ class Scrollbar : public QWidget {
   // handle under the cursor first); when false only the handle is a drag target.
   // Opt-in (Timeline), so an overlay on foreign content never steals strip clicks.
   bool click_to_scroll_ = false;
+  long drag_origin_value_ = 0;
   long drag_start_value_ = 0;
   double drag_start_axis_px_ = 0.0;
 
@@ -239,5 +252,24 @@ class Scrollbar : public QWidget {
   // pill follows theme changes automatically.
   bool accent_overridden_ = false;
 };
+
+/// Attach canonical overlay pill scrollbars (PJ::Scrollbar) to every
+/// QAbstractScrollArea under `root`, in place of their native bars — the one
+/// call that gives an app window/dialog the same scroll pills the Timeline and
+/// plugin dialogs already use. Idempotent: each adapted area is tagged with a
+/// "pjScrollbarAttached" dynamic property, so re-calling after new views appear
+/// only pills the newcomers.
+///
+/// Per area it honours the shared conventions:
+///   - skips a combo-box's internal view and any transient popup item view;
+///   - skips an axis pinned to Qt::ScrollBarAlwaysOn (that axis keeps its
+///     draggable native bar); ScrollBarAsNeeded/AlwaysOff get a pill;
+///   - reads optional per-area "pjScrollbarAutoHide" (bool) / "pjScrollbarFadeMs"
+///     (int) dynamic properties to override the overlay defaults.
+///
+/// `skip`, when set, is an extra per-area veto (return true to leave an area's
+/// native bars untouched) — e.g. the dialog host vetoes its composite widgets'
+/// internal scroll areas.
+void attachPillScrollbars(QWidget* root, const std::function<bool(QAbstractScrollArea*)>& skip = {});
 
 }  // namespace PJ

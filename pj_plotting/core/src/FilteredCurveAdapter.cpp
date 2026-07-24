@@ -69,7 +69,10 @@ QRectF FilteredCurveAdapter::boundingRect() const {
 
 std::optional<Range<double>> FilteredCurveAdapter::visibleYRange(Range<double> /*x_range_sec*/) const {
   ensureFiltered();
-  if (filtered_.empty()) {
+  // Gate on the bounds being valid, not merely on having points: an all-NaN filter
+  // leaves points in filtered_ but no finite bounds (invalid rect), and filtered_y_range_
+  // is only meaningful when finite bounds were found.
+  if (!cached_bounding_rect_.isValid()) {
     return std::nullopt;
   }
   return filtered_y_range_;
@@ -141,17 +144,25 @@ void FilteredCurveAdapter::ensureFiltered() const {
   double x_max = std::numeric_limits<double>::lowest();
   double y_min = std::numeric_limits<double>::max();
   double y_max = std::numeric_limits<double>::lowest();
+  bool found_finite = false;  // did any sample contribute a finite (x,y) to the bounds?
   for (const proc::Sample& sample : out) {
     const double secs = toAxisDouble(rawToDisplaySeconds(sample.raw_ts_ns, offset));
     const double value = toDouble(sample.value());
     filtered_.push_back(QPointF(secs, value));
-    x_min = std::min(x_min, secs);
-    x_max = std::max(x_max, secs);
-    y_min = std::min(y_min, value);
-    y_max = std::max(y_max, value);
+    // Only finite points define the bounds. NaN/inf are ignored by std::min/std::max
+    // (comparisons are false), so folding them in would leave the sentinels untouched
+    // and yield an inverted range (min > max) that corrupts auto-fit. Mirrors
+    // PointSeriesXY::updateFiniteRange.
+    if (std::isfinite(secs) && std::isfinite(value)) {
+      x_min = std::min(x_min, secs);
+      x_max = std::max(x_max, secs);
+      y_min = std::min(y_min, value);
+      y_max = std::max(y_max, value);
+      found_finite = true;
+    }
   }
-  if (filtered_.empty()) {
-    return;  // Processor suppressed every row (e.g. all-nullopt).
+  if (!found_finite) {
+    return;  // no finite point (all rows suppressed or NaN): leave bounds invalid.
   }
   // Same (x_min,y_min)->(x_max,y_max) construction as DatastoreCurveAdapter, so
   // top()/bottom() carry the value min/max consistently across both curves.

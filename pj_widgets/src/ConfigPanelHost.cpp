@@ -5,12 +5,16 @@
 
 #include <QVBoxLayout>
 
+#include "pj_widgets/FrameworkTokens.h"
+
 namespace PJ {
 
 ConfigPanelHost::ConfigPanelHost(QWidget* parent) : QWidget(parent) {
   layout_ = new QVBoxLayout(this);
-  layout_->setContentsMargins(0, 0, 0, 0);
-  layout_->setSpacing(4);
+  layout_->setContentsMargins(
+      theme::space(theme::Space::None), theme::space(theme::Space::None), theme::space(theme::Space::None),
+      theme::space(theme::Space::None));
+  layout_->setSpacing(theme::space(theme::Space::Snug));
 }
 
 void ConfigPanelHost::setConfigWidget(QWidget* widget) {

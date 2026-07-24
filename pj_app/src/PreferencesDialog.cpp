@@ -5,20 +5,28 @@
 
 #include <QAbstractItemModel>
 #include <QBrush>
+#include <QColor>
 #include <QDir>
 #include <QFile>
-#include <QFileDialog>
 #include <QFormLayout>
 #include <QIcon>
 #include <QImage>
+#include <QLineEdit>
 #include <QListWidget>
+#include <QNetworkAccessManager>
+#include <QNetworkInformation>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QPainter>
 #include <QPixmap>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QSettings>
 #include <QStackedWidget>
+#include <QStyle>
 #include <QSvgRenderer>
 #include <QToolButton>
+#include <QUrl>
 #include <QVBoxLayout>
 
 #include "DebugMode.h"
@@ -26,12 +34,15 @@
 #include "PreferencesNavRow.h"
 #include "Splashscreen.h"
 #include "Theme.h"
+#include "pj_runtime/HttpGet.h"
 #include "pj_widgets/DualOptionsWidget.h"
+#include "pj_widgets/FileDialog.h"
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/IntScrubber.h"
 #include "pj_widgets/SvgButton.h"
-#include "pj_widgets/ThemeColors.h"
 #include "pj_widgets/ToggleSwitch.h"
 #include "ui_PreferencesDialog.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -46,18 +57,15 @@ constexpr int kDefaultIconPadding = 4;
 constexpr int kDefaultLayoutPadding = 2;
 constexpr int kDefaultLayoutSpacing = 2;
 
-// The toggle's track is gray (off) ↔ blue (on); the baked `#3D3D3D`
-// fill on the sun/moon SVGs reads as muddy dark-gray-on-blue. Recolor
-// to pure white at load time so the glyphs pop against either track
-// tone. Used only here — keep it local rather than promoting a helper.
-QIcon loadWhiteFillIcon(const QString& resource_path) {
+QIcon loadIconInkIcon(const QString& resource_path, theme::Theme token_theme) {
   QFile file(resource_path);
   if (!file.open(QFile::ReadOnly | QFile::Text)) {
     return {};
   }
-  QByteArray svg = file.readAll();
-  svg.replace("#3D3D3D", "#FFFFFF");
-  QSvgRenderer renderer(svg);
+  QString svg = QString::fromUtf8(file.readAll());
+  const QString ink = theme::iconInk(token_theme).name(QColor::HexRgb);
+  svg.replace(QRegularExpression(QStringLiteral(R"(fill="#[0-9A-Fa-f]{6}")")), QStringLiteral("fill=\"%1\"").arg(ink));
+  QSvgRenderer renderer(svg.toUtf8());
   QImage image(64, 64, QImage::Format_ARGB32);
   image.fill(Qt::transparent);
   QPainter painter(&image);
@@ -99,7 +107,7 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   // saved on close (see the destructor).
   {
     QSettings settings;
-    const QByteArray geometry = settings.value(QStringLiteral("Preferences::dialog_geometry")).toByteArray();
+    const QByteArray geometry = settings.value(u"Preferences::dialog_geometry"_s).toByteArray();
     // A stale/corrupt blob (Qt upgrade, truncated .ini) makes restoreGeometry
     // return false and apply nothing — fall back to the default size rather than
     // opening off-screen or at 0x0.
@@ -159,26 +167,26 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   // app's current state. Live preview: each valueChanged tick pushes
   // straight through MainWindow's setter (which clamps, persists, and
   // emits iconMetricsChanged) so the running app resizes in real time
-  // while the user scrubs. On Cancel we restore the snapshot.
+  // while the user scrubs. On reject (Esc or the title-bar close) we restore the snapshot.
   auto* main_window = qobject_cast<MainWindow*>(parent);
   ui_->iconSizeScrubber->setRange(12, 48);
   ui_->iconSizeScrubber->setSingleStep(1);
-  ui_->iconSizeScrubber->setSuffix(QStringLiteral(" px"));
+  ui_->iconSizeScrubber->setSuffix(u" px"_s);
   ui_->iconSizeScrubber->setValue(original_metrics_.icon_size);
 
   ui_->iconPaddingScrubber->setRange(0, 32);
   ui_->iconPaddingScrubber->setSingleStep(1);
-  ui_->iconPaddingScrubber->setSuffix(QStringLiteral(" px"));
+  ui_->iconPaddingScrubber->setSuffix(u" px"_s);
   ui_->iconPaddingScrubber->setValue(original_metrics_.icon_padding);
 
   ui_->layoutPaddingScrubber->setRange(0, 16);
   ui_->layoutPaddingScrubber->setSingleStep(1);
-  ui_->layoutPaddingScrubber->setSuffix(QStringLiteral(" px"));
+  ui_->layoutPaddingScrubber->setSuffix(u" px"_s);
   ui_->layoutPaddingScrubber->setValue(original_metrics_.layout_padding);
 
   ui_->layoutSpacingScrubber->setRange(0, 16);
   ui_->layoutSpacingScrubber->setSingleStep(1);
-  ui_->layoutSpacingScrubber->setSuffix(QStringLiteral(" px"));
+  ui_->layoutSpacingScrubber->setSuffix(u" px"_s);
   ui_->layoutSpacingScrubber->setValue(original_metrics_.layout_spacing);
 
   // Value preferences seeded together (one QSettings read pass) and committed on
@@ -198,14 +206,13 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   ui_->splashMode->setOptions(tr("memes"), tr("serious"));
   {
     QSettings settings;
-    ui_->scrubberFloatPrecision->setValue(settings.value(QStringLiteral("Preferences::precision"), 3).toInt());
-    ui_->curveColorMode->setSelectedIndex(
-        settings.value(QStringLiteral("Preferences::curve_color_global"), true).toBool() ? 0 : 1);
+    ui_->scrubberFloatPrecision->setValue(settings.value(u"Preferences::precision"_s, 3).toInt());
+    ui_->curveColorMode->setSelectedIndex(settings.value(u"Preferences::curve_color_global"_s, true).toBool() ? 0 : 1);
     ui_->openglToggle->setChecked(
-        settings.value(QStringLiteral("Preferences::use_opengl"), true).toBool(),
+        settings.value(u"Preferences::use_opengl"_s, true).toBool(),
         /*animate=*/false);
     ui_->checkUpdatesToggle->setChecked(
-        settings.value(QStringLiteral("Preferences::check_updates_on_startup"), true).toBool(),
+        settings.value(u"Preferences::check_updates_on_startup"_s, true).toBool(),
         /*animate=*/false);
     ui_->splashMode->setSelectedIndex(
         settings.value(kSplashModeKey, kSplashModeMemes).toString() == kSplashModeSerious ? 1 : 0);
@@ -223,11 +230,13 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   // on disk render in red. The custom list persists on OK and applies on next
   // launch (no hot reload of extensions).
   if (main_window != nullptr) {
-    auto paint_missing = [](QListWidget* list) {
+    auto paint_missing = [this](QListWidget* list) {
+      const auto token_theme = theme::themeFor(theme_.currentTheme() == QLatin1String("light"));
+      const QBrush missing_brush(theme::interaction(theme::Variant::Highlight, theme::State::Nominal, token_theme));
       for (int row = 0; row < list->count(); ++row) {
         QListWidgetItem* item = list->item(row);
         const bool missing = !QDir(item->text()).exists();
-        item->setForeground(missing ? QBrush(theme::kAccentError) : QBrush());
+        item->setForeground(missing ? missing_brush : QBrush());
         item->setToolTip(missing ? tr("This folder does not exist.") : QString());
       }
     };
@@ -245,16 +254,50 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     ui_->listDefaultPluginFolders->setSelectionMode(QAbstractItemView::NoSelection);
     ui_->listDefaultPluginFolders->setFocusPolicy(Qt::NoFocus);
     paint_missing(ui_->listDefaultPluginFolders);
+    connect(&theme_, &Theme::themeChanged, this, [this, paint_missing](const QString&) {
+      paint_missing(ui_->listCustomPluginFolders);
+      paint_missing(ui_->listDefaultPluginFolders);
+    });
+
+    // Marketplace registry URL editor. An explicit default/custom mode switch:
+    // "default" shows the built-in URL read-only, "custom" enables the field.
+    // Validation runs when editing finishes and paints the text red while the
+    // URL is invalid or unreachable — advisory, never blocking (see
+    // onRegistryUrlEditingFinished).
+    ui_->registryUrlMode->setOptions(tr("default"), tr("custom"));
+    const QString stored_override = main_window->registryUrlSetting();
+    ui_->registryUrlMode->setSelectedIndex(stored_override.isEmpty() ? 0 : 1);
+    ui_->lineEditRegistryUrl->setText(stored_override.isEmpty() ? MainWindow::defaultRegistryUrl() : stored_override);
+    ui_->lineEditRegistryUrl->setEnabled(!stored_override.isEmpty());
+    connect(ui_->registryUrlMode, &DualOptionsWidget::selectionChanged, this, [this](int index) {
+      const bool custom = index == 1;
+      ui_->lineEditRegistryUrl->setEnabled(custom);
+      if (custom) {
+        ui_->lineEditRegistryUrl->setFocus();
+        ui_->lineEditRegistryUrl->selectAll();
+      } else {
+        ui_->lineEditRegistryUrl->setText(MainWindow::defaultRegistryUrl());
+        last_checked_registry_url_.clear();
+        setRegistryUrlError(false);
+      }
+    });
+    connect(
+        ui_->lineEditRegistryUrl, &QLineEdit::editingFinished, this, &PreferencesDialog::onRegistryUrlEditingFinished);
+    // A stored custom URL gets checked (and possibly painted red) right away,
+    // so a stale override is visible without touching the field.
+    if (!stored_override.isEmpty()) {
+      onRegistryUrlEditingFinished();
+    }
 
     // SvgButton re-tints itself on a theme change — no manual retint wiring.
-    ui_->buttonAddPluginFolder->setIconPath(QStringLiteral(":/resources/svg/add.svg"));
+    ui_->buttonAddPluginFolder->setIconPath(u":/resources/svg/add.svg"_s);
     ui_->buttonAddPluginFolder->setExtent(26, 24);
-    ui_->buttonRemovePluginFolder->setIconPath(QStringLiteral(":/resources/svg/trash.svg"));
+    ui_->buttonRemovePluginFolder->setIconPath(u":/resources/svg/trash.svg"_s);
     ui_->buttonRemovePluginFolder->setExtent(26, 24);
     ui_->buttonAddPluginFolder->setToolTip(tr("Add a plugin folder…"));
     ui_->buttonRemovePluginFolder->setToolTip(tr("Remove the selected folder"));
     connect(ui_->buttonAddPluginFolder, &QToolButton::clicked, this, [this, paint_missing]() {
-      const QString dir = QFileDialog::getExistingDirectory(this, tr("Add plugin folder"));
+      const QString dir = PJ::FileDialog::getExistingDirectory(this, tr("Add plugin folder"));
       if (!dir.isEmpty()) {
         ui_->listCustomPluginFolders->addItem(dir);
         paint_missing(ui_->listCustomPluginFolders);
@@ -269,11 +312,11 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   // Reset-to-defaults button. Snaps each scrubber back to the
   // first-launch defaults; the scrubbers' valueChanged signals
   // already feed MainWindow's setters, so the running app live-
-  // previews the reset and Cancel still reverts to the dialog's
-  // open-time snapshot.
+  // previews the reset, and rejecting the dialog (Esc / title-bar close)
+  // still reverts to the dialog's open-time snapshot.
   // Same glyph as the timeline align-rail "reset all" button (restart_alt).
   // SvgButton re-tints itself on a theme change.
-  ui_->buttonResetDefaults->setIconPath(QStringLiteral(":/resources/svg/restart_alt.svg"));
+  ui_->buttonResetDefaults->setIconPath(u":/resources/svg/restart_alt.svg"_s);
   ui_->buttonResetDefaults->setSize(SvgButton::Size::kDefault);
   connect(ui_->buttonResetDefaults, &QToolButton::clicked, this, [this]() {
     ui_->iconSizeScrubber->setValue(kDefaultIconSize);
@@ -292,10 +335,12 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   //
   // Larger than the compact 34x18 default so the sun/moon icons read clearly.
   ui_->themeToggle->setFixedSize(44, 24);
-  // Icons are forced to white so they read clearly against the
-  // colored track (blue when on, gray when off).
-  ui_->themeToggle->setLeftIcon(loadWhiteFillIcon(QStringLiteral(":/resources/svg/light_mode_light.svg")));
-  ui_->themeToggle->setRightIcon(loadWhiteFillIcon(QStringLiteral(":/resources/svg/dark_mode_light.svg")));
+  auto apply_toggle_icons = [this]() {
+    const auto token_theme = theme::themeFor(theme_.currentTheme() == QLatin1String("light"));
+    ui_->themeToggle->setLeftIcon(loadIconInkIcon(QStringLiteral(":/resources/svg/light_mode_light.svg"), token_theme));
+    ui_->themeToggle->setRightIcon(loadIconInkIcon(QStringLiteral(":/resources/svg/dark_mode_light.svg"), token_theme));
+  };
+  apply_toggle_icons();
   // Snap the toggle to the active theme without animating — the
   // dialog opens with the thumb already at its correct endpoint,
   // not mid-slide from 0 to 1 across the first 180ms after open.
@@ -330,11 +375,15 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   if (main_window != nullptr) {
     connect(
         main_window, &MainWindow::stylesheetChanged, this,
-        [this](const QString&) { ui_->themeToggle->setEnabled(true); }, Qt::QueuedConnection);
+        [this, apply_toggle_icons](const QString&) {
+          apply_toggle_icons();
+          ui_->themeToggle->setEnabled(true);
+        },
+        Qt::QueuedConnection);
   }
   connect(ui_->themeToggle, &ToggleSwitch::clicked, this, [this]() { ui_->themeToggle->setEnabled(false); });
   connect(ui_->themeToggle, &ToggleSwitch::toggled, this, [this](bool checked) {
-    theme_.setTheme(checked ? QStringLiteral("light") : QStringLiteral("dark"));
+    theme_.setTheme(checked ? u"light"_s : u"dark"_s);
   });
 
   // Plotting page: auto-zoom plots. When on, adding/removing a curve rescales
@@ -344,7 +393,7 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   {
     QSettings settings;
     ui_->autoZoomToggle->setChecked(
-        settings.value(QStringLiteral("Preferences::auto_zoom_plots"), true).toBool(),
+        settings.value(u"Preferences::auto_zoom_plots"_s, true).toBool(),
         /*animate=*/false);
   }
   connect(this, &QDialog::rejected, this, [this, main_window]() {
@@ -356,7 +405,7 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
       main_window->setLayoutSpacing(original_metrics_.layout_spacing);
     }
   });
-  // The chrome setters above only apply live — commit to QSettings on OK. Cancel
+  // The chrome setters above only apply live — commit to QSettings on OK. Rejecting
   // restores the snapshot and never persisted, so the .ini keeps the originals.
   connect(this, &QDialog::accepted, this, [this, main_window]() {
     if (main_window != nullptr) {
@@ -366,26 +415,89 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
         plugin_folders << ui_->listCustomPluginFolders->item(row)->text();
       }
       main_window->setCustomPluginFolders(plugin_folders);
+
+      // Registry URL: default mode (or a custom value equal to the default)
+      // stores "no override", so the user keeps following future defaults. A
+      // syntactically valid custom URL persists; reachability is advisory (red
+      // text), never a blocker — the URL may legitimately be offline right now.
+      const bool custom_registry = ui_->registryUrlMode->selectedIndex() == 1;
+      const QString registry_url = ui_->lineEditRegistryUrl->text().trimmed();
+      if (!custom_registry || registry_url == MainWindow::defaultRegistryUrl()) {
+        main_window->setRegistryUrlSetting({});
+      } else if (MainWindow::isValidRegistryUrl(registry_url)) {
+        main_window->setRegistryUrlSetting(registry_url);
+      }
     }
     QSettings settings;
-    settings.setValue(QStringLiteral("Preferences::precision"), ui_->scrubberFloatPrecision->value());
-    settings.setValue(QStringLiteral("Preferences::use_opengl"), ui_->openglToggle->isChecked());
-    settings.setValue(QStringLiteral("Preferences::check_updates_on_startup"), ui_->checkUpdatesToggle->isChecked());
-    settings.setValue(QStringLiteral("Preferences::curve_color_global"), ui_->curveColorMode->selectedIndex() == 0);
+    settings.setValue(u"Preferences::precision"_s, ui_->scrubberFloatPrecision->value());
+    settings.setValue(u"Preferences::use_opengl"_s, ui_->openglToggle->isChecked());
+    settings.setValue(u"Preferences::check_updates_on_startup"_s, ui_->checkUpdatesToggle->isChecked());
+    settings.setValue(u"Preferences::curve_color_global"_s, ui_->curveColorMode->selectedIndex() == 0);
     settings.setValue(kSplashModeKey, ui_->splashMode->selectedIndex() == 1 ? kSplashModeSerious : kSplashModeMemes);
-    settings.setValue(QStringLiteral("Preferences::auto_zoom_plots"), ui_->autoZoomToggle->isChecked());
+    settings.setValue(u"Preferences::auto_zoom_plots"_s, ui_->autoZoomToggle->isChecked());
   });
 
   connect(ui_->buttonOk, &QPushButton::clicked, this, &QDialog::accept);
-  connect(ui_->buttonCancel, &QPushButton::clicked, this, &QDialog::reject);
 }
 
 PreferencesDialog::~PreferencesDialog() {
   // Remember the dialog size across launches regardless of OK/Cancel — window
   // size is a UI preference, not a settings change.
   QSettings settings;
-  settings.setValue(QStringLiteral("Preferences::dialog_geometry"), saveGeometry());
+  settings.setValue(u"Preferences::dialog_geometry"_s, saveGeometry());
   delete ui_;
+}
+
+void PreferencesDialog::onRegistryUrlEditingFinished() {
+  const QString url_text = ui_->lineEditRegistryUrl->text().trimmed();
+  if (url_text == last_checked_registry_url_) {
+    return;  // already checked (or being checked) — no duplicate probe
+  }
+  last_checked_registry_url_ = url_text;
+
+  if (url_text.isEmpty() || !MainWindow::isValidRegistryUrl(url_text)) {
+    setRegistryUrlError(true);
+    return;
+  }
+
+  const QUrl url(url_text);
+  if (url.isLocalFile()) {
+    setRegistryUrlError(!QFile::exists(url.toLocalFile()));
+    return;
+  }
+
+  // Reachability probe. When the system is not reported Online (offline, or no
+  // usable backend to tell), skip it and show the value as fine — a network
+  // outage must not paint a URL red that will work once connectivity returns.
+  [[maybe_unused]] static const bool backend_loaded = QNetworkInformation::loadDefaultBackend();
+  QNetworkInformation* network_info = QNetworkInformation::instance();
+  if (network_info == nullptr || network_info->reachability() != QNetworkInformation::Reachability::Online) {
+    setRegistryUrlError(false);
+    return;
+  }
+
+  if (network_ == nullptr) {
+    network_ = new QNetworkAccessManager(this);
+  }
+  httpGetWithTimeout(
+      *network_, QNetworkRequest(url), std::chrono::seconds(5), this, [this, url_text](QNetworkReply& reply) {
+        // The user may have edited again while this probe was in flight; a
+        // stale result must not repaint the newer text.
+        if (ui_->lineEditRegistryUrl->text().trimmed() != url_text) {
+          return;
+        }
+        setRegistryUrlError(reply.error() != QNetworkReply::NoError);
+      });
+}
+
+void PreferencesDialog::setRegistryUrlError(bool error) {
+  QLineEdit* edit = ui_->lineEditRegistryUrl;
+  if (edit->property("urlError").toBool() == error) {
+    return;
+  }
+  edit->setProperty("urlError", error);
+  edit->style()->unpolish(edit);
+  edit->style()->polish(edit);
 }
 
 }  // namespace PJ

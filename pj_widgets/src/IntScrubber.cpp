@@ -64,8 +64,19 @@ void IntScrubber::stepBy(int steps_signed) {
   setValue(value_ + steps_signed * single_step_);
 }
 
+void IntScrubber::setPadWidth(int w) {
+  pad_width_ = std::max(0, w);
+  update();
+}
+
 QString IntScrubber::displayText() const {
-  return prefix_ + QString::number(value_) + suffix_;
+  QString v = QString::number(value_);
+  // Guard on non-negative: rightJustified on "-5" would pad to "0-5". It already
+  // no-ops when the value is already wide enough, so no size check is needed.
+  if (pad_width_ > 0 && value_ >= 0) {
+    v = v.rightJustified(pad_width_, QLatin1Char('0'));
+  }
+  return prefix_ + v + suffix_;
 }
 
 bool IntScrubber::commitText(const QString& text) {

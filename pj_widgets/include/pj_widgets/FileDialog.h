@@ -46,6 +46,9 @@ class FileDialog : public Dialog {
   static QString getSaveFileName(
       QWidget* parent, const QString& caption, const QString& dir, const QString& filter,
       const QString& default_suffix = QString());
+  // Drop-in replacement for QFileDialog::getExistingDirectory (Directory mode +
+  // ShowDirsOnly). Returns the chosen directory, empty on cancel.
+  static QString getExistingDirectory(QWidget* parent, const QString& caption, const QString& dir = QString());
 
   struct ExtraOption {
     QString label;

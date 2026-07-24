@@ -32,11 +32,12 @@ struct MeshShadingParams {
   float collision_opacity = look::kCollisionOpacity;  // collision hulls (translucent overlay); 0 hides
   bool meshes_visible = true;                         // Part C eye toggles (independent of opacity)
   bool collisions_visible = true;
-  // Per-dock mesh-shadow toggle. OFF by default (the feature ships opt-in: no app UI
-  // yet, the mesh_viewer demo's --shadows flag and the config panel drive it). When
-  // on, the key-light term of mesh + solid-grid-floor receivers is modulated by the
-  // shadow map; the camera-fill and IBL ambient stay unshadowed.
-  bool shadows_enabled = false;
+  // Mesh-shadow flag. ON by default: the app renders shadows unconditionally (no
+  // user control), so a default-constructed view/dock shows them from the first
+  // frame. When on, the key-light term of mesh + solid-grid-floor receivers is
+  // modulated by the shadow map; the camera-fill and IBL ambient stay unshadowed.
+  // The mesh_viewer demo overrides this explicitly from its --shadows flag.
+  bool shadows_enabled = true;
 };
 
 }  // namespace pj::scene3d

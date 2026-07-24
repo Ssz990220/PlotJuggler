@@ -62,8 +62,8 @@ AABB voxelGridBounds(const PJ::sdk::VoxelGrid& grid) {
 std::vector<float> packScalarField(const PJ::sdk::VoxelGrid& grid, const PJ::sdk::PointField& field) {
   const uint64_t count = voxelCount(grid);
   const uint32_t elem = PJ::sdk::bytesPerElement(field.datatype);
-  if (count == 0 || elem == 0) {
-    return {};
+  if (count == 0 || elem == 0 || count > kMaxRenderableVoxels) {
+    return {};  // degenerate, sizeless, or dims inconsistent with a renderable grid
   }
   std::vector<float> out;
   out.reserve(count);
@@ -86,8 +86,8 @@ std::vector<float> packScalarField(const PJ::sdk::VoxelGrid& grid, const PJ::sdk
 
 std::vector<uint8_t> packRgbaField(const PJ::sdk::VoxelGrid& grid, const PJ::sdk::PointField& field) {
   const uint64_t count = voxelCount(grid);
-  if (count == 0 || !isColorField(field)) {
-    return {};
+  if (count == 0 || !isColorField(field) || count > kMaxRenderableVoxels) {
+    return {};  // degenerate, unsupported layout, or dims inconsistent with a renderable grid
   }
   // Bytes to read per voxel from the source field: uint8xN reads N consecutive
   // bytes; a packed uint32 reads its 4 bytes. Either way the first 3 become RGB

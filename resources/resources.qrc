@@ -7,6 +7,13 @@
     <file alias="plotjuggler.svg">plotjuggler.svg</file>
     <!-- "Success kid" meme icon shown in the "new release available" toast. -->
     <file alias="success_kid.png">success_kid.png</file>
+    <!-- Bundled UI font (SIL OFL 1.1). Loaded at startup via
+         QFontDatabase::addApplicationFont and set as the application font, so
+         typography is controlled and consistent across machines instead of
+         relying on the host's default sans-serif. The variable font covers the
+         whole weight axis, so font-weight 400/600/700 resolve to real masters
+         (not synthesized bold). -->
+    <file alias="fonts/NotoSans/NotoSans-Variable.ttf">fonts/NotoSans/NotoSans-Variable.ttf</file>
   </qresource>
   <qresource prefix="/resources">
     <!-- Funny splashscreen pool. The startup splash enumerates this directory
@@ -81,6 +88,7 @@
     <file alias="copy_all.svg">svg/copy_all.svg</file>
     <file alias="create_new_folder.svg">svg/create_new_folder.svg</file>
     <file alias="cube.svg">svg/cube.svg</file>
+    <file alias="cube_axes.svg">svg/cube_axes.svg</file>
     <file alias="dark_mode_light.svg">svg/dark_mode_light.svg</file>
     <file alias="dashboard_load.svg">svg/dashboard_load.svg</file>
     <file alias="database.svg">svg/database.svg</file>
@@ -98,6 +106,7 @@
     <file alias="extension.svg">svg/extension.svg</file>
     <file alias="file_open.svg">svg/file_open.svg</file>
     <file alias="filter_list.svg">svg/filter_list.svg</file>
+    <file alias="folder.svg">svg/folder.svg</file>
     <file alias="folder_open.svg">svg/folder_open.svg</file>
     <file alias="format_paint.svg">svg/format_paint.svg</file>
     <file alias="fullscreen.svg">svg/fullscreen.svg</file>
@@ -205,6 +214,7 @@
     <file alias="style_steps_inverted.svg">svg/style_steps_inverted.svg</file>
     <file alias="style_sticks.svg">svg/style_sticks.svg</file>
     <file alias="t0.svg">svg/t0.svg</file>
+    <file alias="tab_move.svg">svg/tab_move.svg</file>
     <file alias="transition_push.svg">svg/transition_push.svg</file>
     <file alias="trash.svg">svg/trash.svg</file>
     <file alias="tree.svg">svg/tree.svg</file>

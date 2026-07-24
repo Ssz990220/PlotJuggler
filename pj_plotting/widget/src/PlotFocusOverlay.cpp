@@ -9,36 +9,31 @@
 #include <QEvent>
 #include <QPaintEvent>
 #include <QPainter>
+#include <QPalette>
 #include <QRect>
-#include <algorithm>
+
+#include "pj_widgets/FrameworkTokens.h"
 
 namespace PJ {
 
 namespace {
-// Match the QSS palette tokens — see resources/stylesheet_*.qss
-// (blue, light_blue). Keep these in sync if the tokens change.
-const QColor kFocusColor = QColor("#1177FF");
-const QColor kHoverColor = QColor("#C2DCFF");
+// Gap between the area's bounding rect and the frame, so the cue never lands
+// on the 1-px splitter handles / container edges around the area.
+constexpr int kFrameGapPx = 1;
 
-// Paint a 1-px frame at the 4 splitter handles / outer-edge pixels that
-// hug the area's bounding rect (in container coords). For inner edges
-// the line sits one pixel OUTSIDE the area, landing on the adjacent
-// splitter handle. For edges flush with the container's boundary we
-// clamp to the container's edge pixel so the cue isn't clipped away.
-void paintFrame(QPainter& painter, const QRect& rect_in_container, const QRect& container_rect, const QColor& color) {
-  if (!rect_in_container.isValid() || !container_rect.isValid()) {
+// Paint a frame just INSIDE the area's bounding rect (in container coords),
+// inset by kFrameGapPx plus half the pen (the pen straddles its path), so the
+// whole stroke stays within the area and clear of the separators.
+void paintFrame(QPainter& painter, const QRect& rect_in_container, const QColor& color, int thickness) {
+  if (!rect_in_container.isValid()) {
     return;
   }
-  painter.setPen(QPen(color, 1));
+  QPen pen(color, thickness);
+  pen.setJoinStyle(Qt::MiterJoin);
+  painter.setPen(pen);
   painter.setBrush(Qt::NoBrush);
-  const int left = std::max(container_rect.left(), rect_in_container.left() - 1);
-  const int top = std::max(container_rect.top(), rect_in_container.top() - 1);
-  const int right = std::min(container_rect.right(), rect_in_container.right() + 1);
-  const int bottom = std::min(container_rect.bottom(), rect_in_container.bottom() + 1);
-  painter.drawLine(left, top, right, top);
-  painter.drawLine(left, bottom, right, bottom);
-  painter.drawLine(left, top, left, bottom);
-  painter.drawLine(right, top, right, bottom);
+  const int inset = kFrameGapPx + thickness / 2;
+  painter.drawRect(rect_in_container.adjusted(inset, inset, -inset, -inset));
 }
 }  // namespace
 
@@ -77,7 +72,6 @@ void PlotFocusOverlay::setHoveredArea(ads::CDockAreaWidget* area) {
 
 void PlotFocusOverlay::paintEvent(QPaintEvent* /*event*/) {
   QPainter painter(this);
-  const QRect container_rect = container_->rect();
 
   auto rect_for = [this](ads::CDockAreaWidget* area) -> QRect {
     if (area == nullptr) {
@@ -88,11 +82,19 @@ void PlotFocusOverlay::paintEvent(QPaintEvent* /*event*/) {
   };
 
   // Hover only paints when it differs from focus (focus wins under cursor).
+  // Focus uses the accent CHECKED tone — the same colour as checked buttons —
+  // so the active dock reads as "selected" in both themes without the harsher
+  // focus-ring ink, and distinctly from a merely hovered one.
+  const auto token_theme = theme::appTheme();
+  const QColor hover_color = theme::surface(PJ::theme::Surface::Separation, token_theme);
+  const QColor focus_color = theme::interaction(theme::Variant::Accent, theme::State::Checked, token_theme);
+  // Focus is drawn slightly thicker than hover so the active dock reads at a
+  // glance even when both frames are on screen.
   if (hovered_area_ != nullptr && hovered_area_ != focused_area_) {
-    paintFrame(painter, rect_for(hovered_area_), container_rect, kHoverColor);
+    paintFrame(painter, rect_for(hovered_area_), hover_color, /*thickness=*/1);
   }
   if (focused_area_ != nullptr) {
-    paintFrame(painter, rect_for(focused_area_), container_rect, kFocusColor);
+    paintFrame(painter, rect_for(focused_area_), focus_color, /*thickness=*/2);
   }
 }
 

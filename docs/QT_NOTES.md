@@ -1,14 +1,14 @@
 # Qt version notes (for AI agents and humans)
 
-**PJ4 builds against Qt 6.11.1.** Install it with [`../install_qt6.sh`](../install_qt6.sh)
-(the single source of truth for the Linux Qt version).
+**PJ4 builds against the Qt version pinned in [`../versions.env`](../versions.env)
+(currently 6.11.1).** Install it with [`../install_qt6.sh`](../install_qt6.sh).
 
 > **Read this if your training data predates ~2025.** Qt 6.9, 6.10 and 6.11
 > shipped *after* the knowledge cutoff of most current models. If you "know" PJ4
 > is on Qt 6.8, that is stale — this file is the delta. Don't reach for a 6.8-era
 > workaround for something later Qt fixed, and don't assume an API you don't
 > recognize doesn't exist. When unsure about a Qt symbol, check the installed
-> headers under `.qt/6.11.1/gcc_64/include/` rather than guessing from memory.
+> headers under `.qt/<PJ_QT_VERSION>/gcc_64/include/` rather than guessing from memory.
 
 ## Why 6.11 (a non-LTS) and not 6.12 LTS
 
@@ -103,7 +103,7 @@ Prefer these over hand-rolled equivalents. Names are exact.
   the floor. Don't bump the requirement past 3.22 (see the note in
   `.github/workflows/windows-ci.yml`); don't drop a runner below it either.
 - **glibc floor raised 2.28 → 2.34** (6.10): official Linux Qt binaries (what
-  `install_qt6.sh` fetches via aqt) are built on RHEL9. So a PJ4 binary built
+  the repo install script fetches via aqt) are built on RHEL9. So a PJ4 binary built
   against them needs **glibc ≥ 2.34 (≈ Ubuntu 22.04+)** to run. Matters for
   *shipping* to end users, not for the dev box.
 - **Private modules need their own component**: `find_package(Qt6 COMPONENTS
@@ -122,6 +122,18 @@ Prefer these over hand-rolled equivalents. Names are exact.
   cursor quirk isn't called out in any 6.9–6.11 changelog. Don't assume the
   upgrade resolves it; re-test.
 
+## House style: string literal suffixes
+
+New code uses the Qt 6 literal suffixes — `u"…"_s` for `QString` (equivalent to
+`QStringLiteral("…")`) and `"…"_L1` for `QLatin1StringView` comparisons — via
+`using namespace Qt::StringLiterals;` placed after the last `#include` at file
+scope, **`.cpp` files only**. Never put that `using` directive at namespace
+scope in a header (it would leak into every translation unit that includes it);
+headers keep `QStringLiteral`. A trailing `#include "X.moc"` at the end of the
+file (required when a `Q_OBJECT` class is defined in the `.cpp`) does not count
+as "the last include" — place the `using` line after the top include block,
+before the first namespace/code.
+
 ## Explicitly NOT relevant to PJ4 (don't chase these)
 
 QML / Qt Quick / Qt Quick 3D (incl. SSGI/SSR/motion vectors), Qt Multimedia &
@@ -132,6 +144,7 @@ FFmpeg). scene3D's photorealism is hand-written OpenGL, *not* Qt Quick 3D.
 
 ## See also
 
-- [`../install_qt6.sh`](../install_qt6.sh) — installs the pinned Qt.
+- [`../versions.env`](../versions.env) — pins the Qt version consumed by CMake, scripts, Docker, and CI.
+- [`../install_qt6.sh`](../install_qt6.sh) — installs the pinned Linux Qt build.
 - `pj_scene2D/docs/TECHNICAL_NOTES.md` — `QRhiWidget` lifecycle + video-rendering
   specifics (the APIs there became public/usable in 6.8 and remain so on 6.11).

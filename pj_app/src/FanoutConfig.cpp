@@ -9,6 +9,7 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QLoggingCategory>
+using namespace Qt::StringLiterals;
 
 namespace PJ::detail {
 
@@ -26,7 +27,7 @@ std::vector<std::string> extractFanout(std::string_view config) {
   if (!doc.isObject()) {
     return single_instance_fallback();
   }
-  const QJsonValue v = doc.object().value(QStringLiteral("__pj_fanout"));
+  const QJsonValue v = doc.object().value(u"__pj_fanout"_s);
   if (!v.isArray()) {
     return single_instance_fallback();
   }
@@ -64,7 +65,7 @@ QString parseDisplaySuffix(std::string_view cfg, const QString& fallback) {
   if (!doc.isObject()) {
     return fallback;
   }
-  const QJsonValue v = doc.object().value(QStringLiteral("display_suffix"));
+  const QJsonValue v = doc.object().value(u"display_suffix"_s);
   if (!v.isString()) {
     return fallback;
   }
@@ -81,7 +82,7 @@ QString parseDisplayName(std::string_view cfg) {
   if (!doc.isObject()) {
     return QString{};
   }
-  const QJsonValue v = doc.object().value(QStringLiteral("display_name"));
+  const QJsonValue v = doc.object().value(u"display_name"_s);
   return v.isString() ? v.toString() : QString{};
 }
 

@@ -11,13 +11,13 @@ Two targets with a strict direction:
 ```
 pj_plotting  ──►  pj_plotting_core  ──►  pj_datastore + pj_base
                        │
-                       └──►  Qwt (vendored at 3rdparty/qwt)
+                       └──►  Qwt (external, never patched — see 3rdparty/qwt/README.PJ4.md)
 ```
 
 | Subdir | Contents | Role |
 |---|---|---|
-| `core/` | `DatastoreCurveAdapter`, `FilteredCurveAdapter`, `PointSeriesXY` | Bridges PJ3-style `QwtSeriesData<QPointF>` consumers to `pj_datastore::DataReader`. `FilteredCurveAdapter` is a lazy `DatastoreCurveAdapter` subclass that serves the output of a `proc::DataProcessor` (the Filter Editor before/after preview, refreshed on the streaming commit path). No Qt Widgets. |
-| `widget/` | `PlotWidgetBase`, `PlotWidget`, `PlotDocker`, `TabbedPlotWidget`, `PlotZoomer`, `PlotPanner`, `PlotMagnifier`, `CurveTracker`, `PlotLegend`, `PlotFocusOverlay`, `DockWidget`, `DockToolbar`, `CurveEditor`, `FilterEditorPanel`, `ParameterForm` | The Qt/Qwt widgets, ported from PJ3's `plotjuggler_app/`. |
+| `core/` | `DatastoreCurveAdapter`, `FilteredCurveAdapter`, `PointSeriesXY`, `PlotXml.h` | Bridges PJ3-style `QwtSeriesData<QPointF>` consumers to `pj_datastore::DataReader`. `FilteredCurveAdapter` is a lazy `DatastoreCurveAdapter` subclass that serves the output of a `proc::DataProcessor` (the Filter Editor before/after preview, refreshed on the streaming commit path). `PlotXml.h` is the shared plot-XML vocabulary (`x_basis` range markers, the `pending_intent` keep-alive predicate) consumed by both this module and the app-side layout passes. No Qt Widgets. |
+| `widget/` | `PlotWidgetBase`, `PlotWidget`, `PlotDocker`, `TabbedPlotWidget`, `PlotZoomer`, `PlotPanner`, `PlotMagnifier`, `CurveTracker`, `PlotLegend`, `PlotFocusOverlay`, `PlotScaleDraw`, `DockWidget`, `DockToolbar`, `CurveEditor`, `FilterEditorPanel`, `ParameterForm` | The Qt/Qwt widgets, ported from PJ3's `plotjuggler_app/`. |
 | `tests/` | gtest binaries | Adapter and dock-placeholder tests. |
 
 ## Port strategy (per root CLAUDE.md "Porting policy")
@@ -42,3 +42,5 @@ See repo memory and PJ4_PLAN.md §5.3 / §8 for the full list. Two that matter m
 
 - **OpenGL canvas**: PJ3 had a `Preferences::use_opengl` QSettings gate; the early PJ4 port dropped it, causing software-raster rendering at 72% CPU. Restored. Do not re-drop without measuring.
 - **Native window inside ADS**: do **not** propose making `QwtPlotOpenGLCanvas` a `WA_NativeWindow` inside Qt-Advanced-Docking — the native-flag conflict breaks layout.
+- **Qwt is external and never patched** (`3rdparty/qwt/README.PJ4.md`: FetchContent of the pinned release, or the conda-forge package under `PJ_SYSTEM_QWT`): the PJ3-era in-tree Qwt patches are realized here instead — `PlotScaleDraw` (fixed-notation tick labels, installed on every axis by `QwtPlotPimpl`) and the "Lines and Dots" style (`Lines` + explicit `QwtSymbol`, mapped by `PlotWidgetBase::applyStyleToCurve`). Do not reintroduce patches under `3rdparty/qwt/src`.
+- **On-canvas text goes through `RasterTextEngine`** (`widget/include/pj_plotting/RasterTextEngine.h`, installed at app startup): the GL canvas's glyph atlas does not survive GPU resets or context recreation, so legend/tracker text is CPU-rasterized and re-uploaded per draw. Do not draw canvas text with raw `QPainter::drawText`, and do not cache the rasterized images — a resident GL texture is exactly what a GPU reset blanks.

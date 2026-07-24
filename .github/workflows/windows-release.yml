@@ -1,0 +1,336 @@
+name: Release Windows Installer
+
+# Builds the PlotJuggler 4 Windows installer (.exe) on a clean windows-2022 runner
+# and, on a version tag, attaches it to the GitHub Release. The Windows sibling of
+# release.yml (which does the Linux AppImage).
+#
+# Official plugins are built and published independently. This workflow resolves
+# the curated Windows set from pj-plugin-registry, verifies every artifact, and
+# proves every DLL loads in the staged app before creating the installer.
+#
+# Cache/repository layers shared with windows-ci.yml:
+#   - Qt kit via actions/cache
+#   - compiler objects via sccache on Depot Cache
+#   - Conan packages via the shared Depot-backed Actions cache, then ConanCenter
+#
+# Triggers:
+#   - workflow_dispatch     -> build the installer from any branch (artifact only)
+#   - push of a version tag -> build + attach the installer to that tag's Release
+#     (e.g. `3.9.1` — no leading 'v')
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write     # softprops/action-gh-release needs write to create/update the Release
+
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-installer:
+    # Match windows-ci.yml and the toolchain used for the published plugin artifacts.
+    runs-on: depot-windows-2022-4
+    # Backstop against hangs — app build plus registry download/validation/packaging.
+    # Plugins are not compiled here.
+    timeout-minutes: 180
+
+    # sccache uses Depot Cache via the SCCACHE_WEBDAV_* env vars the Depot
+    # runner pre-sets — the same org-wide object store as Windows CI and the
+    # Pixi win-64 leg, so the release reuses identical MSVC compilation results.
+    steps:
+      - name: Use HTTPS for github.com submodules
+        shell: bash
+        run: git config --global url."https://github.com/".insteadOf "git@github.com:"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0   # tags/describe need full history
+
+      - name: Read versions.env
+        # PJ_QT_VERSION / PJ_APP_VERSION are the single source of truth.
+        # `source` (not `cat`) so bash strips the comments in versions.env
+        # before we forward the values to $GITHUB_ENV, which only accepts KEY=VALUE.
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ./versions.env
+          echo "PJ_APP_VERSION=${PJ_APP_VERSION}" >> "${GITHUB_ENV}"
+          echo "PJ_QT_VERSION=${PJ_QT_VERSION}" >> "${GITHUB_ENV}"
+
+      - name: Resolve installer version
+        # Tag build -> the tag verbatim; manual build -> PJ_APP_VERSION.
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            echo "PJ_VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+          else
+            echo "PJ_VERSION=${PJ_APP_VERSION}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install Conan
+        uses: conan-io/setup-conan@v1
+        with:
+          # Packages are restored from the shared Actions-cache closure below.
+          # Do not also archive ~/.conan2 through setup-conan itself.
+          cache_packages: false
+
+      - name: Install cmake and ninja
+        run: pip install cmake ninja
+
+      - name: Set up MSVC environment
+        # Conan's package ID includes the detected compiler settings, so activate
+        # MSVC before detecting the profile or resolving Artifactory binaries.
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # ─────────────────────────── Conan binaries ───────────────────────────
+      # The Depot-backed Actions cache closure maintained by windows-ci.yml is
+      # the Conan binary store (same windows-2022 MSVC/RelWithDebInfo graph,
+      # same key). ConanCenter source builds cover any residual miss.
+
+      - name: Compute Conan cache key
+        id: public_conan_cache
+        shell: pwsh
+        run: |
+          # Must match windows-ci.yml exactly — cache identity is shared.
+          $cacheVersion = "v6"
+          $combined = (Get-FileHash conanfile.txt -Algorithm SHA256).Hash + (Get-FileHash conan.lock -Algorithm SHA256).Hash
+          $stream = [System.IO.MemoryStream]::new([System.Text.Encoding]::UTF8.GetBytes($combined))
+          $fileHash = (Get-FileHash -InputStream $stream -Algorithm SHA256).Hash.Substring(0, 16).ToLower()
+          $hash = "$cacheVersion-$fileHash"
+          "hash=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "restore_prefix=conan-windows-msvc-relwithdebinfo-$cacheVersion-" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Restore Conan cache
+        id: conan-gha-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/.conan2
+          key: conan-windows-msvc-relwithdebinfo-${{ steps.public_conan_cache.outputs.hash }}
+          restore-keys: |
+            ${{ steps.public_conan_cache.outputs.restore_prefix }}
+
+      - name: Seed Conan source download cache
+        # Some third-party source tarballs live on hosts that reject
+        # GitHub-runner IPs (zlib.net → HTTP 415). Those are versioned in-repo
+        # under .github/conan/source-backup/, addressed by sha256, and copied
+        # into Conan's source download cache here so source() fetches are
+        # served locally. The source cache is separate from the binary packages
+        # resolved through Artifactory.
+        shell: pwsh
+        run: |
+          $cacheDir = (Join-Path $env:RUNNER_TEMP "conan-source-cache").Replace('\', '/')
+          New-Item -ItemType Directory -Force -Path "$cacheDir/s" | Out-Null
+          if (Test-Path ".github/conan/source-backup") {
+            Get-ChildItem ".github/conan/source-backup" -Exclude "README.md" |
+              Copy-Item -Destination "$cacheDir/s"
+          }
+          $conanHome = (conan config home | Out-String).Trim()
+          $conf = Join-Path $conanHome "global.conf"
+          $lines = @()
+          if (Test-Path $conf) {
+            $lines = @(Get-Content $conf | Where-Object { $_ -notmatch '^core\.sources:download_cache=' })
+          }
+          $lines + "core.sources:download_cache=$cacheDir" | Set-Content $conf
+
+      # ─────────────────────────── Qt caches: restore/install/save ───────────────────────────
+
+      - name: Restore Qt SDK cache
+        id: qt-sdk-cache
+        uses: actions/cache/restore@v5
+        with:
+          # Keep this path and key identical to windows-ci.yml so both workflows
+          # share one Qt SDK blob. IFW is release-only and cached separately.
+          path: .qt/${{ env.PJ_QT_VERSION }}/msvc2022_64
+          key: qt-sdk-${{ env.PJ_QT_VERSION }}-windows-msvc2022_64-v1
+
+      - name: Restore Qt Installer Framework cache
+        id: qt-ifw-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: .qt/Tools/QtInstallerFramework/4.7
+          key: qt-ifw-4.7-windows-v1
+
+      - name: Verify Qt SDK cache content
+        # Cache metadata can report a hit for an incomplete tree. Probe the
+        # executable consumed by CMake and reinstall if it is missing.
+        id: qt-sdk-verify
+        shell: bash
+        run: |
+          if [[ -x ".qt/${PJ_QT_VERSION}/msvc2022_64/bin/qmake.exe" ]]; then
+            echo "valid=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "valid=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify Qt Installer Framework cache content
+        id: qt-ifw-verify
+        shell: bash
+        run: |
+          if [[ -x ".qt/Tools/QtInstallerFramework/4.7/bin/binarycreator.exe" ]]; then
+            echo "valid=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "valid=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install aqt
+        if: steps.qt-sdk-verify.outputs.valid != 'true' || steps.qt-ifw-verify.outputs.valid != 'true'
+        shell: bash
+        run: |
+          # Released aqt can't fetch the current Windows Qt layout yet
+          # (miurahr/aqtinstall#959/#1007); pin to the merged fix commit — same as
+          # windows-ci.yml.
+          pip install "git+https://github.com/miurahr/aqtinstall.git@8c3695d4a4e1ceabf6a74dc6c79681656dc6b74b"
+
+      - name: Install Qt SDK via aqt
+        if: steps.qt-sdk-verify.outputs.valid != 'true'
+        shell: bash
+        run: |
+          rm -rf ".qt/${PJ_QT_VERSION}/msvc2022_64"
+          attempt=0
+          until aqt install-qt windows desktop "${PJ_QT_VERSION}" win64_msvc2022_64 --outputdir ./.qt; do
+            attempt=$((attempt + 1))
+            if [ "$attempt" -ge 5 ]; then echo "aqt install-qt failed after ${attempt} attempts" >&2; exit 1; fi
+            echo "aqt attempt ${attempt} failed; retrying in $((attempt * 15))s..."
+            sleep $((attempt * 15))
+          done
+
+      - name: Install Qt Installer Framework via aqt
+        if: steps.qt-ifw-verify.outputs.valid != 'true'
+        shell: bash
+        run: |
+          rm -rf .qt/Tools/QtInstallerFramework/4.7
+          aqt install-tool --outputdir ./.qt windows desktop tools_ifw
+
+      - name: Save Qt SDK cache
+        if: steps.qt-sdk-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: .qt/${{ env.PJ_QT_VERSION }}/msvc2022_64
+          key: qt-sdk-${{ env.PJ_QT_VERSION }}-windows-msvc2022_64-v1
+
+      - name: Save Qt Installer Framework cache
+        if: steps.qt-ifw-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: .qt/Tools/QtInstallerFramework/4.7
+          key: qt-ifw-4.7-windows-v1
+
+      # ─────────────────────────── Compiler cache ───────────────────────────
+
+      - name: Install sccache
+        # sccache is a compile-cache speedup, NOT load-bearing: the build is
+        # correct without it, just slower. v0.16 supports GitHub's current cache
+        # service; the action exports its short-lived runtime credentials.
+        id: setup_sccache
+        continue-on-error: true
+        uses: mozilla-actions/sccache-action@v0.0.10
+        with:
+          version: "v0.16.0"
+
+      # ─────────────────────────── Build ───────────────────────────
+
+      - name: Conan install
+        # The restored closure supplies prebuilt binaries; ConanCenter covers
+        # (and builds from source) anything missing.
+        id: conan_install
+        shell: bash
+        run: |
+          conan profile detect --force
+          # cpython shared: its Conan recipe disables the static MSVC build (>=3.10),
+          # so the embedded interpreter must link shared (Release CRT, matching the
+          # RelWithDebInfo /MD graph). Ninja Multi-Config so sccache's compiler
+          # launcher is honoured (VS/MSBuild ignores it).
+          conan_log="${RUNNER_TEMP}/pj4-conan-install.log"
+          conan install . --output-folder=build --build=missing -r=conancenter \
+            --lockfile=conan.lock --lockfile-partial \
+            -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
+            -o "cpython/*:shared=True" -s "cpython/*:build_type=Release" \
+            -c tools.cmake.cmaketoolchain:generator="Ninja Multi-Config" \
+            2>&1 | tee "$conan_log"
+          if grep -q "Building from source" "$conan_log"; then
+            echo "::notice::Conan built missing binaries; the cache save below persists them."
+          fi
+
+      - name: Trim Conan cache before saving
+        if: steps.conan_install.outcome == 'success' && steps.conan-gha-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: conan cache clean "*" --build --source --temp || true
+
+      - name: Save Conan cache
+        # Persist binaries this release built that the closure did not already
+        # hold, under the same key namespace windows-ci.yml restores from.
+        if: steps.conan_install.outcome == 'success' && steps.conan-gha-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.conan2
+          key: conan-windows-msvc-relwithdebinfo-${{ steps.public_conan_cache.outputs.hash }}
+
+      - name: Build PlotJuggler 4 (app)
+        shell: bash
+        env:
+          SCCACHE_AVAILABLE: ${{ steps.setup_sccache.outcome == 'success' }}
+        run: |
+          # CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded forces /Z7 (embedded)
+          # over /Zi (shared PDB). /Zi writes via mspdbsrv.exe which sccache
+          # cannot cache and which races between parallel cl.exe workers
+          # (fatal C1041 on pj_base.pdb). Requires CMP0141=NEW.
+          launcher_args=()
+          if [[ "$SCCACHE_AVAILABLE" == "true" ]]; then
+            launcher_args=(-DCMAKE_C_COMPILER_LAUNCHER=sccache \
+                           -DCMAKE_CXX_COMPILER_LAUNCHER=sccache)
+          else
+            echo "::warning::sccache unavailable; building without a compiler cache"
+          fi
+
+          cmake -S . -B build -G "Ninja Multi-Config" \
+            -DCMAKE_TOOLCHAIN_FILE="build/conan_toolchain.cmake" \
+            -DCMAKE_PREFIX_PATH="$(pwd)/.qt/${PJ_QT_VERSION}/msvc2022_64" \
+            -DCMAKE_POLICY_DEFAULT_CMP0141=NEW \
+            -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded \
+            "${launcher_args[@]}"
+
+          # This release only packages the application. Building the default ALL
+          # target also compiles the repository's test executables, which are not
+          # consumed by the installer and needlessly delays the registry smoke test.
+          cmake --build build --config RelWithDebInfo --target pj_app --parallel
+
+          if [[ "$SCCACHE_AVAILABLE" == "true" ]]; then
+            sccache --show-stats
+          fi
+
+      - name: Build the installer
+        # The recipe stages the app, downloads the curated published plugins from
+        # the registry, verifies checksums + manifests, loads every whitelisted DLL
+        # through the real host runtime, then runs binarycreator. Any plugin failure
+        # fails the release; there are no best-effort skips.
+        shell: pwsh
+        run: |
+          .\installer\build_windows_installer.ps1 `
+            -QtDir ".qt\$env:PJ_QT_VERSION\msvc2022_64" `
+            -PluginRegistryUrl "https://raw.githubusercontent.com/PlotJuggler/pj-plugin-registry/refs/heads/development/registry.json" `
+            -Version $env:PJ_VERSION `
+            -OutDir dist
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PlotJuggler-${{ env.PJ_VERSION }}-Windows-x64
+          path: dist/*.PlotJuggler-*-Windows-x64.*.exe
+          if-no-files-found: error
+
+      - name: Attach installer to the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*.PlotJuggler-*-Windows-x64.*.exe
+          generate_release_notes: true
+          fail_on_unmatched_files: true

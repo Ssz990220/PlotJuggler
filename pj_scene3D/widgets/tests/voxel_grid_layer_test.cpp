@@ -25,6 +25,7 @@
 #include "pj_base/time.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -76,7 +77,7 @@ TEST(VoxelGridLayer, RescrubToSameGridDoesNoReparse) {
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session;
-  pj::scene3d::VoxelGridLayer layer(topic_id, QStringLiteral("voxels"));
+  pj::scene3d::VoxelGridLayer layer(topic_id, u"voxels"_s);
   ASSERT_TRUE(layer.attach(ctx));
   EXPECT_EQ(g_parser_calls.load(), 1);  // bootstrap decoded the first sample
 
@@ -84,7 +85,7 @@ TEST(VoxelGridLayer, RescrubToSameGridDoesNoReparse) {
   const int after_first = g_parser_calls.load();
   EXPECT_GE(after_first, 1);
   EXPECT_TRUE(layer.hasGridForTest());
-  EXPECT_EQ(layer.resolvedFieldForTest(), QStringLiteral("occupancy"));
+  EXPECT_EQ(layer.resolvedFieldForTest(), u"occupancy"_s);
 
   // Re-scrub to the SAME store entry: no re-parse, no re-pack (req: scrubbing a
   // previously-seen grid does zero per-voxel CPU work).
@@ -108,7 +109,7 @@ TEST(VoxelGridLayer, BackScrubAfterEmptyTickReStagesGrid) {
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session;
-  pj::scene3d::VoxelGridLayer layer(topic_id, QStringLiteral("voxels"));
+  pj::scene3d::VoxelGridLayer layer(topic_id, u"voxels"_s);
   ASSERT_TRUE(layer.attach(ctx));
 
   layer.renderAtForTest(100);
@@ -133,7 +134,7 @@ TEST(VoxelGridLayer, NewSampleReDecodes) {
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session;
-  pj::scene3d::VoxelGridLayer layer(topic_id, QStringLiteral("voxels"));
+  pj::scene3d::VoxelGridLayer layer(topic_id, u"voxels"_s);
   ASSERT_TRUE(layer.attach(ctx));
   layer.renderAtForTest(100);
   const int after_first = g_parser_calls.load();
@@ -153,7 +154,7 @@ TEST(VoxelGridLayer, StreamingAttachBeforeSampleSelfHeals) {
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session;
-  pj::scene3d::VoxelGridLayer layer(topic_id, QStringLiteral("voxels"));
+  pj::scene3d::VoxelGridLayer layer(topic_id, u"voxels"_s);
   ASSERT_TRUE(layer.attach(ctx)) << "attach must tolerate an empty store";
   EXPECT_EQ(g_parser_calls.load(), 0) << "bootstrap on an empty store must not parse";
 
@@ -164,7 +165,7 @@ TEST(VoxelGridLayer, StreamingAttachBeforeSampleSelfHeals) {
   layer.renderAtForTest(100);
   EXPECT_GE(g_parser_calls.load(), 1);
   EXPECT_TRUE(layer.hasGridForTest());
-  EXPECT_EQ(layer.sourceFrame(), QStringLiteral("map"));
+  EXPECT_EQ(layer.sourceFrame(), u"map"_s);
 }
 
 TEST(VoxelGridLayer, RebindsToReRegisteredParser) {
@@ -178,7 +179,7 @@ TEST(VoxelGridLayer, RebindsToReRegisteredParser) {
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session;
-  pj::scene3d::VoxelGridLayer layer(topic_id, QStringLiteral("voxels"));
+  pj::scene3d::VoxelGridLayer layer(topic_id, u"voxels"_s);
   ASSERT_TRUE(layer.attach(ctx));  // bootstrap decodes via the first parser
 
   // Keep the first parser alive so the buggy stale-pointer path (if reintroduced)
@@ -211,7 +212,7 @@ TEST(VoxelGridLayer, WorldBoundsReflectGrid) {
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session;
-  pj::scene3d::VoxelGridLayer layer(topic_id, QStringLiteral("voxels"));
+  pj::scene3d::VoxelGridLayer layer(topic_id, u"voxels"_s);
   ASSERT_TRUE(layer.attach(ctx));
   layer.renderAtForTest(100);
 
@@ -226,8 +227,8 @@ TEST(VoxelGridLayer, XmlRoundTrip) {
   PJ::SessionManager session;
   const auto topic_id = registerObjectTopic(session, "/voxels");
 
-  pj::scene3d::VoxelGridLayer source(topic_id, QStringLiteral("voxels"));
-  source.setActiveField(QStringLiteral("cost"));
+  pj::scene3d::VoxelGridLayer source(topic_id, u"voxels"_s);
+  source.setActiveField(u"cost"_s);
   source.setDrawMode(pj::scene3d::VoxelDrawMode::kThreshold);
   source.setThreshold(0.75);
   source.setAutoRange(false);
@@ -238,13 +239,21 @@ TEST(VoxelGridLayer, XmlRoundTrip) {
   QDomDocument doc;
   const QDomElement saved = source.xmlSaveState(doc);
 
-  pj::scene3d::VoxelGridLayer restored(topic_id, QStringLiteral("voxels"));
+  pj::scene3d::VoxelGridLayer restored(topic_id, u"voxels"_s);
+  int configuration_changes = 0;
+  QObject::connect(&restored, &PJ::ISceneLayer::configurationChanged, &restored, [&configuration_changes]() {
+    ++configuration_changes;
+  });
   ASSERT_TRUE(restored.xmlLoadState(saved));
+  EXPECT_GT(configuration_changes, 0) << "user-facing XML parameter paste must reach the workspace undo path";
+  configuration_changes = 0;
+  ASSERT_TRUE(restored.xmlLoadState(saved));
+  EXPECT_EQ(configuration_changes, 0) << "re-applying identical parameters is not a workspace mutation";
 
   // Re-serialize and compare: every persisted attribute must survive the trip.
   QDomDocument doc2;
   const QDomElement re_saved = restored.xmlSaveState(doc2);
-  EXPECT_EQ(re_saved.attribute("field"), QStringLiteral("cost"));
+  EXPECT_EQ(re_saved.attribute("field"), u"cost"_s);
   EXPECT_EQ(re_saved.attribute("draw_mode").toInt(), static_cast<int>(pj::scene3d::VoxelDrawMode::kThreshold));
   EXPECT_DOUBLE_EQ(re_saved.attribute("threshold").toDouble(), 0.75);
   EXPECT_EQ(re_saved.attribute("auto_range").toInt(), 0);

@@ -1,10 +1,11 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// Tests for the dialog building blocks added for the 0.4.0 dialog contract:
-// the PjUiLoader custom-widget vocabulary (RangeSlider, DateRangePicker), the
-// RangeSlider data binding (bounds/values + duration labels), and the generic
-// field-validity indicator (setFieldValid).
+// Tests for the dialog widget binding: the PjUiLoader custom-widget vocabulary
+// (RangeSlider, DateRangePicker), the RangeSlider data binding (bounds/values +
+// duration labels), the generic field-validity indicator (setFieldValid), and
+// the table sort-key suite (WidgetBindingTableSort — typed cells, rank ordering,
+// ragged deliveries, sort indicator, header-click events).
 
 #include <pj_widgets/ComboBox.h>
 #include <pj_widgets/ComboBoxGradientDelegate.h>
@@ -21,8 +22,10 @@
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDateTimeEdit>
 #include <QGridLayout>
 #include <QHBoxLayout>
+#include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
 #include <QRadioButton>
@@ -31,11 +34,15 @@
 #include <QSpinBox>
 #include <QTabBar>
 #include <QTabWidget>
+#include <QTableWidget>
+#include <QTableWidgetItem>
 #include <QTest>
 #include <QVBoxLayout>
 #include <QWidget>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include <pj_plugins/host/widget_data_view.hpp>
+#include <pj_plugins/host/widget_event_builder.hpp>
 #include <pj_plugins/host_qt/pj_ui_loader.hpp>
 #include <pj_plugins/host_qt/widget_adapters.hpp>
 #include <pj_plugins/host_qt/widget_binding.hpp>
@@ -44,6 +51,8 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "pj_widgets/FrameworkTokens.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -249,7 +258,7 @@ TEST(WidgetBindingCombo, ChangedItemsRebuild) {
   EXPECT_EQ(combo->count(), 3);
 }
 
-TEST(WidgetBindingRadioPairAdapter, ConvertsSafePairAndPreservesRadioEvents) {
+TEST(WidgetBindingRadioGroupAdapter, ConvertsSafePairAndPreservesRadioEvents) {
   qapp();
   recorder()->clear();
 
@@ -257,10 +266,10 @@ TEST(WidgetBindingRadioPairAdapter, ConvertsSafePairAndPreservesRadioEvents) {
   auto* root_layout = new QVBoxLayout(&root);
   auto* row = new QWidget(&root);
   auto* row_layout = new QHBoxLayout(row);
-  auto* frame = new QRadioButton(QStringLiteral("Frame"), row);
+  auto* frame = new QRadioButton(u"Frame"_s, row);
   frame->setObjectName("frameMode");
   frame->setChecked(true);
-  auto* arrow = new QRadioButton(QStringLiteral("Arrow"), row);
+  auto* arrow = new QRadioButton(u"Arrow"_s, row);
   arrow->setObjectName("arrowMode");
   auto* group = new QButtonGroup(row);
   group->addButton(frame);
@@ -269,7 +278,7 @@ TEST(WidgetBindingRadioPairAdapter, ConvertsSafePairAndPreservesRadioEvents) {
   row_layout->addWidget(arrow);
   root_layout->addWidget(row);
 
-  PJ::adaptRadioButtonPairs(&root);
+  PJ::adaptRadioGroups(&root);
 
   auto* dual = row->findChild<PJ::DualOptionsWidget*>();
   ASSERT_NE(dual, nullptr);
@@ -295,15 +304,15 @@ TEST(WidgetBindingRadioPairAdapter, ConvertsSafePairAndPreservesRadioEvents) {
   EXPECT_TRUE(saw_arrow_checked) << "the hidden original radio button must still drive plugin onToggled callbacks";
 }
 
-TEST(WidgetBindingRadioPairAdapter, WidgetDataSyncsVisibleDualOptionsWidget) {
+TEST(WidgetBindingRadioGroupAdapter, WidgetDataSyncsVisibleDualOptionsWidget) {
   qapp();
 
   QWidget root;
   auto* row_layout = new QHBoxLayout(&root);
-  auto* frame = new QRadioButton(QStringLiteral("Frame"), &root);
+  auto* frame = new QRadioButton(u"Frame"_s, &root);
   frame->setObjectName("frameMode");
   frame->setChecked(true);
-  auto* arrow = new QRadioButton(QStringLiteral("Arrow"), &root);
+  auto* arrow = new QRadioButton(u"Arrow"_s, &root);
   arrow->setObjectName("arrowMode");
   auto* group = new QButtonGroup(&root);
   group->addButton(frame);
@@ -311,7 +320,7 @@ TEST(WidgetBindingRadioPairAdapter, WidgetDataSyncsVisibleDualOptionsWidget) {
   row_layout->addWidget(frame);
   row_layout->addWidget(arrow);
 
-  PJ::adaptRadioButtonPairs(&root);
+  PJ::adaptRadioGroups(&root);
   auto* dual = root.findChild<PJ::DualOptionsWidget*>();
   ASSERT_NE(dual, nullptr);
   ASSERT_EQ(dual->selectedIndex(), 0);
@@ -326,14 +335,14 @@ TEST(WidgetBindingRadioPairAdapter, WidgetDataSyncsVisibleDualOptionsWidget) {
   EXPECT_EQ(dual->selectedIndex(), 1);
 }
 
-TEST(WidgetBindingRadioPairAdapter, ConvertsAfterInitialWidgetDataSelectsRadio) {
+TEST(WidgetBindingRadioGroupAdapter, ConvertsAfterInitialWidgetDataSelectsRadio) {
   qapp();
 
   QWidget root;
   auto* row_layout = new QHBoxLayout(&root);
-  auto* frame = new QRadioButton(QStringLiteral("Frame"), &root);
+  auto* frame = new QRadioButton(u"Frame"_s, &root);
   frame->setObjectName("frameMode");
-  auto* arrow = new QRadioButton(QStringLiteral("Arrow"), &root);
+  auto* arrow = new QRadioButton(u"Arrow"_s, &root);
   arrow->setObjectName("arrowMode");
   auto* group = new QButtonGroup(&root);
   group->addButton(frame);
@@ -341,7 +350,7 @@ TEST(WidgetBindingRadioPairAdapter, ConvertsAfterInitialWidgetDataSelectsRadio) 
   row_layout->addWidget(frame);
   row_layout->addWidget(arrow);
 
-  PJ::adaptRadioButtonPairs(&root);
+  PJ::adaptRadioGroups(&root);
   EXPECT_EQ(root.findChild<PJ::DualOptionsWidget*>(), nullptr)
       << "no-selection pairs stay untouched until plugin data chooses an option";
 
@@ -356,28 +365,28 @@ TEST(WidgetBindingRadioPairAdapter, ConvertsAfterInitialWidgetDataSelectsRadio) 
   EXPECT_EQ(dual->selectedIndex(), 1);
 }
 
-TEST(WidgetBindingRadioPairAdapter, ConvertsPairEmbeddedInMixedBoxRow) {
+TEST(WidgetBindingRadioGroupAdapter, ConvertsPairEmbeddedInMixedBoxRow) {
   qapp();
 
   QWidget root;
   auto* row_layout = new QHBoxLayout(&root);
-  auto* label = new QLabel(QStringLiteral("Timestamp:"), &root);
-  auto* publish = new QRadioButton(QStringLiteral("publish"), &root);
+  auto* label = new QLabel(u"Timestamp:"_s, &root);
+  auto* publish = new QRadioButton(u"publish"_s, &root);
   publish->setObjectName("publishTimestamp");
   publish->setChecked(true);
-  auto* log = new QRadioButton(QStringLiteral("log"), &root);
+  auto* log = new QRadioButton(u"log"_s, &root);
   log->setObjectName("logTimestamp");
   auto* group = new QButtonGroup(&root);
   group->addButton(publish);
   group->addButton(log);
-  auto* header = new QCheckBox(QStringLiteral("Use timestamp inside message (header)"), &root);
+  auto* header = new QCheckBox(u"Use timestamp inside message (header)"_s, &root);
   row_layout->addWidget(label);
   row_layout->addWidget(publish);
   row_layout->addWidget(log);
   row_layout->addStretch();
   row_layout->addWidget(header);
 
-  PJ::adaptRadioButtonPairs(&root);
+  PJ::adaptRadioGroups(&root);
 
   auto* dual = root.findChild<PJ::DualOptionsWidget*>();
   ASSERT_NE(dual, nullptr);
@@ -388,25 +397,25 @@ TEST(WidgetBindingRadioPairAdapter, ConvertsPairEmbeddedInMixedBoxRow) {
   EXPECT_EQ(dual->selectedIndex(), 0);
 }
 
-TEST(WidgetBindingRadioPairAdapter, LeavesUngroupedTwoRadioRowUntouched) {
+TEST(WidgetBindingRadioGroupAdapter, LeavesUngroupedTwoRadioRowUntouched) {
   qapp();
 
   QWidget root;
   auto* row_layout = new QHBoxLayout(&root);
-  auto* first = new QRadioButton(QStringLiteral("First"), &root);
+  auto* first = new QRadioButton(u"First"_s, &root);
   first->setChecked(true);
-  auto* second = new QRadioButton(QStringLiteral("Second"), &root);
+  auto* second = new QRadioButton(u"Second"_s, &root);
   row_layout->addWidget(first);
   row_layout->addWidget(second);
 
-  PJ::adaptRadioButtonPairs(&root);
+  PJ::adaptRadioGroups(&root);
 
   EXPECT_EQ(root.findChild<PJ::DualOptionsWidget*>(), nullptr);
   EXPECT_FALSE(first->isHidden());
   EXPECT_FALSE(second->isHidden());
 }
 
-TEST(WidgetBindingRadioPairAdapter, ConvertsButtonGroupsInsideNestedLayouts) {
+TEST(WidgetBindingRadioGroupAdapter, ConvertsButtonGroupsInsideNestedLayouts) {
   qapp();
 
   QWidget root;
@@ -414,13 +423,13 @@ TEST(WidgetBindingRadioPairAdapter, ConvertsButtonGroupsInsideNestedLayouts) {
 
   auto* array_row = new QHBoxLayout();
   auto* spin = new QSpinBox(&root);
-  auto* clamp = new QRadioButton(QStringLiteral("Clamp"), &root);
-  auto* skip = new QRadioButton(QStringLiteral("Skip"), &root);
+  auto* clamp = new QRadioButton(u"Clamp"_s, &root);
+  auto* skip = new QRadioButton(u"Skip"_s, &root);
   auto* array_group = new QButtonGroup(&root);
   array_group->addButton(clamp);
   array_group->addButton(skip);
   skip->setChecked(true);
-  array_row->addWidget(new QLabel(QStringLiteral("When an array size exceeds:"), &root));
+  array_row->addWidget(new QLabel(u"When an array size exceeds:"_s, &root));
   array_row->addWidget(spin);
   array_row->addStretch();
   array_row->addWidget(clamp);
@@ -428,20 +437,20 @@ TEST(WidgetBindingRadioPairAdapter, ConvertsButtonGroupsInsideNestedLayouts) {
   outer_layout->addLayout(array_row);
 
   auto* timestamp_row = new QHBoxLayout();
-  auto* publish = new QRadioButton(QStringLiteral("publish"), &root);
-  auto* log = new QRadioButton(QStringLiteral("log"), &root);
+  auto* publish = new QRadioButton(u"publish"_s, &root);
+  auto* log = new QRadioButton(u"log"_s, &root);
   auto* timestamp_group = new QButtonGroup(&root);
   timestamp_group->addButton(publish);
   timestamp_group->addButton(log);
   publish->setChecked(true);
-  timestamp_row->addWidget(new QLabel(QStringLiteral("Timestamp:"), &root));
+  timestamp_row->addWidget(new QLabel(u"Timestamp:"_s, &root));
   timestamp_row->addWidget(publish);
   timestamp_row->addWidget(log);
   timestamp_row->addStretch();
-  timestamp_row->addWidget(new QCheckBox(QStringLiteral("Use timestamp inside message (header)"), &root));
+  timestamp_row->addWidget(new QCheckBox(u"Use timestamp inside message (header)"_s, &root));
   outer_layout->addLayout(timestamp_row);
 
-  PJ::adaptRadioButtonPairs(&root);
+  PJ::adaptRadioGroups(&root);
 
   const auto duals = root.findChildren<PJ::DualOptionsWidget*>();
   ASSERT_EQ(duals.size(), 2);
@@ -451,15 +460,15 @@ TEST(WidgetBindingRadioPairAdapter, ConvertsButtonGroupsInsideNestedLayouts) {
   EXPECT_TRUE(log->isHidden());
 }
 
-TEST(WidgetBindingRadioPairAdapter, ConvertsIndependentButtonGroupsSharingParent) {
+TEST(WidgetBindingRadioGroupAdapter, ConvertsIndependentButtonGroupsSharingParent) {
   qapp();
 
   QWidget root;
   auto* row_layout = new QHBoxLayout(&root);
-  auto* publish = new QRadioButton(QStringLiteral("publish"), &root);
-  auto* log = new QRadioButton(QStringLiteral("log"), &root);
-  auto* clamp = new QRadioButton(QStringLiteral("Clamp"), &root);
-  auto* skip = new QRadioButton(QStringLiteral("Skip"), &root);
+  auto* publish = new QRadioButton(u"publish"_s, &root);
+  auto* log = new QRadioButton(u"log"_s, &root);
+  auto* clamp = new QRadioButton(u"Clamp"_s, &root);
+  auto* skip = new QRadioButton(u"Skip"_s, &root);
   auto* timestamp_group = new QButtonGroup(&root);
   timestamp_group->addButton(publish);
   timestamp_group->addButton(log);
@@ -468,15 +477,15 @@ TEST(WidgetBindingRadioPairAdapter, ConvertsIndependentButtonGroupsSharingParent
   overflow_group->addButton(skip);
   publish->setChecked(true);
   skip->setChecked(true);
-  row_layout->addWidget(new QLabel(QStringLiteral("Timestamp:"), &root));
+  row_layout->addWidget(new QLabel(u"Timestamp:"_s, &root));
   row_layout->addWidget(publish);
   row_layout->addWidget(log);
   row_layout->addStretch();
-  row_layout->addWidget(new QLabel(QStringLiteral("When an array size exceeds:"), &root));
+  row_layout->addWidget(new QLabel(u"When an array size exceeds:"_s, &root));
   row_layout->addWidget(clamp);
   row_layout->addWidget(skip);
 
-  PJ::adaptRadioButtonPairs(&root);
+  PJ::adaptRadioGroups(&root);
 
   const auto duals = root.findChildren<PJ::DualOptionsWidget*>();
   ASSERT_EQ(duals.size(), 2);
@@ -486,26 +495,30 @@ TEST(WidgetBindingRadioPairAdapter, ConvertsIndependentButtonGroupsSharingParent
   EXPECT_TRUE(skip->isHidden());
 }
 
-TEST(WidgetBindingRadioPairAdapter, ConvertsGroupedPairInsideGridRow) {
+TEST(WidgetBindingRadioGroupAdapter, ConvertsGroupedPairInsideGridRow) {
   qapp();
 
   QWidget root;
   auto* grid = new QGridLayout(&root);
   auto* spin = new QSpinBox(&root);
-  auto* clamp = new QRadioButton(QStringLiteral("Clamp"), &root);
-  auto* skip = new QRadioButton(QStringLiteral("Skip"), &root);
+  auto* clamp = new QRadioButton(u"Clamp"_s, &root);
+  auto* skip = new QRadioButton(u"Skip"_s, &root);
   skip->setChecked(true);
   auto* overflow_group = new QButtonGroup(&root);
   overflow_group->addButton(clamp);
   overflow_group->addButton(skip);
-  grid->addWidget(new QLabel(QStringLiteral("When an array size exceeds:"), &root), 0, 0);
+  grid->addWidget(new QLabel(u"When an array size exceeds:"_s, &root), 0, 0);
   grid->addWidget(spin, 0, 1);
-  grid->addItem(new QSpacerItem(20, 1, QSizePolicy::Expanding, QSizePolicy::Minimum), 0, 2);
+  grid->addItem(
+      new QSpacerItem(
+          PJ::theme::space(PJ::theme::Space::Section), PJ::theme::space(PJ::theme::Space::Tight),
+          QSizePolicy::Expanding, QSizePolicy::Minimum),
+      0, 2);
   grid->addWidget(clamp, 0, 3);
   grid->addWidget(skip, 0, 4);
-  grid->addWidget(new QCheckBox(QStringLiteral("Use timestamp inside message (header)"), &root), 1, 0, 1, 5);
+  grid->addWidget(new QCheckBox(u"Use timestamp inside message (header)"_s, &root), 1, 0, 1, 5);
 
-  PJ::adaptRadioButtonPairs(&root);
+  PJ::adaptRadioGroups(&root);
 
   auto* dual = root.findChild<PJ::DualOptionsWidget*>();
   ASSERT_NE(dual, nullptr);
@@ -514,22 +527,22 @@ TEST(WidgetBindingRadioPairAdapter, ConvertsGroupedPairInsideGridRow) {
   EXPECT_EQ(dual->selectedIndex(), 1);
 }
 
-TEST(WidgetBindingRadioPairAdapter, LeavesUngroupedLargerRadioSetUntouched) {
+TEST(WidgetBindingRadioGroupAdapter, LeavesUngroupedLargerRadioSetUntouched) {
   qapp();
 
   QWidget root;
   auto* row_layout = new QHBoxLayout(&root);
-  auto* a = new QRadioButton(QStringLiteral("A"), &root);
+  auto* a = new QRadioButton(u"A"_s, &root);
   a->setChecked(true);
-  auto* b = new QRadioButton(QStringLiteral("B"), &root);
-  auto* c = new QRadioButton(QStringLiteral("C"), &root);
-  auto* d = new QRadioButton(QStringLiteral("D"), &root);
+  auto* b = new QRadioButton(u"B"_s, &root);
+  auto* c = new QRadioButton(u"C"_s, &root);
+  auto* d = new QRadioButton(u"D"_s, &root);
   row_layout->addWidget(a);
   row_layout->addWidget(b);
   row_layout->addWidget(c);
   row_layout->addWidget(d);
 
-  PJ::adaptRadioButtonPairs(&root);
+  PJ::adaptRadioGroups(&root);
 
   EXPECT_EQ(root.findChild<PJ::DualOptionsWidget*>(), nullptr);
   EXPECT_FALSE(a->isHidden());
@@ -538,13 +551,54 @@ TEST(WidgetBindingRadioPairAdapter, LeavesUngroupedLargerRadioSetUntouched) {
   EXPECT_FALSE(d->isHidden());
 }
 
+TEST(WidgetBindingRadioGroupAdapter, ConvertsExplicitThreeButtonGroup) {
+  qapp();
+
+  QWidget root;
+  auto* row_layout = new QHBoxLayout(&root);
+  auto* contains = new QRadioButton(u"Contains"_s, &root);
+  contains->setObjectName("filterContains");
+  auto* wildcard = new QRadioButton(u"Wildcard"_s, &root);
+  wildcard->setObjectName("filterWildcard");
+  wildcard->setChecked(true);
+  auto* regexp = new QRadioButton(u"RegExp"_s, &root);
+  regexp->setObjectName("filterRegExp");
+  auto* group = new QButtonGroup(&root);
+  group->addButton(contains);
+  group->addButton(wildcard);
+  group->addButton(regexp);
+  row_layout->addWidget(contains);
+  row_layout->addWidget(wildcard);
+  row_layout->addWidget(regexp);
+
+  PJ::adaptRadioGroups(&root);
+
+  auto* dual = root.findChild<PJ::DualOptionsWidget*>();
+  ASSERT_NE(dual, nullptr);
+  EXPECT_EQ(dual->optionCount(), 3);
+  EXPECT_TRUE(contains->isHidden());
+  EXPECT_TRUE(wildcard->isHidden());
+  EXPECT_TRUE(regexp->isHidden());
+  EXPECT_EQ(dual->selectedIndex(), 1);
+
+  dual->setSelectedIndex(2);
+  EXPECT_TRUE(regexp->isChecked());
+  EXPECT_FALSE(wildcard->isChecked());
+
+  PJ::WidgetData wd;
+  wd.setChecked("filterContains", true);
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
+  EXPECT_EQ(dual->selectedIndex(), 0);
+  EXPECT_TRUE(contains->isHidden());
+}
+
 TEST(WidgetCheckBoxAdapter, ConvertsCheckBoxToLabeledToggleAndPreservesEvents) {
   qapp();
   recorder()->clear();
 
   QWidget root;
   auto* layout = new QVBoxLayout(&root);
-  auto* check = new QCheckBox(QStringLiteral("Enable streaming"), &root);
+  auto* check = new QCheckBox(u"Enable streaming"_s, &root);
   check->setObjectName("enableStreaming");
   layout->addWidget(check);
 
@@ -553,7 +607,7 @@ TEST(WidgetCheckBoxAdapter, ConvertsCheckBoxToLabeledToggleAndPreservesEvents) {
   auto* toggle = root.findChild<PJ::ToggleSwitch*>();
   ASSERT_NE(toggle, nullptr);
   EXPECT_TRUE(check->isHidden());
-  EXPECT_EQ(toggle->text(), QStringLiteral("Enable streaming"));
+  EXPECT_EQ(toggle->text(), u"Enable streaming"_s);
   EXPECT_EQ(toggle->labelSide(), PJ::ToggleSwitch::LabelSide::Left);
   EXPECT_FALSE(toggle->isChecked());
 
@@ -583,7 +637,7 @@ TEST(WidgetCheckBoxAdapter, WidgetDataSyncsToggle) {
 
   QWidget root;
   auto* layout = new QVBoxLayout(&root);
-  auto* check = new QCheckBox(QStringLiteral("Loop"), &root);
+  auto* check = new QCheckBox(u"Loop"_s, &root);
   check->setObjectName("loop");
   layout->addWidget(check);
 
@@ -606,7 +660,7 @@ TEST(WidgetCheckBoxAdapter, LeavesTristateCheckBoxUntouched) {
 
   QWidget root;
   auto* layout = new QVBoxLayout(&root);
-  auto* check = new QCheckBox(QStringLiteral("Partial"), &root);
+  auto* check = new QCheckBox(u"Partial"_s, &root);
   check->setTristate(true);
   layout->addWidget(check);
 
@@ -655,7 +709,7 @@ TEST(WidgetComboBoxAdapter, UpgradesPlainComboBoxInPlacePreservingState) {
   auto* layout = new QVBoxLayout(&root);
   auto* combo = new QComboBox(&root);
   combo->setObjectName("mode");
-  combo->addItems({QStringLiteral("a"), QStringLiteral("b"), QStringLiteral("c")});
+  combo->addItems({u"a"_s, u"b"_s, u"c"_s});
   combo->setCurrentIndex(2);
   layout->addWidget(combo);
 
@@ -810,4 +864,859 @@ TEST(WidgetScrollAreaAdapter, RespectsAlwaysOnPolicyPerAxis) {
   EXPECT_EQ(area->horizontalScrollBarPolicy(), Qt::ScrollBarAlwaysOff) << "default horizontal axis still gets a pill";
 }
 
+// setDateTime/setDateTimeRange land on a QDateTimeEdit (range first, so the
+// value is not clamped by a stale default range).
+TEST(WidgetBindingDateTime, AppliesValueAndRange) {
+  qapp();
+  QWidget root;
+  auto* edit = new QDateTimeEdit(&root);
+  edit->setObjectName("startTime");
+
+  PJ::WidgetData wd;
+  wd.setDateTime("startTime", "2026-05-21T13:45:00");
+  wd.setDateTimeRange("startTime", "2026-05-01T00:00:00", "2026-06-01T00:00:00");
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
+
+  EXPECT_EQ(edit->dateTime(), QDateTime::fromString(u"2026-05-21T13:45:00"_s, Qt::ISODate));
+  EXPECT_EQ(edit->minimumDateTime(), QDateTime::fromString(u"2026-05-01T00:00:00"_s, Qt::ISODate));
+  EXPECT_EQ(edit->maximumDateTime(), QDateTime::fromString(u"2026-06-01T00:00:00"_s, Qt::ISODate));
+}
+
+// An edited QDateTimeEdit reports back as a datetime_iso event so the typed
+// dispatcher routes it to onDateTimeChanged.
+TEST(WidgetBindingDateTime, UserEditEmitsDateTimeIso) {
+  qapp();
+  recorder()->clear();
+  QWidget root;
+  auto* edit = new QDateTimeEdit(&root);
+  edit->setObjectName("startTime");
+
+  PJ::connectWidgetSignals(
+      &root, [](const std::string& name, const std::string& json) { recorder()->push_back({name, json}); });
+
+  edit->setDateTime(QDateTime::fromString(u"2026-01-02T03:04:05"_s, Qt::ISODate));
+
+  bool saw_datetime = false;
+  for (const auto& ev : *recorder()) {
+    if (ev.name != "startTime") {
+      continue;
+    }
+    auto j = nlohmann::json::parse(ev.json, nullptr, false);
+    if (!j.is_discarded() && j.contains("datetime_iso") && j["datetime_iso"] == "2026-01-02T03:04:05") {
+      saw_datetime = true;
+    }
+  }
+  EXPECT_TRUE(saw_datetime) << "QDateTimeEdit edit must emit a datetime_iso event";
+}
+
+// Editors whose display format carries milliseconds must round-trip them
+// (the event serializes with ISODateWithMs; whole-second values stay bare).
+TEST(WidgetBindingDateTime, MillisecondEditorEmitsFractionalSeconds) {
+  qapp();
+  recorder()->clear();
+  QWidget root;
+  auto* edit = new QDateTimeEdit(&root);
+  edit->setObjectName("stamp");
+  edit->setDisplayFormat(u"yyyy-MM-dd HH:mm:ss.zzz"_s);
+
+  PJ::connectWidgetSignals(
+      &root, [](const std::string& name, const std::string& json) { recorder()->push_back({name, json}); });
+
+  edit->setDateTime(QDateTime::fromString(u"2026-01-02T03:04:05.678"_s, Qt::ISODateWithMs));
+
+  bool saw_ms = false;
+  for (const auto& ev : *recorder()) {
+    if (ev.name != "stamp") {
+      continue;
+    }
+    auto j = nlohmann::json::parse(ev.json, nullptr, false);
+    if (!j.is_discarded() && j.contains("datetime_iso") && j["datetime_iso"] == "2026-01-02T03:04:05.678") {
+      saw_ms = true;
+    }
+  }
+  EXPECT_TRUE(saw_ms) << "ms-precision editors must not truncate fractional seconds";
+}
+
+// --- Table sort keys (typed cells riding the dialog protocol) -----------------
+//
+// Every sort below runs through QTableWidgetItem::operator< — both
+// QTableWidget::sortItems and a sorting-enabled header click end in
+// QTableModel::sort's std::stable_sort. Qt implements DescendingOrder by
+// swapping the operands of the SAME operator< (QTableModel::itemGreaterThan is
+// `right < left`), so descending is the exact reverse of the ascending strict
+// order — the keyless "text rank" flips from the bottom to the TOP of the view.
+
+// Widget-data JSON for one table exactly as a plugin delivery produces it:
+// display rows plus the sparse per-column sort keys. Returned dump()ed so every
+// test round-trips the real C-ABI wire encoding (a string) — notably nlohmann's
+// dump() serializes a NaN/Inf double as JSON null, so such a key ARRIVES at the
+// host as a keyless cell.
+std::string tableJson(
+    const char* name, const std::vector<std::vector<std::string>>& rows,
+    const nlohmann::json& column_values = nlohmann::json()) {
+  nlohmann::json d;
+  const std::size_t cols = rows.empty() ? 0 : rows.front().size();
+  nlohmann::json headers = nlohmann::json::array();
+  for (std::size_t c = 0; c < cols; ++c) {
+    headers.push_back("H" + std::to_string(c));
+  }
+  d[name]["headers"] = headers;
+  d[name]["rows"] = rows;
+  if (!column_values.is_null()) {
+    d[name]["column_values"] = column_values;
+  }
+  return d.dump();
+}
+
+// Top-to-bottom text of one column — the current view order after any sort.
+std::vector<std::string> columnTexts(const QTableWidget* tw, int col) {
+  std::vector<std::string> out;
+  for (int r = 0; r < tw->rowCount(); ++r) {
+    const QTableWidgetItem* item = tw->item(r, col);
+    out.push_back(item != nullptr ? item->text().toStdString() : std::string());
+  }
+  return out;
+}
+
+// The reported repro: keyed cells must order by VALUE, not by rendered text —
+// a text sort of "720","7","65" yields 65,7,720 ascending, which is the bug.
+TEST(WidgetBindingTableSort, NumericKeysSortNumericallyBothDirections) {
+  qapp();
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(tableJson("tbl", {{"720"}, {"7"}, {"65"}}, {{"0", {720, 7, 65}}})));
+  ASSERT_EQ(tw->rowCount(), 3);
+
+  tw->sortItems(0, Qt::AscendingOrder);
+  EXPECT_EQ(columnTexts(tw, 0), (std::vector<std::string>{"7", "65", "720"}));
+  EXPECT_NE(columnTexts(tw, 0), (std::vector<std::string>{"65", "7", "720"})) << "must not be the string order";
+
+  tw->sortItems(0, Qt::DescendingOrder);
+  EXPECT_EQ(columnTexts(tw, 0), (std::vector<std::string>{"720", "65", "7"}));
+}
+
+// An old plugin sends no column_values: legacy lexicographic text order must be
+// unchanged (the escape hatch third-party text-only tables rely on).
+TEST(WidgetBindingTableSort, NoColumnValuesKeepsLexicographicOrder) {
+  qapp();
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(tableJson("tbl", {{"720"}, {"7"}, {"65"}})));
+  ASSERT_EQ(tw->rowCount(), 3);
+
+  tw->sortItems(0, Qt::AscendingOrder);
+  EXPECT_EQ(columnTexts(tw, 0), (std::vector<std::string>{"65", "7", "720"}));
+}
+
+// Hidden key: identical-looking date texts sort by their int64 keys, so a
+// column can display one thing and order by another (Mosaico's Date column).
+TEST(WidgetBindingTableSort, HiddenKeysOverrideTextOrder) {
+  qapp();
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  // Keys deliberately disagree with the texts' lexicographic order.
+  const std::string wire = tableJson("tbl", {{"2026-07-01"}, {"2026-06-30"}, {"2026-07-02"}}, {{"0", {300, 100, 200}}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wire));
+  ASSERT_EQ(tw->rowCount(), 3);
+
+  tw->sortItems(0, Qt::AscendingOrder);
+  EXPECT_EQ(columnTexts(tw, 0), (std::vector<std::string>{"2026-06-30", "2026-07-02", "2026-07-01"}));
+
+  tw->sortItems(0, Qt::DescendingOrder);
+  EXPECT_EQ(columnTexts(tw, 0), (std::vector<std::string>{"2026-07-01", "2026-07-02", "2026-06-30"}));
+}
+
+// int64 exactness: these two keys collapse to the SAME double, so a comparator
+// (or JSON decode) that coerces through double would tie them and stable_sort
+// would keep the delivered a,b order — only an exact integer compare gives b,a.
+TEST(WidgetBindingTableSort, Int64KeysCompareExactlyWithoutDoubleCoercion) {
+  qapp();
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  const std::string wire = tableJson("tbl", {{"a"}, {"b"}}, {{"0", {1780000000000000124ULL, 1780000000000000123ULL}}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wire));
+  ASSERT_EQ(tw->rowCount(), 2);
+
+  tw->sortItems(0, Qt::AscendingOrder);
+  // ...123 < ...124 exactly; a double tie (or a text compare "a" < "b") would both leave a,b.
+  EXPECT_EQ(columnTexts(tw, 0), (std::vector<std::string>{"b", "a"}));
+}
+
+// Cross-signedness: the wire decodes 2^64-1 as uint64 and -5 as int64 in ONE
+// column; std::cmp_less must order them exactly (an int64 cast would wrap the
+// max to -1, a uint64 cast would wrap -5 huge — both misplace a row).
+TEST(WidgetBindingTableSort, CrossSignednessIntegerCompareIsExact) {
+  qapp();
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  const std::string wire = tableJson("tbl", {{"umax"}, {"neg"}, {"three"}}, {{"0", {18446744073709551615ULL, -5, 3}}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wire));
+  ASSERT_EQ(tw->rowCount(), 3);
+
+  tw->sortItems(0, Qt::AscendingOrder);
+  // Exact order -5 < 3 < 2^64-1. An int64-wrapped compare would give neg,umax,three;
+  // a uint64-wrapped one three,neg,umax; a text compare max,neg,three.
+  EXPECT_EQ(columnTexts(tw, 0), (std::vector<std::string>{"neg", "three", "umax"}));
+}
+
+// Keyless cells among keyed ones (ulog "N/A"): null keys take the text rank,
+// which sits after every number ascending — and FIRST descending, because Qt
+// reverses by swapping operator<'s operands, flipping the rank order wholesale.
+TEST(WidgetBindingTableSort, KeylessCellsRankAfterNumbersAscendingFirstDescending) {
+  qapp();
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  const std::string wire = tableJson("tbl", {{"N/A"}, {"10"}, {"5"}, {"Aardvark"}}, {{"0", {nullptr, 10, 5, nullptr}}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wire));
+  ASSERT_EQ(tw->rowCount(), 4);
+
+  tw->sortItems(0, Qt::AscendingOrder);
+  // Numbers by value first, then the keyless cells ordered among themselves by text.
+  EXPECT_EQ(columnTexts(tw, 0), (std::vector<std::string>{"5", "10", "Aardvark", "N/A"}));
+
+  tw->sortItems(0, Qt::DescendingOrder);
+  // Exact reverse of the ascending strict order: keyless (reverse text) first, then numbers descending.
+  EXPECT_EQ(columnTexts(tw, 0), (std::vector<std::string>{"N/A", "Aardvark", "10", "5"}));
+}
+
+// Wire fidelity: a NaN sort key does not survive dump() (it serializes as JSON
+// null), so it must behave as a KEYLESS cell — interleaving with other keyless
+// cells by text — not as the comparator's dedicated NaN rank.
+TEST(WidgetBindingTableSort, NanKeyArrivesAsNullAndSortsInTextRank) {
+  qapp();
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  const nlohmann::json cols = {{"0", {std::numeric_limits<double>::quiet_NaN(), nullptr, 5.0}}};
+  const std::string wire = tableJson("tbl", {{"zz-nan"}, {"aa"}, {"5"}}, cols);
+  // Premise: the dumped wire carries null where the NaN was — no NaN reaches the host.
+  ASSERT_TRUE(nlohmann::json::parse(wire)["tbl"]["column_values"]["0"][0].is_null());
+
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wire));
+  ASSERT_EQ(tw->rowCount(), 3);
+
+  tw->sortItems(0, Qt::AscendingOrder);
+  // An in-process NaN would hold its own rank BEFORE the keyless cells ("5","zz-nan","aa");
+  // off the wire it is keyless, so it orders by text among the keyless cells.
+  EXPECT_EQ(columnTexts(tw, 0), (std::vector<std::string>{"5", "aa", "zz-nan"}));
+}
+
+// A column mixing integer and float keys is rejected wholesale (no exact order
+// exists across uint64 and double), so the WHOLE column falls back to text.
+TEST(WidgetBindingTableSort, MixedIntAndFloatColumnFallsBackToTextOrder) {
+  qapp();
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(tableJson("tbl", {{"2.5"}, {"10"}, {"3"}}, {{"0", {2.5, 10, 3}}})));
+  ASSERT_EQ(tw->rowCount(), 3);
+
+  tw->sortItems(0, Qt::AscendingOrder);
+  // Text order, NOT the numeric 2.5,3,10 — the mixed column's keys must be ignored.
+  EXPECT_EQ(columnTexts(tw, 0), (std::vector<std::string>{"10", "2.5", "3"}));
+}
+
+// A values array whose length disagrees with the row count is dropped (a
+// partial key column would sort some rows by number, others by text).
+TEST(WidgetBindingTableSort, CountMismatchDropsColumnKeys) {
+  qapp();
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(tableJson("tbl", {{"720"}, {"7"}, {"65"}}, {{"0", {720, 7}}})));
+  ASSERT_EQ(tw->rowCount(), 3);
+
+  tw->sortItems(0, Qt::AscendingOrder);
+  // Two keys for three rows ⇒ column ignored ⇒ lexicographic text order.
+  EXPECT_EQ(columnTexts(tw, 0), (std::vector<std::string>{"65", "7", "720"}));
+}
+
+// Same-shape redelivery that ADDS keys must stamp them onto the existing items
+// in place (no rebuild), flip the column to numeric ordering, and keep the
+// per-row plugin-index role mapping index-keyed aspects through a sorted view.
+TEST(WidgetBindingTableSort, SameShapeRedeliveryAddsKeysAndPreservesRowRoles) {
+  qapp();
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  // First delivery: no keys — sorting is lexicographic.
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(tableJson("tbl", {{"720"}, {"7"}, {"65"}})));
+  ASSERT_EQ(tw->rowCount(), 3);
+  tw->sortItems(0, Qt::AscendingOrder);
+  ASSERT_EQ(columnTexts(tw, 0), (std::vector<std::string>{"65", "7", "720"}));
+  QTableWidgetItem* top_item = tw->item(0, 0);
+  ASSERT_NE(top_item, nullptr);
+
+  // Same shape redelivered WITH keys: cells rewritten in place (same item
+  // pointers), so keys land on the items the user's selection/scroll live on.
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(tableJson("tbl", {{"720"}, {"7"}, {"65"}}, {{"0", {720, 7, 65}}})));
+  ASSERT_EQ(tw->rowCount(), 3);
+  EXPECT_EQ(tw->item(0, 0), top_item) << "same-shape redelivery must reuse the existing items";
+  // Sorting is off, so the rewrite leaves the table in plugin delivery order.
+  ASSERT_EQ(columnTexts(tw, 0), (std::vector<std::string>{"720", "7", "65"}));
+
+  tw->sortItems(0, Qt::AscendingOrder);
+  EXPECT_EQ(columnTexts(tw, 0), (std::vector<std::string>{"7", "65", "720"})) << "keys must now drive the order";
+
+  // Plugin row 0 ("720") sits at view row 2 after the sort; index-keyed
+  // selection must land there via the kPluginRowRole tags restamped above.
+  nlohmann::json sel;
+  sel["tbl"]["selected_rows"] = {0};
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(sel.dump()));
+  EXPECT_FALSE(tw->item(0, 0)->isSelected());
+  EXPECT_FALSE(tw->item(1, 0)->isSelected());
+  EXPECT_TRUE(tw->item(2, 0)->isSelected());
+}
+
+// A .ui-declared table starts with PLAIN QTableWidgetItems; the first delivery
+// must upgrade them to typed cells without losing the roles/flags they carried,
+// and the upgraded items must sort by key and keep plugin-index translation.
+TEST(WidgetBindingTableSort, PlainUiItemsUpgradeToTypedPreservingRolesAndFlags) {
+  qapp();
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+  tw->setRowCount(3);
+  tw->setColumnCount(1);
+  tw->setItem(0, 0, new QTableWidgetItem(u"b"_s));
+  tw->setItem(1, 0, new QTableWidgetItem(u"c"_s));
+  tw->setItem(2, 0, new QTableWidgetItem(u"a"_s));
+  tw->item(0, 0)->setToolTip(u"keep"_s);
+  tw->item(0, 0)->setFlags(tw->item(0, 0)->flags() & ~Qt::ItemIsDragEnabled);
+
+  // Same shape as the pre-declared cells ⇒ the in-place upgrade path runs.
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(tableJson("tbl", {{"b"}, {"c"}, {"a"}}, {{"0", {30, 10, 20}}})));
+  ASSERT_EQ(tw->rowCount(), 3);
+  EXPECT_EQ(tw->item(0, 0)->toolTip(), u"keep"_s) << "upgrade must copy the roles the plain item carried";
+  EXPECT_FALSE(tw->item(0, 0)->flags().testFlag(Qt::ItemIsDragEnabled)) << "upgrade must copy the plain item's flags";
+
+  tw->sortItems(0, Qt::AscendingOrder);
+  // Keys 10,20,30 disagree with text order a,b,c — the upgraded cells must follow the keys.
+  EXPECT_EQ(columnTexts(tw, 0), (std::vector<std::string>{"c", "a", "b"}));
+
+  // Plugin row 0 ("b") is at view row 2 after the sort; visible_rows is keyed by
+  // plugin index, so only that view row may stay visible.
+  nlohmann::json vis;
+  vis["tbl"]["visible_rows"] = {0};
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(vis.dump()));
+  EXPECT_TRUE(tw->isRowHidden(0));
+  EXPECT_TRUE(tw->isRowHidden(1));
+  EXPECT_FALSE(tw->isRowHidden(2));
+}
+
+// sort_indicator is purely cosmetic: it draws the arrow for a plugin-sorted
+// table (Qt only paints one when its own sorting is on) and must NOT reorder
+// the delivered rows.
+TEST(WidgetBindingTableSort, SortIndicatorAppliedCosmeticallyWithoutReordering) {
+  qapp();
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  nlohmann::json d = nlohmann::json::parse(tableJson("tbl", {{"b", "2"}, {"a", "1"}, {"c", "3"}}));
+  d["tbl"]["sort_indicator"] = {{"col", 1}, {"asc", false}};
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(d.dump()));
+  ASSERT_EQ(tw->rowCount(), 3);
+
+  auto* header = tw->horizontalHeader();
+  EXPECT_TRUE(header->isSortIndicatorShown());
+  EXPECT_EQ(header->sortIndicatorSection(), 1);
+  EXPECT_EQ(header->sortIndicatorOrder(), Qt::DescendingOrder);
+  // The plugin's delivered order is the truth — a real descending sort of column
+  // 1 would show c,b,a, so an unchanged b,a,c proves the arrow changed nothing.
+  EXPECT_EQ(columnTexts(tw, 0), (std::vector<std::string>{"b", "a", "c"}));
+}
+
+// A real user click on a header section must reach the plugin as a
+// headerClicked(section) event — the wiring Mosaico's onHeaderClicked sorting
+// depends on — while a sorting-disabled table's rows stay untouched.
+TEST(WidgetBindingTableSort, HeaderClickEmitsHeaderClickedEvent) {
+  qapp();
+  recorder()->clear();
+  QWidget root;
+  auto* layout = new QVBoxLayout(&root);
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+  layout->addWidget(tw);
+
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(tableJson("tbl", {{"b", "2"}, {"a", "1"}})));
+  ASSERT_EQ(tw->rowCount(), 2);
+  PJ::connectWidgetSignals(
+      &root, [](const std::string& name, const std::string& json) { recorder()->push_back({name, json}); });
+
+  root.resize(500, 400);
+  root.show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(&root));
+
+  auto* header = tw->horizontalHeader();
+  ASSERT_EQ(header->count(), 2);
+  ASSERT_GT(header->sectionSize(1), 0);
+  const QPoint pos(header->sectionViewportPosition(1) + header->sectionSize(1) / 2, header->height() / 2);
+  ASSERT_TRUE(header->viewport()->rect().contains(pos)) << "click point must land inside section 1";
+  QTest::mouseClick(header->viewport(), Qt::LeftButton, Qt::NoModifier, pos);
+
+  // The click also selects the column (Qt's default when sorting is off), so the
+  // recorder may hold a selection event too — find the header event among them.
+  bool saw_header_event = false;
+  for (const auto& ev : *recorder()) {
+    if (ev.name == "tbl" && ev.json == PJ::WidgetEventBuilder::headerClicked(1)) {
+      saw_header_event = true;
+    }
+  }
+  EXPECT_TRUE(saw_header_event) << "sectionClicked must reach the plugin as WidgetEventBuilder::headerClicked(1)";
+  // Sorting is not enabled, so the click must not reorder the plugin's rows.
+  EXPECT_EQ(columnTexts(tw, 0), (std::vector<std::string>{"b", "a"}));
+}
+
+// Qt's REAL sorting path: setSortingEnabled(true) plus an actual header click
+// must both route through TypedTableItem::operator< and order numerically.
+TEST(WidgetBindingTableSort, RealHeaderClickSortsTypedColumnThroughQt) {
+  qapp();
+  QWidget root;
+  auto* layout = new QVBoxLayout(&root);
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+  layout->addWidget(tw);
+
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(tableJson("tbl", {{"720"}, {"7"}, {"65"}}, {{"0", {720, 7, 65}}})));
+  ASSERT_EQ(tw->rowCount(), 3);
+
+  auto* header = tw->horizontalHeader();
+  // Pin a deterministic starting indicator: nothing is connected yet (sorting
+  // still off), so this must not reorder anything by itself.
+  header->setSortIndicator(0, Qt::DescendingOrder);
+  ASSERT_EQ(columnTexts(tw, 0), (std::vector<std::string>{"720", "7", "65"}));
+
+  // Enabling sorting makes Qt sort immediately by the current indicator
+  // (documented QTableView behavior) — numeric descending, not text descending.
+  tw->setSortingEnabled(true);
+  ASSERT_EQ(columnTexts(tw, 0), (std::vector<std::string>{"720", "65", "7"}));
+
+  root.resize(500, 400);
+  root.show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(&root));
+  ASSERT_GT(header->sectionSize(0), 0);
+  const QPoint pos(header->sectionViewportPosition(0) + header->sectionSize(0) / 2, header->height() / 2);
+  ASSERT_TRUE(header->viewport()->rect().contains(pos)) << "click point must land inside section 0";
+
+  // A click on the already-indicated section flips the order (Qt's
+  // flipSortIndicator), so Descending becomes Ascending and Qt re-sorts.
+  QTest::mouseClick(header->viewport(), Qt::LeftButton, Qt::NoModifier, pos);
+  EXPECT_EQ(header->sortIndicatorOrder(), Qt::AscendingOrder);
+  EXPECT_EQ(columnTexts(tw, 0), (std::vector<std::string>{"7", "65", "720"}))
+      << "the real click path must sort by the numeric keys, not the texts";
+}
+
+// A ragged typed delivery (a row shorter than the table) over .ui-declared
+// plain cells must not leave the omitted cell as a PLAIN item beside typed
+// neighbours: plain↔typed pairs compare by text while typed↔typed pairs compare
+// by value, and one column mixing both is not a strict weak ordering (UB inside
+// Qt's stable_sort). The omitted cell is blanked to a keyless typed cell, which
+// sorts in the text rank.
+TEST(WidgetBindingTableSort, RaggedRowsBlankOmittedCellsInsteadOfMixingComparators) {
+  qapp();
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+  tw->setRowCount(3);
+  tw->setColumnCount(1);
+  tw->setItem(0, 0, new QTableWidgetItem(u"5"_s));
+  tw->setItem(1, 0, new QTableWidgetItem(u"3"_s));  // the cell the ragged delivery omits
+  tw->setItem(2, 0, new QTableWidgetItem(u"20"_s));
+
+  // Same shape (3 rows, first row 1 wide) ⇒ the in-place path; row 1 is empty.
+  // The SDK emits null for a missing cell, so the key column stays 3 long.
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(tableJson("tbl", {{"5"}, {}, {"20"}}, {{"0", {5, nullptr, 20}}})));
+  ASSERT_EQ(tw->rowCount(), 3);
+  ASSERT_NE(tw->item(1, 0), nullptr);
+  EXPECT_EQ(tw->item(1, 0)->text(), QString()) << "the omitted cell is blanked, not left with stale .ui text";
+
+  tw->sortItems(0, Qt::AscendingOrder);
+  // Keyed 5 < 20 numerically; the blanked keyless cell sorts in the text rank after them.
+  EXPECT_EQ(columnTexts(tw, 0), (std::vector<std::string>{"5", "20", ""}));
+}
+
+// A delivery that changes the table's WIDTH with an unchanged row count takes
+// the rebuild path, where setRowCount is a no-op — cells the new rows do not
+// cover must be dropped, or they keep stale text, stale sort keys, and a stale
+// plugin-row tag that corrupts the view<->plugin mapping every index-keyed
+// aspect (selection, visibility, radio) depends on.
+TEST(WidgetBindingTableSort, WidthChangeRebuildDropsStaleCellsAndRowTags) {
+  qapp();
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(tableJson("tbl", {{"a", "1"}, {"b", "2"}})));
+  ASSERT_EQ(tw->rowCount(), 2);
+  ASSERT_EQ(tw->columnCount(), 2);
+
+  // Rows only (no headers aspect): same row count but narrower rows — row 0
+  // delivers nothing at all, row 1 a single cell.
+  nlohmann::json d2;
+  d2["tbl"]["rows"] = nlohmann::json::array({nlohmann::json::array(), nlohmann::json::array({"new"})});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(d2.dump()));
+
+  EXPECT_EQ(tw->item(0, 0), nullptr) << "cells from the wider shape must not survive the rebuild";
+  EXPECT_EQ(tw->item(0, 1), nullptr);
+  ASSERT_NE(tw->item(1, 0), nullptr);
+  EXPECT_EQ(tw->item(1, 0)->text(), u"new"_s);
+  EXPECT_EQ(tw->item(1, 1), nullptr);
+
+  // Index-keyed aspects follow the surviving tags: plugin row 1 is view row 1;
+  // the itemless row 0 falls back to its own index and is simply hidden.
+  nlohmann::json vis;
+  vis["tbl"]["visible_rows"] = {1};
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(vis.dump()));
+  EXPECT_TRUE(tw->isRowHidden(0));
+  EXPECT_FALSE(tw->isRowHidden(1));
+}
+
+// Programmatic selection restore must not read back as user input: applying
+// selected_rows / selected_items emits NO selectionChanged event to the plugin.
+// applyToWidget's widget-wide QSignalBlocker is what guarantees this — without
+// it, clearSelection() would fire a transiently EMPTY selection mid-apply, and
+// a plugin that treats an empty selection as authoritative (Mosaico) would
+// destroy its own selection state while its delivery is still being applied.
+// This test pins that guarantee against the blocker ever being removed.
+TEST(WidgetBindingTableSort, ProgrammaticSelectionRestoreEmitsNoEvents) {
+  qapp();
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+  recorder()->clear();
+  PJ::connectWidgetSignals(
+      &root, [](const std::string& name, const std::string& json) { recorder()->push_back({name, json}); });
+
+  nlohmann::json d = nlohmann::json::parse(tableJson("tbl", {{"a"}, {"b"}, {"c"}}));
+  d["tbl"]["selected_rows"] = {1};
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(d.dump()));
+  ASSERT_EQ(tw->selectionModel()->selectedRows().size(), 1);
+  EXPECT_TRUE(recorder()->empty()) << "index-keyed restore leaked selection events to the plugin";
+
+  nlohmann::json d2 = nlohmann::json::parse(tableJson("tbl", {{"a"}, {"b"}, {"c"}}));
+  d2["tbl"]["selected_items"] = {"c"};
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(d2.dump()));
+  EXPECT_TRUE(recorder()->empty()) << "text-keyed restore leaked selection events to the plugin";
+}
+
+// Keys are sized by the WIDEST row, not the first: a delivery whose first row is
+// a short spanning row ("Totals") must not silently drop every later column's
+// keys and revert those columns to text order.
+TEST(WidgetBindingTableSort, KeysBeyondFirstRowWidthStillApply) {
+  qapp();
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  nlohmann::json d;
+  d["tbl"]["headers"] = {"H0", "H1"};
+  d["tbl"]["rows"] = nlohmann::json::array(
+      {nlohmann::json::array({"Totals"}), nlohmann::json::array({"a", "9"}), nlohmann::json::array({"b", "10"})});
+  d["tbl"]["column_values"]["1"] = {nullptr, 9, 10};
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(d.dump()));
+  ASSERT_EQ(tw->columnCount(), 2);
+
+  tw->sortItems(1, Qt::AscendingOrder);
+  // 9 < 10 numerically (text order would put "10" first); the "Totals" row has
+  // no column-1 item at all, and Qt keeps itemless rows at the end of the sort.
+  EXPECT_EQ(columnTexts(tw, 0), (std::vector<std::string>{"a", "b", "Totals"}));
+  EXPECT_EQ(columnTexts(tw, 1), (std::vector<std::string>{"9", "10", ""}));
+}
+
+// QTableWidget::setItem does not range-check the column: an overflow cell of a
+// row wider than the table would land in the NEXT row via the flattened index
+// (overwriting its first cell and plugin-row tag). Overflow cells are dropped.
+TEST(WidgetBindingTableSort, RowsWiderThanTableAreClamped) {
+  qapp();
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  nlohmann::json d;
+  d["tbl"]["headers"] = {"H0", "H1"};
+  d["tbl"]["rows"] =
+      nlohmann::json::array({nlohmann::json::array({"a", "1", "x"}), nlohmann::json::array({"b", "2", "y"})});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(d.dump()));
+
+  ASSERT_EQ(tw->columnCount(), 2);
+  ASSERT_EQ(tw->rowCount(), 2);
+  ASSERT_NE(tw->item(1, 0), nullptr);
+  EXPECT_EQ(tw->item(1, 0)->text(), u"b"_s) << "an overflow write would have overwritten this with \"x\"";
+  EXPECT_EQ(columnTexts(tw, 0), (std::vector<std::string>{"a", "b"}));
+}
+
+// Qt's click handling flips the visible sort arrow before sectionClicked fires,
+// even with sorting off. A click the plugin ignores must not leave the arrow on
+// the clicked section: the binding re-asserts the plugin-delivered indicator.
+TEST(WidgetBindingTableSort, IgnoredHeaderClickRestoresDeliveredIndicator) {
+  qapp();
+  recorder()->clear();
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+  PJ::connectWidgetSignals(
+      &root, [](const std::string& name, const std::string& json) { recorder()->push_back({name, json}); });
+
+  nlohmann::json d = nlohmann::json::parse(tableJson("tbl", {{"a", "1"}, {"b", "2"}}));
+  d["tbl"]["sort_indicator"] = {{"col", 1}, {"asc", false}};
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(d.dump()));
+
+  auto* header = tw->horizontalHeader();
+  ASSERT_EQ(header->sortIndicatorSection(), 1);
+  ASSERT_EQ(header->sortIndicatorOrder(), Qt::DescendingOrder);
+
+  root.resize(400, 300);
+  root.show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(&root));
+  ASSERT_GT(header->sectionSize(0), 0);
+  const QPoint pos(header->sectionViewportPosition(0) + header->sectionSize(0) / 2, header->height() / 2);
+  QTest::mouseClick(header->viewport(), Qt::LeftButton, Qt::NoModifier, pos);
+
+  ASSERT_FALSE(recorder()->empty()) << "the click must still reach the plugin";
+  EXPECT_EQ(header->sortIndicatorSection(), 1) << "an ignored click must not move the plugin-owned arrow";
+  EXPECT_EQ(header->sortIndicatorOrder(), Qt::DescendingOrder);
+  EXPECT_EQ(columnTexts(tw, 0), (std::vector<std::string>{"a", "b"})) << "rows must not move";
+}
+
 }  // namespace
+
+// --- Batch table deltas (SDK table_delta): seq-gated append/update/remove ---
+
+TEST(WidgetBindingTableDelta, AppliesUpdateRemoveAppendOncePerSeq) {
+  qapp();
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  PJ::WidgetData seed;
+  seed.setTableHeaders("tbl", {"a", "b"});
+  seed.setTableRows("tbl", std::vector<std::vector<std::string>>{{"r0a", "r0b"}, {"r1a", "r1b"}, {"r2a", "r2b"}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(seed.toJson()));
+  ASSERT_EQ(tw->rowCount(), 3);
+
+  PJ::WidgetData wd;
+  wd.updateTableCells("tbl", 1, {{0, 1, "UPD"}});
+  wd.removeTableRows("tbl", 1, {1});
+  wd.appendTableRows("tbl", 1, std::vector<std::vector<std::string>>{{"r3a", "r3b"}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
+
+  ASSERT_EQ(tw->rowCount(), 3);  // 3 - 1 + 1
+  EXPECT_EQ(tw->item(0, 1)->text(), u"UPD"_s);
+  EXPECT_EQ(tw->item(1, 0)->text(), u"r2a"_s);  // row 1 removed, r2 shifted up
+  EXPECT_EQ(tw->item(2, 0)->text(), u"r3a"_s);  // appended
+
+  // Re-delivering the same seq (full-state rebuild still carrying it): no-op.
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
+  EXPECT_EQ(tw->rowCount(), 3);
+  EXPECT_EQ(tw->item(0, 1)->text(), u"UPD"_s);
+
+  // A different seq applies again, and plugin row space stayed consistent:
+  // selecting plugin row 2 lands on the appended row.
+  PJ::WidgetData wd2;
+  wd2.appendTableRows("tbl", 2, std::vector<std::vector<std::string>>{{"r4a", "r4b"}});
+  wd2.setSelectedRows("tbl", {2});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd2.toJson()));
+  ASSERT_EQ(tw->rowCount(), 4);
+  EXPECT_EQ(tw->item(3, 0)->text(), u"r4a"_s);
+  ASSERT_NE(tw->item(2, 0), nullptr);
+  EXPECT_TRUE(tw->item(2, 0)->isSelected());
+}
+
+TEST(WidgetBindingTableDelta, RowsInSameRefreshWinsAndConsumesSeq) {
+  qapp();
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  PJ::WidgetData seed;
+  seed.setTableHeaders("tbl", {"a", "b"});
+  seed.setTableRows("tbl", std::vector<std::vector<std::string>>{{"r0a", "r0b"}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(seed.toJson()));
+
+  PJ::WidgetData wd;
+  wd.setTableRows("tbl", std::vector<std::vector<std::string>>{{"x", "y"}});
+  wd.appendTableRows("tbl", 5, std::vector<std::vector<std::string>>{{"z", "w"}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
+  EXPECT_EQ(tw->rowCount(), 1);  // full replace won; delta consumed
+
+  // The consumed seq must not fire later without rows.
+  PJ::WidgetData wd2;
+  wd2.appendTableRows("tbl", 5, std::vector<std::vector<std::string>>{{"z", "w"}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd2.toJson()));
+  EXPECT_EQ(tw->rowCount(), 1);
+}
+
+TEST(WidgetBindingTableDelta, EmptyAppendedRowStillCreatesTaggedItems) {
+  qapp();
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  PJ::WidgetData seed;
+  seed.setTableHeaders("tbl", {"a", "b"});
+  seed.setTableRows("tbl", std::vector<std::vector<std::string>>{{"r0a", "r0b"}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(seed.toJson()));
+
+  PJ::WidgetData wd;
+  wd.appendTableRows("tbl", 1, std::vector<std::vector<std::string>>{{}, {"r2a", "r2b"}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
+
+  ASSERT_EQ(tw->rowCount(), 3);
+  // The empty row must still carry items (empty text) so the plugin-row tag
+  // exists and sorting cannot desync the row-identity mapping.
+  ASSERT_NE(tw->item(1, 0), nullptr);
+  EXPECT_TRUE(tw->item(1, 0)->text().isEmpty());
+  EXPECT_EQ(tw->item(2, 0)->text(), u"r2a"_s);
+}
+
+TEST(WidgetBindingTableDelta, MalformedDeltaDoesNotConsumeSeq) {
+  qapp();
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  PJ::WidgetData seed;
+  seed.setTableHeaders("tbl", {"a", "b"});
+  seed.setTableRows("tbl", std::vector<std::vector<std::string>>{{"r0a", "r0b"}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(seed.toJson()));
+
+  // Malformed op (negative index) with a fresh seq: rejected whole, and the
+  // seq must NOT be recorded as consumed.
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(R"({"tbl": {"table_delta": {"seq": 9, "remove_rows": [-1]}}})"));
+  EXPECT_EQ(tw->rowCount(), 1);
+
+  // A corrected retransmission with the SAME seq must apply.
+  PJ::WidgetData retry;
+  retry.appendTableRows("tbl", 9, std::vector<std::vector<std::string>>{{"r1a", "r1b"}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(retry.toJson()));
+  EXPECT_EQ(tw->rowCount(), 2);
+}
+
+TEST(WidgetBindingTableDelta, UnresolvableOpRejectsWholeDeltaAndKeepsSeq) {
+  qapp();
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  PJ::WidgetData seed;
+  seed.setTableHeaders("tbl", {"a", "b"});
+  seed.setTableRows("tbl", std::vector<std::vector<std::string>>{{"r0a", "r0b"}, {"r1a", "r1b"}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(seed.toJson()));
+
+  // Decode-valid delta whose remove targets a row the table does not have:
+  // rejected whole — the valid update in the same delta must NOT land either.
+  PJ::WidgetData wd;
+  wd.updateTableCells("tbl", 7, {{0, 0, "UPD"}});
+  wd.removeTableRows("tbl", 7, {5});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
+  EXPECT_EQ(tw->rowCount(), 2);
+  EXPECT_EQ(tw->item(0, 0)->text(), u"r0a"_s);
+
+  // The rejected seq was not consumed: a corrected retransmission of the SAME
+  // seq must apply.
+  PJ::WidgetData retry;
+  retry.updateTableCells("tbl", 7, {{0, 0, "UPD"}});
+  retry.removeTableRows("tbl", 7, {1});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(retry.toJson()));
+  EXPECT_EQ(tw->rowCount(), 1);
+  EXPECT_EQ(tw->item(0, 0)->text(), u"UPD"_s);
+}
+
+TEST(WidgetBindingTableDelta, RowsResyncResetsSeqGate) {
+  qapp();
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  PJ::WidgetData seed;
+  seed.setTableHeaders("tbl", {"a", "b"});
+  seed.setTableRows("tbl", std::vector<std::vector<std::string>>{{"r0a", "r0b"}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(seed.toJson()));
+
+  PJ::WidgetData wd;
+  wd.appendTableRows("tbl", 1, std::vector<std::vector<std::string>>{{"r1a", "r1b"}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
+  ASSERT_EQ(tw->rowCount(), 2);
+
+  // Full-rows resync (producer restarted), then its first delta reuses an
+  // already-seen seq value: the resync must have reset the gate.
+  PJ::WidgetData resync;
+  resync.setTableRows("tbl", std::vector<std::vector<std::string>>{{"s0a", "s0b"}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(resync.toJson()));
+  ASSERT_EQ(tw->rowCount(), 1);
+
+  PJ::WidgetData restarted;
+  restarted.appendTableRows("tbl", 1, std::vector<std::vector<std::string>>{{"n1a", "n1b"}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(restarted.toJson()));
+  EXPECT_EQ(tw->rowCount(), 2);
+  EXPECT_EQ(tw->item(1, 0)->text(), u"n1a"_s);
+}
+
+// A row appended via the delta path into an already-typed column must carry
+// its own sort key, not become a plain (keyless) cell — the reported values
+// (65 first, 7 appended) deliberately disagree with text order ("65" < "7"
+// lexically) so a bug that drops the append's key and falls back to text
+// would sort the rows the WRONG way and this test would fail either way.
+TEST(WidgetBindingTableDelta, AppendedRowsCarryTypedSortKeys) {
+  qapp();
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  PJ::WidgetData seed;
+  seed.setTableHeaders("tbl", {"a", "b"});
+  seed.setTableRows("tbl", std::vector<std::vector<PJ::TableItem>>{{"r0a", PJ::TableItem(65, "65")}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(seed.toJson()));
+
+  PJ::WidgetData wd;
+  wd.appendTableRows("tbl", 1, std::vector<std::vector<PJ::TableItem>>{{"r1a", PJ::TableItem(7, "7")}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
+  ASSERT_EQ(tw->rowCount(), 2);
+
+  tw->sortItems(1, Qt::AscendingOrder);
+  EXPECT_EQ(columnTexts(tw, 0), (std::vector<std::string>{"r1a", "r0a"})) << "7 must sort before 65 numerically";
+  EXPECT_EQ(columnTexts(tw, 1), (std::vector<std::string>{"7", "65"}));
+}
+
+// updateTableCells replaces the WHOLE cell (SDK contract): the sort key must
+// move with the text, not stay pinned to whatever key the cell had before.
+TEST(WidgetBindingTableDelta, UpdateCellsRewritesSortKeyNotJustText) {
+  qapp();
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  PJ::WidgetData seed;
+  seed.setTableHeaders("tbl", {"a", "b"});
+  seed.setTableRows(
+      "tbl",
+      std::vector<std::vector<PJ::TableItem>>{{"r0a", PJ::TableItem(5, "5")}, {"r1a", PJ::TableItem(100, "100")}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(seed.toJson()));
+
+  // Row 0's key moves from 5 to 200, which flips its relative order against
+  // row 1 (100) — a stale key left at 5 would keep row 0 sorting first.
+  PJ::WidgetData wd;
+  wd.updateTableCells("tbl", 1, {{0, 1, PJ::TableItem(200, "200")}});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
+
+  tw->sortItems(1, Qt::AscendingOrder);
+  EXPECT_EQ(columnTexts(tw, 0), (std::vector<std::string>{"r1a", "r0a"})) << "100 must now sort before 200";
+  EXPECT_EQ(columnTexts(tw, 1), (std::vector<std::string>{"100", "200"}));
+}

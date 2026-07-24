@@ -1,0 +1,302 @@
+name: Release AppImage
+
+# Builds the release-quality PlotJuggler 4 AppImage — the app compiled here,
+# plus the curated plugin set DOWNLOADED from pj-plugin-registry: the same
+# published, checksum-verified marketplace artifacts the Windows installer
+# bundles. The Linux sibling of windows-release.yml.
+#
+# Architecture (2026-07 redesign, docs/plans/2026-07-16-appimage-ci-redesign.md):
+#   * appimage job: runs INSIDE ghcr.io/plotjuggler/pj4-appimage-builder
+#     (Ubuntu 22.04 / glibc 2.35 — hosted 22.04 runners retire 2027-04,
+#     actions/runner-images#14254, so the floor lives in the container, not the
+#     runner label). Third-party Conan binaries restore from the actions/cache
+#     closure (seeded by linux-ci), with ConanCenter source builds as fallback;
+#     Qt / ccache use actions/cache too.
+#   * Plugins (including the multi-distro ros2-topic-subscriber bundle) are
+#     resolved by appimage/build_appimage.sh --plugins-registry: every curated
+#     id (BUNDLE_IDS) must resolve, download, and pass its checksum or the
+#     release fails — nothing is compiled locally or skipped best-effort.
+#
+# Triggers:
+#   - workflow_dispatch          -> build from any branch (artifact only, no Release upload)
+#   - push of a version tag      -> build + attach the AppImage to that tag's Release
+#     (e.g. `3.9.1` — no leading 'v')
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write   # softprops/action-gh-release needs write to create/update the Release
+  packages: read    # pull the builder image from GHCR
+
+concurrency:
+  group: linux-appimage-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  appimage:
+    runs-on: depot-ubuntu-22.04-4
+    timeout-minutes: 240
+    container:
+      # Digest-pinned by appimage-builder-image.yml (it updates the repo
+      # variable after each smoke-tested push); :latest is only the bootstrap
+      # fallback for a repo where the variable does not exist yet.
+      image: ${{ vars.PJ4_APPIMAGE_BUILDER_IMAGE || 'ghcr.io/plotjuggler/pj4-appimage-builder:latest' }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      # Bind-mount the host's fat preinstalled-toolchain dirs so the first step
+      # can empty them: a container job cannot run the usual host-side
+      # `sudo rm -rf`, and the RelWithDebInfo app build needs the space
+      # (linux-ci hit "ld: No space left on device" without the equivalent
+      # cleanup).
+      options: >-
+        -v /usr/local:/host/usr/local
+        -v /usr/share/dotnet:/host/dotnet
+        -v /opt:/host/opt
+    env:
+      APPIMAGE_EXTRACT_AND_RUN: "1"   # linuxdeploy/appimagetool without FUSE
+    steps:
+      - name: Free host disk (from inside the container)
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /host/usr/local/lib/android /host/usr/local/.ghcup \
+                 /host/dotnet/* /host/opt/ghc /host/opt/hostedtoolcache/CodeQL || true
+          df -h /
+
+      - name: Use HTTPS for github.com submodules
+        run: git config --global url."https://github.com/".insteadOf "git@github.com:"
+
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Read versions.env
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ./versions.env
+          echo "PJ_APP_VERSION=${PJ_APP_VERSION}" >> "${GITHUB_ENV}"
+          echo "PJ_QT_VERSION=${PJ_QT_VERSION}" >> "${GITHUB_ENV}"
+          echo "PJ_APPIMAGE_ARCH=${PJ_APPIMAGE_ARCH}" >> "${GITHUB_ENV}"
+
+      - name: Resolve release version
+        # Tag build -> the tag verbatim; manual dispatch -> PJ_APP_VERSION from
+        # versions.env so the artifact name still carries a meaningful version.
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            echo "PJ_VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+          else
+            echo "PJ_VERSION=${PJ_APP_VERSION}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Cache Qt
+        id: qt-cache
+        uses: actions/cache@v5
+        with:
+          path: .qt
+          # Same key as linux-ci.yml -> shared hit on the ~1 GB aqt install.
+          key: qt-${{ env.PJ_QT_VERSION }}-linux-gcc_64
+
+      - name: Install Qt via aqt
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        run: ./install_qt6.sh
+
+      - name: Restore Conan cache
+        id: conan-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/.conan2
+          key: conan-appimage-v2-${{ hashFiles('conanfile.txt', 'conan.lock') }}
+          # Prefix fallbacks: an older appimage closure first, else seed from
+          # linux-ci's saved closure — same ubuntu-22.04 / gcc-11 /
+          # RelWithDebInfo / cppstd=20 profile, so its packages are directly
+          # reusable here (ConanCenter source builds cover any residual miss).
+          restore-keys: |
+            conan-appimage-
+            conan-linux-gcc-relwithdebinfo-v2-
+
+      - name: Restore ccache
+        # Explicit restore/save split: the plain action's post-job save is
+        # skipped when the job fails, which is exactly when preserving the
+        # compiled objects matters most (failures here are usually late —
+        # packaging or audit — after the full compile already happened).
+        id: ccache-restore
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/.cache/ccache
+          key: ccache-appimage-${{ github.sha }}
+          # Last fallback: linux-ci's cache from main — same source tree, same
+          # gcc 11.4. Sharable because both sides hash with
+          # compiler_check=content, hash_dir=false, base_dir (below).
+          restore-keys: |
+            ccache-appimage-
+            ccache-linux-build-main-
+
+      - name: Configure ccache
+        # compiler_check=content + hash_dir=false + base_dir make object hashes
+        # independent of the compiler binary's mtime and of the workspace root,
+        # so this container job (/__w/PJ4/PJ4) and linux-ci's runner job
+        # (/home/runner/work/PJ4/PJ4) hit each other's objects. Trade-off:
+        # cached objects may embed the sibling workspace path in debug info.
+        shell: bash
+        run: |
+          ccache --set-config=max_size=2G
+          ccache --set-config=compression=true
+          ccache --set-config=compiler_check=content
+          ccache --set-config=hash_dir=false
+          ccache --set-config=base_dir="${GITHUB_WORKSPACE}"
+          ccache -z
+
+      - name: Seed Conan source download cache
+        # minizip/1.2.13's zlib.net source URL rejects GitHub runners (HTTP
+        # 415); reuse the checksum-verified repo-hosted seed like linux-ci.
+        # Configured after the Conan cache restore so a restored global.conf
+        # cannot clobber it.
+        shell: bash
+        run: |
+          set -euo pipefail
+          cache_dir="${RUNNER_TEMP}/conan-source-cache"
+          mkdir -p "${cache_dir}/s"
+          find .github/conan/source-backup -maxdepth 1 -type f ! -name README.md \
+            -exec cp -f {} "${cache_dir}/s/" \;
+          conan_home="$(conan config home)"
+          conf="${conan_home}/global.conf"
+          mkdir -p "${conan_home}"
+          if [[ -f "$conf" ]]; then
+            grep -v '^core\.sources:download_cache=' "$conf" > "${conf}.tmp" || true
+            mv "${conf}.tmp" "$conf"
+          fi
+          echo "core.sources:download_cache=${cache_dir}" >> "$conf"
+
+      - name: Conan install (app graph)
+        # Resolve/build the app dependency graph up front so it can be
+        # published immediately — a later compile failure must not discard an
+        # otherwise reusable closure. The ./build.sh below re-resolves the
+        # same graph, which is then a fast no-op.
+        id: conan_install
+        shell: bash
+        run: |
+          set -euo pipefail
+          conan profile detect --force
+          conan install . --output-folder=build --build=missing -r=conancenter \
+            --lockfile=conan.lock --lockfile-partial \
+            -s build_type=RelWithDebInfo -s compiler.cppstd=20
+
+      - name: Link pinned linuxdeploy/appimagetool into appimage/
+        # build_appimage.sh uses a pre-existing appimage/<tool>.AppImage instead
+        # of downloading 'continuous' — so the image-pinned bytes are what runs.
+        shell: bash
+        run: |
+          set -euo pipefail
+          for tool in linuxdeploy linuxdeploy-plugin-qt appimagetool; do
+            ln -sfn "/opt/linuxdeploy/${tool}-${PJ_APPIMAGE_ARCH}.AppImage" \
+                    "appimage/${tool}-${PJ_APPIMAGE_ARCH}.AppImage"
+          done
+
+      - name: Build app and package the AppImage (registry plugins)
+        # The app compiles in the jammy container (glibc 2.35 floor); the
+        # curated plugin set is downloaded from pj-plugin-registry and
+        # checksum-verified by build_appimage.sh --plugins-registry.
+        # Tests and demos never ship and no release flow runs ctest; skipping
+        # them drops ~271 uncacheable test links and ~17 GB of build tree.
+        env:
+          PJ_BUILD_TESTS: "OFF"
+          PJ_BUILD_DEMOS: "OFF"
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./build.sh
+          bash appimage/build_appimage.sh --plugins-registry
+          appimage_path="$(ls -1 appimage/PlotJuggler-*.AppImage | head -n 1)"
+          if [[ -z "$appimage_path" ]]; then
+            echo "::error::AppImage not produced under appimage/" >&2
+            exit 1
+          fi
+          echo "APPIMAGE=$appimage_path" >> "$GITHUB_ENV"
+          echo "APPIMAGE_NAME=$(basename "$appimage_path")" >> "$GITHUB_ENV"
+
+      - name: Trim Conan cache before saving
+        if: always() && github.ref_type != 'tag' && steps.conan-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: conan cache clean "*" --build --source --temp || true
+
+      - name: Save Conan cache
+        # always(): a failed app compile must still persist the expensive
+        # third-party closure. Runs after logout (no credentials in the cache).
+        if: always() && github.ref_type != 'tag' && steps.conan-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.conan2
+          key: conan-appimage-v2-${{ hashFiles('conanfile.txt', 'conan.lock') }}
+
+      - name: Save ccache
+        # always(): keep the objects even when a late step fails. Skipped only
+        # on an exact-key hit (immutable keys make re-saving a no-op anyway).
+        if: always() && github.ref_type != 'tag' && steps.ccache-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.cache/ccache
+          key: ccache-appimage-${{ github.sha }}
+
+      - name: ccache stats
+        if: always()
+        shell: bash
+        run: ccache -s || true
+
+      - name: Audit AppImage glibc floor
+        # The whole point of the container: nothing bundled may require a glibc
+        # newer than 2.35. Extract and scan every ELF's versioned GLIBC_ needs.
+        # Exempt the ROS 2 per-distro INNER binaries (ros2-topic-subscriber/
+        # dist/<distro>/): they are deliberately built in each distro's own
+        # container (jazzy/rolling -> Ubuntu 24.04 / glibc 2.38) and are only
+        # dlopen'ed on machines that run that distro. The proxy .so the app
+        # loads directly sits OUTSIDE dist/ and stays subject to the audit.
+        shell: bash
+        run: |
+          set -euo pipefail
+          workdir="$(mktemp -d)"
+          cp "${APPIMAGE}" "${workdir}/app.AppImage"
+          cd "${workdir}"
+          ./app.AppImage --appimage-extract >/dev/null
+          bad_found=""
+          while IFS= read -r -d '' f; do
+            case "$f" in
+              */plugins/ros2-topic-subscriber/dist/*) continue ;;
+            esac
+            if file -b "$f" | grep -q ELF; then
+              # readelf -V prints the version-needs section (.gnu.version_r) —
+              # the actual GLIBC versions the loader will demand, unlike a raw
+              # strings scan which also matches incidental mentions.
+              bad="$(readelf -V "$f" 2>/dev/null | grep -oE 'GLIBC_2\.[0-9]+' | sort -uV | awk -F. '$2 > 35' || true)"
+              if [[ -n "$bad" ]]; then
+                echo "::error::${f#squashfs-root/} requires ${bad//$'\n'/, } (> GLIBC_2.35)"
+                bad_found=1
+              fi
+            fi
+          done < <(find squashfs-root -type f \( -name '*.so*' -o -perm -u+x \) -print0)
+          if [[ -n "$bad_found" ]]; then
+            exit 1
+          fi
+          echo "glibc floor OK: no bundled ELF requires > GLIBC_2.35"
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APPIMAGE_NAME }}
+          path: ${{ env.APPIMAGE }}
+          if-no-files-found: error
+
+      - name: Attach AppImage to the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: ${{ env.APPIMAGE }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true

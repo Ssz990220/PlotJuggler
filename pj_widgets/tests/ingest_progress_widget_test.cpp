@@ -14,6 +14,7 @@
 #include <QToolButton>
 
 #include "pj_widgets/IngestProgressWidget.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -36,7 +37,7 @@ TEST(IngestProgressWidgetTest, SetActiveShowsAndHides) {
 
 TEST(IngestProgressWidgetTest, PrimaryClickEmitsAndLatches) {
   IngestProgressWidget widget;
-  widget.setPrimaryButton(QStringLiteral("Keep"));
+  widget.setPrimaryButton(u"Keep"_s);
 
   int count = 0;
   Action got = Action::kNone;
@@ -45,7 +46,7 @@ TEST(IngestProgressWidgetTest, PrimaryClickEmitsAndLatches) {
     got = action;
   });
 
-  auto* button = widget.findChild<QToolButton*>(QStringLiteral("ingestPrimaryButton"));
+  auto* button = widget.findChild<QToolButton*>(u"ingestPrimaryButton"_s);
   ASSERT_NE(button, nullptr);
   button->click();
 
@@ -56,12 +57,12 @@ TEST(IngestProgressWidgetTest, PrimaryClickEmitsAndLatches) {
 
 TEST(IngestProgressWidgetTest, SecondaryClickEmitsSecondary) {
   IngestProgressWidget widget;
-  widget.setSecondaryButton(QStringLiteral("Discard"));
+  widget.setSecondaryButton(u"Discard"_s);
 
   Action got = Action::kNone;
   QObject::connect(&widget, &IngestProgressWidget::actionRequested, &widget, [&](Action action) { got = action; });
 
-  auto* button = widget.findChild<QToolButton*>(QStringLiteral("ingestSecondaryButton"));
+  auto* button = widget.findChild<QToolButton*>(u"ingestSecondaryButton"_s);
   ASSERT_NE(button, nullptr);
   button->click();
   EXPECT_EQ(got, Action::kSecondary);
@@ -70,8 +71,8 @@ TEST(IngestProgressWidgetTest, SecondaryClickEmitsSecondary) {
 
 TEST(IngestProgressWidgetTest, SetActiveFalseResetsLatch) {
   IngestProgressWidget widget;
-  widget.setPrimaryButton(QStringLiteral("Keep"));
-  widget.findChild<QToolButton*>(QStringLiteral("ingestPrimaryButton"))->click();
+  widget.setPrimaryButton(u"Keep"_s);
+  widget.findChild<QToolButton*>(u"ingestPrimaryButton"_s)->click();
   ASSERT_EQ(widget.lastAction(), Action::kPrimary);
   widget.setActive(false);
   EXPECT_EQ(widget.lastAction(), Action::kNone);
@@ -79,23 +80,23 @@ TEST(IngestProgressWidgetTest, SetActiveFalseResetsLatch) {
 
 TEST(IngestProgressWidgetTest, TitleAndCounterInCaption) {
   IngestProgressWidget widget;
-  auto* bar = widget.findChild<QProgressBar*>(QStringLiteral("ingestProgressBar"));
+  auto* bar = widget.findChild<QProgressBar*>(u"ingestProgressBar"_s);
   ASSERT_NE(bar, nullptr);
-  widget.setTitle(QStringLiteral("data.mcap"));
-  widget.setCounterText(QStringLiteral("2/5"));
-  EXPECT_TRUE(bar->format().contains(QStringLiteral("data.mcap")));
-  EXPECT_TRUE(bar->format().contains(QStringLiteral("2/5")));
+  widget.setTitle(u"data.mcap"_s);
+  widget.setCounterText(u"2/5"_s);
+  EXPECT_TRUE(bar->format().contains("data.mcap"_L1));
+  EXPECT_TRUE(bar->format().contains("2/5"_L1));
   widget.setCounterText(QString());  // counter cleared, title stays
-  EXPECT_FALSE(bar->format().contains(QStringLiteral("2/5")));
-  EXPECT_TRUE(bar->format().contains(QStringLiteral("data.mcap")));
+  EXPECT_FALSE(bar->format().contains("2/5"_L1));
+  EXPECT_TRUE(bar->format().contains("data.mcap"_L1));
 }
 
 TEST(IngestProgressWidgetTest, UnconfiguredButtonStaysHidden) {
   IngestProgressWidget widget;
-  auto* button = widget.findChild<QToolButton*>(QStringLiteral("ingestPrimaryButton"));
+  auto* button = widget.findChild<QToolButton*>(u"ingestPrimaryButton"_s);
   ASSERT_NE(button, nullptr);
   EXPECT_FALSE(button->isVisibleTo(&widget));
-  widget.setPrimaryButton(QStringLiteral("Keep"));
+  widget.setPrimaryButton(u"Keep"_s);
   EXPECT_TRUE(button->isVisibleTo(&widget));
   widget.setPrimaryButton(QString());  // empty label hides it again
   EXPECT_FALSE(button->isVisibleTo(&widget));
@@ -103,7 +104,7 @@ TEST(IngestProgressWidgetTest, UnconfiguredButtonStaysHidden) {
 
 TEST(IngestProgressWidgetTest, IndeterminateRange) {
   IngestProgressWidget widget;
-  auto* bar = widget.findChild<QProgressBar*>(QStringLiteral("ingestProgressBar"));
+  auto* bar = widget.findChild<QProgressBar*>(u"ingestProgressBar"_s);
   ASSERT_NE(bar, nullptr);
   widget.setRange(0, 0);
   EXPECT_EQ(bar->minimum(), 0);

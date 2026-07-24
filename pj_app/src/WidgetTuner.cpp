@@ -15,26 +15,26 @@
 #include <QSettings>
 #include <QString>
 #include <QWidget>
+using namespace Qt::StringLiterals;
+
+#include "pj_widgets/FrameworkTokens.h"
 
 namespace PJ {
 
 namespace {
 
-// Theme tokens — kept in sync with stylesheet_{light,dark}.qss.
-// Popup background for combo dropdowns and Fusion-painted popup
-// surfaces. We use dark_background (one step lighter than the menu
-// popup's titlebar_background) so the closed combo and its open
-// dropdown read as the same surface.
+theme::Theme popupTheme() {
+  const QString theme_name = QSettings().value(QStringLiteral("StyleSheet::theme"), QStringLiteral("light")).toString();
+  return theme::themeFor(theme_name.contains(QStringLiteral("light")));
+}
+
+// Combo popup palettes use the same framework input surface as the closed combo.
 QColor popupBgColor() {
-  const QString theme = QSettings().value(QStringLiteral("StyleSheet::theme"), QStringLiteral("light")).toString();
-  return theme.contains(QStringLiteral("light")) ? QColor(QStringLiteral("#F5F5F5"))
-                                                 : QColor(QStringLiteral("#3B3B47"));
+  return theme::surface(theme::Surface::Input, popupTheme());
 }
 
 QColor popupTextColor() {
-  const QString theme = QSettings().value(QStringLiteral("StyleSheet::theme"), QStringLiteral("light")).toString();
-  return theme.contains(QStringLiteral("light")) ? QColor(QStringLiteral("#111111"))
-                                                 : QColor(QStringLiteral("#F0F0F0"));
+  return theme::onSurface(theme::Surface::Input, theme::Emphasis::Default, popupTheme());
 }
 
 // Force every palette role that Fusion reads when painting a popup
@@ -67,7 +67,7 @@ bool WidgetTuner::eventFilter(QObject* watched, QEvent* event) {
 
   // QMenus (including Qt-internal context menus) — tag for QSS.
   if (auto* menu = qobject_cast<QMenu*>(watched); menu != nullptr && menu->objectName().isEmpty()) {
-    menu->setObjectName(QStringLiteral("PJMenu"));
+    menu->setObjectName(u"PJMenu"_s);
   }
 
   // QMessageBox: strip the native system frame. No other chrome.
@@ -91,7 +91,7 @@ bool WidgetTuner::eventFilter(QObject* watched, QEvent* event) {
 
   // QComboBoxPrivateContainer — strip frame and shadow, paint palette.
   if (auto* w = qobject_cast<QWidget*>(watched);
-      w != nullptr && QString::fromUtf8(w->metaObject()->className()) == QStringLiteral("QComboBoxPrivateContainer")) {
+      w != nullptr && QString::fromUtf8(w->metaObject()->className()) == "QComboBoxPrivateContainer"_L1) {
     w->setWindowFlag(Qt::NoDropShadowWindowHint, true);
     if (auto* frame = qobject_cast<QFrame*>(w)) {
       frame->setFrameShape(QFrame::NoFrame);

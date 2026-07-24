@@ -9,6 +9,7 @@
 #include "pj_scene_common/scene_dock_widget.h"
 #include "pj_scene_common/scene_layer.h"
 #include "pj_widgets/ConfigPanelHost.h"
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/LayerListView.h"
 #include "pj_widgets/SectionHeaderBand.h"
 
@@ -29,13 +30,17 @@ Scene2DConfigPanel::Scene2DConfigPanel(QWidget* parent) : QWidget(parent) {
   // the plotting panel's Curve Width / Curve Style strips; each content block
   // under a band re-adds its own inset.
   auto* root = new QVBoxLayout(this);
-  root->setContentsMargins(0, 0, 0, 0);
-  root->setSpacing(0);
+  root->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  root->setSpacing(PJ::theme::space(theme::Space::None));
 
   root->addWidget(new SectionHeaderBand(tr("Layers"), this));
   auto* layers_host = new QWidget(this);
   auto* layers_layout = new QVBoxLayout(layers_host);
-  layers_layout->setContentsMargins(8, 4, 8, 4);
+  layers_layout->setContentsMargins(
+      PJ::theme::space(theme::Space::Comfortable), PJ::theme::space(theme::Space::Snug),
+      PJ::theme::space(theme::Space::Comfortable), PJ::theme::space(theme::Space::Snug));
   list_ = new LayerListView(layers_host);
   layers_layout->addWidget(list_);
   root->addWidget(layers_host);
@@ -43,7 +48,9 @@ Scene2DConfigPanel::Scene2DConfigPanel(QWidget* parent) : QWidget(parent) {
   root->addWidget(new SectionHeaderBand(tr("Settings"), this));
   auto* settings_host = new QWidget(this);
   auto* settings_layout = new QVBoxLayout(settings_host);
-  settings_layout->setContentsMargins(8, 4, 8, 4);
+  settings_layout->setContentsMargins(
+      PJ::theme::space(theme::Space::Comfortable), PJ::theme::space(theme::Space::Snug),
+      PJ::theme::space(theme::Space::Comfortable), PJ::theme::space(theme::Space::Snug));
   config_host_ = new ConfigPanelHost(settings_host);
   settings_layout->addWidget(config_host_);
   settings_layout->addStretch(1);

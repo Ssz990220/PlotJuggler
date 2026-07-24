@@ -3,8 +3,12 @@
 
 #include <gtest/gtest.h>
 
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QSignalSpy>
 #include <QString>
+#include <QTemporaryDir>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -15,64 +19,224 @@
 #include <thread>
 #include <vector>
 
+#include "pj_datastore/data_processor.hpp"
+#include "pj_datastore/topic_storage.hpp"
 #include "pj_datastore/writer.hpp"
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
+#include "pj_runtime/DataProcessorService.h"
 #include "pj_runtime/SessionManager.h"
+using namespace Qt::StringLiterals;
 
 namespace {
+
+class PassThroughProcessor : public PJ::proc::DataProcessor {
+ public:
+  const char* id() const override {
+    return "test-pass";
+  }
+  const char* bracketLabel() const override {
+    return "Pass";
+  }
+  PJ::proc::TraitMask traits() const override {
+    return PJ::proc::kStatelessOneToOne | PJ::proc::kPreservesOrder;
+  }
+  bool isStreamSafe() const override {
+    return true;
+  }
+  void reset() override {}
+  std::optional<PJ::proc::Sample> calculateNextPoint(const PJ::proc::Sample& input) override {
+    return input;
+  }
+};
 
 TEST(SessionManagerSourceTest, LastLoadedSourceStartsEmpty) {
   PJ::SessionManager session;
   EXPECT_FALSE(session.lastLoadedSource().has_value());
 }
 
+// recordLoadedSource stores normalizedSourcePath(path) — compare through the
+// same contract, not against the raw literal: on Windows even an absolute
+// Unix-style input gains a drive prefix from the absolute-path fallback.
 TEST(SessionManagerSourceTest, RecordLoadedSourceStoresPathAndPrefix) {
   PJ::SessionManager session;
-  session.recordLoadedSource(QStringLiteral("/tmp/run42.csv"), QStringLiteral("robot"));
+  session.recordLoadedSource(u"/tmp/run42.csv"_s, u"robot"_s);
   const auto src = session.lastLoadedSource();
   ASSERT_TRUE(src.has_value());
-  EXPECT_EQ(src->path, QStringLiteral("/tmp/run42.csv"));
-  EXPECT_EQ(src->prefix, QStringLiteral("robot"));
+  EXPECT_EQ(src->path, PJ::SessionManager::normalizedSourcePath(u"/tmp/run42.csv"_s));
+  EXPECT_EQ(src->prefix, u"robot"_s);
+}
+
+TEST(SessionManagerSourceIdentityTest, FullPathRejectsRemintedSameBasenameCollision) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  ASSERT_TRUE(QDir().mkpath(dir.filePath(u"left"_s)));
+  ASSERT_TRUE(QDir().mkpath(dir.filePath(u"right"_s)));
+  const QString intended_path = dir.filePath(u"left/run.mcap"_s);
+  const QString collision_path = dir.filePath(u"right/run.mcap"_s);
+  ASSERT_TRUE(QFile(intended_path).open(QIODevice::WriteOnly));
+  ASSERT_TRUE(QFile(collision_path).open(QIODevice::WriteOnly));
+
+  PJ::SessionManager session;
+  const auto reminted_collision = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "run.mcap"});
+  const auto intended = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "run.mcap"});
+  ASSERT_TRUE(reminted_collision.has_value());
+  ASSERT_TRUE(intended.has_value());
+  session.setDatasetSourcePath(*reminted_collision, collision_path);
+  session.setDatasetSourcePath(*intended, intended_path);
+
+  // The saved id points at the wrong same-basename file: the path qualifier must
+  // veto the exact-id match and fall back to the unique full-path match instead.
+  const PJ::DatasetIdentityResolution resolved =
+      session.resolveDatasetIdentity(*reminted_collision, u"run.mcap"_s, intended_path);
+  ASSERT_TRUE(resolved.id.has_value());
+  EXPECT_EQ(*resolved.id, intended.value());
+  EXPECT_FALSE(resolved.ambiguous);
+}
+
+// FIX D: a dataset loaded from a file that is then deleted from disk must still
+// resolve by its full path. normalizedSourcePath returns the same cleaned-absolute
+// form at store and resolve time for a plain (non-symlinked) path, so the string
+// comparison in path_matches holds even after the file is gone — whereas a
+// canonicalFilePath-only comparison (empty for a missing file) would drop it.
+TEST(SessionManagerSourceIdentityTest, DeletedSourceFileStillResolvesByPath) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  const QString saved_path = dir.filePath(u"run.mcap"_s);
+  ASSERT_TRUE(QFile(saved_path).open(QIODevice::WriteOnly));
+
+  PJ::SessionManager session;
+  const auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "run.mcap"});
+  ASSERT_TRUE(dataset.has_value());
+  // Register the path WHILE the file exists, then delete it from disk.
+  session.setDatasetSourcePath(*dataset, saved_path);
+  ASSERT_TRUE(QFile::remove(saved_path));
+  ASSERT_FALSE(QFileInfo::exists(saved_path));
+
+  const PJ::DatasetIdentityResolution resolved = session.resolveDatasetIdentity(0, u"run.mcap"_s, saved_path);
+  ASSERT_TRUE(resolved.id.has_value()) << "a deleted-on-disk source must still resolve by path";
+  EXPECT_EQ(*resolved.id, dataset.value());
+  EXPECT_FALSE(resolved.ambiguous);
+}
+
+TEST(SessionManagerSourceIdentityTest, DuplicateSourceWithoutPathIsAmbiguousButExactLiveIdStillWins) {
+  PJ::SessionManager session;
+  const auto first = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "same.mcap"});
+  const auto second = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "same.mcap"});
+  ASSERT_TRUE(first.has_value());
+  ASSERT_TRUE(second.has_value());
+
+  const PJ::DatasetIdentityResolution exact = session.resolveDatasetIdentity(*second, u"same.mcap"_s);
+  ASSERT_TRUE(exact.id.has_value());
+  EXPECT_EQ(*exact.id, second.value()) << "same-session undo keeps its exact DatasetId";
+
+  const PJ::DatasetIdentityResolution portable = session.resolveDatasetIdentity(999, u"same.mcap"_s);
+  EXPECT_FALSE(portable.id.has_value());
+  EXPECT_TRUE(portable.ambiguous) << "persisted source-only identity must never choose by load order";
+}
+
+TEST(SessionManagerSourceIdentityTest, NumericOnlyIdentityIsSameSessionOnly) {
+  PJ::SessionManager session;
+  const auto only = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "solo.mcap"});
+  ASSERT_TRUE(only.has_value());
+
+  // A bare id with no portable qualifiers resolves only while that exact id lives.
+  const PJ::DatasetIdentityResolution live = session.resolveDatasetIdentity(*only, QString());
+  ASSERT_TRUE(live.id.has_value());
+  EXPECT_EQ(*live.id, only.value());
+
+  const PJ::DatasetIdentityResolution stale = session.resolveDatasetIdentity(*only + 100, QString());
+  EXPECT_FALSE(stale.id.has_value());
+  EXPECT_FALSE(stale.ambiguous) << "no qualifier = not-found, never a remint fallback";
+}
+
+TEST(SessionManagerSourceIdentityTest, RemoveDatasetDropsItsSourcePath) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  const QString path = dir.filePath(u"gone.mcap"_s);
+  ASSERT_TRUE(QFile(path).open(QIODevice::WriteOnly));
+
+  PJ::SessionManager session;
+  const auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "gone.mcap"});
+  ASSERT_TRUE(dataset.has_value());
+  session.setDatasetSourcePath(*dataset, path);
+  ASSERT_FALSE(session.datasetSourcePath(*dataset).isEmpty());
+
+  session.removeDataset(*dataset);
+  EXPECT_TRUE(session.datasetSourcePath(*dataset).isEmpty());
+}
+
+TEST(SessionManagerSourceIdentityTest, ObjectTopicDisambiguatesFanOutSiblingsOfOneFile) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  const QString path = dir.filePath(u"fanout.mcap"_s);
+  ASSERT_TRUE(QFile(path).open(QIODevice::WriteOnly));
+
+  PJ::SessionManager session;
+  const auto left = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "fanout/left"});
+  const auto right = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "fanout/right"});
+  ASSERT_TRUE(left.has_value());
+  ASSERT_TRUE(right.has_value());
+  session.setDatasetSourcePath(*left, path);
+  session.setDatasetSourcePath(*right, path);
+  const auto left_topic = session.objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{.dataset_id = *left, .topic_name = "/camera", .metadata_json = "{}"});
+  ASSERT_TRUE(left_topic.has_value());
+
+  // Path-only identity is ambiguous across the two siblings...
+  const PJ::DatasetIdentityResolution by_path = session.resolveDatasetIdentity(0, QString(), path);
+  EXPECT_FALSE(by_path.id.has_value());
+  EXPECT_TRUE(by_path.ambiguous);
+
+  // ...but exactly one sibling owns the object topic, so the topic-aware
+  // resolver can pick it; a topic neither sibling owns stays ambiguous.
+  const PJ::DatasetIdentityResolution by_topic = session.resolveObjectDatasetIdentity(0, QString(), path, u"/camera"_s);
+  ASSERT_TRUE(by_topic.id.has_value());
+  EXPECT_EQ(*by_topic.id, left.value());
+  EXPECT_FALSE(by_topic.ambiguous);
+
+  const PJ::DatasetIdentityResolution unknown_topic =
+      session.resolveObjectDatasetIdentity(0, QString(), path, u"/lidar"_s);
+  EXPECT_FALSE(unknown_topic.id.has_value());
+  EXPECT_TRUE(unknown_topic.ambiguous);
 }
 
 TEST(SessionManagerSourceTest, RecordLoadedSourceAppendsDistinctPaths) {
   PJ::SessionManager session;
-  session.recordLoadedSource(QStringLiteral("/tmp/a.csv"), QString());
-  session.recordLoadedSource(QStringLiteral("/tmp/b.csv"), QStringLiteral("p"));
+  session.recordLoadedSource(u"/tmp/a.csv"_s, QString());
+  session.recordLoadedSource(u"/tmp/b.csv"_s, u"p"_s);
   // Both distinct files are tracked, in load order.
   const auto& sources = session.loadedSources();
   ASSERT_EQ(sources.size(), 2u);
-  EXPECT_EQ(sources[0].path, QStringLiteral("/tmp/a.csv"));
-  EXPECT_EQ(sources[1].path, QStringLiteral("/tmp/b.csv"));
+  EXPECT_EQ(sources[0].path, PJ::SessionManager::normalizedSourcePath(u"/tmp/a.csv"_s));
+  EXPECT_EQ(sources[1].path, PJ::SessionManager::normalizedSourcePath(u"/tmp/b.csv"_s));
   // lastLoadedSource() is the most recent.
   const auto src = session.lastLoadedSource();
   ASSERT_TRUE(src.has_value());
-  EXPECT_EQ(src->path, QStringLiteral("/tmp/b.csv"));
-  EXPECT_EQ(src->prefix, QStringLiteral("p"));
+  EXPECT_EQ(src->path, PJ::SessionManager::normalizedSourcePath(u"/tmp/b.csv"_s));
+  EXPECT_EQ(src->prefix, u"p"_s);
 }
 
 TEST(SessionManagerSourceTest, RecordLoadedSourceReplacesSamePathInPlace) {
   PJ::SessionManager session;
-  session.recordLoadedSource(QStringLiteral("/tmp/a.csv"), QString());
-  session.recordLoadedSource(QStringLiteral("/tmp/b.csv"), QStringLiteral("p"));
+  session.recordLoadedSource(u"/tmp/a.csv"_s, QString());
+  session.recordLoadedSource(u"/tmp/b.csv"_s, u"p"_s);
   // Re-recording an existing path (a reload) updates it in place, keeping its
   // position and not growing the list.
-  session.recordLoadedSource(
-      QStringLiteral("/tmp/a.csv"), QStringLiteral("robot"), QStringLiteral("CSV"), QStringLiteral(R"({"x":1})"));
+  session.recordLoadedSource(u"/tmp/a.csv"_s, u"robot"_s, u"CSV"_s, uR"({"x":1})"_s);
   const auto& sources = session.loadedSources();
   ASSERT_EQ(sources.size(), 2u);
-  EXPECT_EQ(sources[0].path, QStringLiteral("/tmp/a.csv"));
-  EXPECT_EQ(sources[0].prefix, QStringLiteral("robot"));
-  EXPECT_EQ(sources[0].plugin_id, QStringLiteral("CSV"));
-  EXPECT_EQ(sources[0].plugin_config_json, QStringLiteral(R"({"x":1})"));
-  EXPECT_EQ(sources[1].path, QStringLiteral("/tmp/b.csv"));
+  EXPECT_EQ(sources[0].path, PJ::SessionManager::normalizedSourcePath(u"/tmp/a.csv"_s));
+  EXPECT_EQ(sources[0].prefix, u"robot"_s);
+  EXPECT_EQ(sources[0].plugin_id, u"CSV"_s);
+  EXPECT_EQ(sources[0].plugin_config_json, uR"({"x":1})"_s);
+  EXPECT_EQ(sources[1].path, PJ::SessionManager::normalizedSourcePath(u"/tmp/b.csv"_s));
 }
 
 TEST(SessionManagerSourceTest, ClearLoadedSourceResetsToEmpty) {
   PJ::SessionManager session;
-  session.recordLoadedSource(QStringLiteral("/tmp/a.csv"), QString());
-  session.recordLoadedSource(QStringLiteral("/tmp/b.csv"), QString());
+  session.recordLoadedSource(u"/tmp/a.csv"_s, QString());
+  session.recordLoadedSource(u"/tmp/b.csv"_s, QString());
   session.clearLoadedSource();
   EXPECT_FALSE(session.lastLoadedSource().has_value());
   EXPECT_TRUE(session.loadedSources().empty());
@@ -80,33 +244,30 @@ TEST(SessionManagerSourceTest, ClearLoadedSourceResetsToEmpty) {
 
 TEST(SessionManagerSourceTest, RecordLoadedSourceStoresPluginIdAndConfig) {
   PJ::SessionManager session;
-  session.recordLoadedSource(
-      QStringLiteral("/tmp/run42.mcap"), QStringLiteral(""), QStringLiteral("DataLoad MCAP"),
-      QStringLiteral(R"({"topics":["/imu"]})"));
+  session.recordLoadedSource(u"/tmp/run42.mcap"_s, u""_s, u"DataLoad MCAP"_s, uR"({"topics":["/imu"]})"_s);
   const auto src = session.lastLoadedSource();
   ASSERT_TRUE(src.has_value());
-  EXPECT_EQ(src->path, QStringLiteral("/tmp/run42.mcap"));
+  EXPECT_EQ(src->path, PJ::SessionManager::normalizedSourcePath(u"/tmp/run42.mcap"_s));
   EXPECT_EQ(src->prefix, QString());
-  EXPECT_EQ(src->plugin_id, QStringLiteral("DataLoad MCAP"));
-  EXPECT_EQ(src->plugin_config_json, QStringLiteral(R"({"topics":["/imu"]})"));
+  EXPECT_EQ(src->plugin_id, u"DataLoad MCAP"_s);
+  EXPECT_EQ(src->plugin_config_json, uR"({"topics":["/imu"]})"_s);
 }
 
 TEST(SessionManagerSourceTest, RecordLoadedSourceDefaultsPluginFieldsToEmpty) {
   PJ::SessionManager session;
   // Old 2-arg shape — plugin fields default-empty.
-  session.recordLoadedSource(QStringLiteral("/tmp/a.csv"), QStringLiteral("p"));
+  session.recordLoadedSource(u"/tmp/a.csv"_s, u"p"_s);
   const auto src = session.lastLoadedSource();
   ASSERT_TRUE(src.has_value());
-  EXPECT_EQ(src->path, QStringLiteral("/tmp/a.csv"));
-  EXPECT_EQ(src->prefix, QStringLiteral("p"));
+  EXPECT_EQ(src->path, PJ::SessionManager::normalizedSourcePath(u"/tmp/a.csv"_s));
+  EXPECT_EQ(src->prefix, u"p"_s);
   EXPECT_TRUE(src->plugin_id.isEmpty());
   EXPECT_TRUE(src->plugin_config_json.isEmpty());
 }
 
 TEST(SessionManagerSourceTest, ClearLoadedSourceResetsPluginFieldsToo) {
   PJ::SessionManager session;
-  session.recordLoadedSource(
-      QStringLiteral("/tmp/a.mcap"), QString(), QStringLiteral("DataLoad MCAP"), QStringLiteral(R"({"x":1})"));
+  session.recordLoadedSource(u"/tmp/a.mcap"_s, QString(), u"DataLoad MCAP"_s, uR"({"x":1})"_s);
   session.clearLoadedSource();
   EXPECT_FALSE(session.lastLoadedSource().has_value());
 }
@@ -291,22 +452,61 @@ TEST(SessionManagerParserRaceTest, ConcurrentRegisterAndBindIsSafe) {
 
   constexpr int kIterations = 5000;
   std::atomic<bool> writer_done{false};
+  std::atomic<bool> writer_at_handoff{false};
+  std::atomic<bool> reader_has_snapshot{false};
+  std::atomic<bool> handoff_replacement_done{false};
 
   std::thread writer([&] {
     for (int iteration = 0; iteration < kIterations; ++iteration) {
+      // Coordinate one replacement so the reader deterministically holds the
+      // prior binding across it. Without this handoff, a fast runner can finish
+      // all 5,000 writes before the reader is scheduled, which tests scheduler
+      // luck instead of the keepalive contract.
+      const bool handoff = iteration == kIterations / 2;
+      if (handoff) {
+        writer_at_handoff.store(true, std::memory_order_release);
+        while (!reader_has_snapshot.load(std::memory_order_acquire)) {
+          std::this_thread::yield();
+        }
+      }
+
       // Each registration overwrites the slot, dropping the previous handle —
       // exactly the cross-thread replacement that used to free a parser out from
       // under a reader holding only a raw pointer.
       session.registerObjectTopicParser(topic, makeNoopHandle());
+      if (handoff) {
+        handoff_replacement_done.store(true, std::memory_order_release);
+      }
     }
     writer_done.store(true, std::memory_order_release);
   });
+
+  while (!writer_at_handoff.load(std::memory_order_acquire)) {
+    std::this_thread::yield();
+  }
+
+  // Keep this snapshot alive while the writer replaces its slot, then
+  // dereference the old handle. This is the lifetime edge the test protects.
+  PJ::SessionManager::ParserBinding handoff_binding = session.parserBindingForObjectTopic(topic);
+  const bool handoff_binding_valid = static_cast<bool>(handoff_binding);
+  reader_has_snapshot.store(true, std::memory_order_release);
+  while (!handoff_replacement_done.load(std::memory_order_acquire)) {
+    std::this_thread::yield();
+  }
 
   // Reader loop: take a per-use snapshot, and when truthy, dereference the parser
   // through the binding's keepalive — the keepalive is what must keep a replaced
   // parser alive for the duration of this access.
   std::size_t valid_bindings = 0;
   std::size_t manifest_bytes = 0;  // sink so the manifest read is not optimized away
+  if (handoff_binding_valid) {
+    const auto* handle = static_cast<const PJ::MessageParserHandle*>(handoff_binding.keepalive.get());
+    manifest_bytes += handle->manifest().size();
+    ++valid_bindings;
+  } else {
+    ADD_FAILURE() << "seeded parser binding disappeared before the coordinated replacement";
+  }
+
   while (!writer_done.load(std::memory_order_acquire)) {
     PJ::SessionManager::ParserBinding binding = session.parserBindingForObjectTopic(topic);
     if (binding) {
@@ -482,6 +682,136 @@ TEST(SessionManagerTimeOffsetTest, UsesUniformGlobalOriginPreservingGaps) {
   EXPECT_DOUBLE_EQ(range_a_off->min.value, 5.0);  // back to absolute epoch seconds
 }
 
+TEST(SessionManagerTimeOffsetTest, EarlierDatasetIngestNotifiesGlobalReframe) {
+  PJ::SessionManager session;
+  static_cast<void>(addDataset(session, "later.mcap", "/later", {5'000'000'000LL, 6'000'000'000LL}));
+  session.setUseTimeOffset(true);
+  ASSERT_EQ(session.globalTimeReference(), 5'000'000'000LL);
+
+  QSignalSpy global_changes(&session, qOverload<>(&PJ::SessionManager::displayOffsetChanged));
+  static_cast<void>(addDataset(session, "earlier.mcap", "/earlier", {2'000'000'000LL, 3'000'000'000LL}));
+
+  EXPECT_EQ(session.globalTimeReference(), 2'000'000'000LL);
+  EXPECT_EQ(global_changes.count(), 1) << "existing adapters must be told that the shared absolute/display frame moved";
+}
+
+// FileLoader's completion seam (FIX 3): plugin ingest commits straight to DataEngine
+// via the C-ABI write host, BYPASSING SessionManager::commitChunks — so committing an
+// earlier dataset that way leaves the memoized origin stale (no notify fires). The
+// public refreshDatasetTimeReference seam re-scans the dataset and emits the reframe.
+TEST(SessionManagerTimeOffsetTest, RefreshDatasetTimeReferenceReframesAfterDirectEngineCommit) {
+  PJ::SessionManager session;
+  static_cast<void>(addDataset(session, "later.mcap", "/later", {5'000'000'000LL, 6'000'000'000LL}));
+  session.setUseTimeOffset(true);
+  ASSERT_EQ(session.globalTimeReference(), 5'000'000'000LL);
+
+  // Create an EARLIER dataset and commit its rows straight to DataEngine (mirrors the
+  // plugin write host) — SessionManager never sees a commitChunks/notifyIngest, so its
+  // origin memo stays at 5 s despite the earlier data being live.
+  auto domain = session.dataEngine().createTimeDomain("earlier.mcap");
+  ASSERT_TRUE(domain.has_value()) << domain.error();
+  auto dataset = session.dataEngine().createDataset(
+      PJ::DatasetDescriptor{.source_name = "earlier.mcap", .time_domain_id = *domain});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  PJ::DataWriter writer = session.dataEngine().createWriter();
+  auto handle = writer.registerScalarSeries(*dataset, "/earlier", PJ::NumericType::kFloat64);
+  ASSERT_TRUE(handle.has_value()) << handle.error();
+  writer.appendScalar(*handle, 2'000'000'000LL, 1.0);
+  writer.appendScalar(*handle, 3'000'000'000LL, 1.0);
+  ASSERT_FALSE(session.dataEngine().commitChunks(writer.flushAll()).empty());  // NOT session.commitChunks
+
+  // The origin is still stale (the direct commit bypassed the notify path).
+  QSignalSpy global_changes(&session, qOverload<>(&PJ::SessionManager::displayOffsetChanged));
+
+  // The completion seam re-scans and reframes exactly once.
+  session.refreshDatasetTimeReference(*dataset);
+  EXPECT_EQ(session.globalTimeReference(), 2'000'000'000LL);
+  EXPECT_EQ(global_changes.count(), 1) << "a plugin-direct-committed earlier file must reframe on the completion seam";
+
+  // Idempotent: a second refresh with the origin unchanged emits nothing.
+  session.refreshDatasetTimeReference(*dataset);
+  EXPECT_EQ(global_changes.count(), 1) << "no spurious reframe when the origin did not move";
+}
+
+// FIX 3 removal face: a dataset with committed data removed via SessionManager::
+// removeDataset must reframe when it was the origin owner (FileLoader routes its
+// discard/error cleanups through this instead of dataEngine().removeDataset directly).
+TEST(SessionManagerTimeOffsetTest, RemoveDatasetReframesWhenItOwnedTheOrigin) {
+  PJ::SessionManager session;
+  static_cast<void>(addDataset(session, "later.mcap", "/later", {5'000'000'000LL, 6'000'000'000LL}));
+  const PJ::DatasetId earliest = addDataset(session, "earlier.mcap", "/earlier", {2'000'000'000LL, 3'000'000'000LL});
+  session.setUseTimeOffset(true);
+  ASSERT_EQ(session.globalTimeReference(), 2'000'000'000LL);
+
+  QSignalSpy global_changes(&session, qOverload<>(&PJ::SessionManager::displayOffsetChanged));
+  session.removeDataset(earliest);
+  EXPECT_EQ(session.globalTimeReference(), 5'000'000'000LL) << "origin re-bases to the surviving later dataset";
+  EXPECT_EQ(global_changes.count(), 1) << "dropping the origin owner must reframe surviving plots exactly once";
+}
+
+TEST(SessionManagerTimeOffsetTest, ObjectTopicEvictionRebasesOnlyWhenTheNumericOriginMoves) {
+  PJ::SessionManager session;
+  const auto make_object_dataset = [&session](std::string source, PJ::Timestamp stamp) {
+    const auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = std::move(source)});
+    EXPECT_TRUE(dataset.has_value()) << dataset.error();
+    if (!dataset.has_value()) {
+      return PJ::ObjectTopicId{};
+    }
+    const auto topic = session.objectStore().registerTopic(
+        PJ::ObjectTopicDescriptor{.dataset_id = *dataset, .topic_name = "/object", .metadata_json = "{}"});
+    EXPECT_TRUE(topic.has_value()) << topic.error();
+    if (!topic.has_value()) {
+      return PJ::ObjectTopicId{};
+    }
+    EXPECT_TRUE(session.objectStore().pushOwned(*topic, stamp, std::vector<uint8_t>{1}).has_value());
+    return *topic;
+  };
+
+  const PJ::ObjectTopicId earliest = make_object_dataset("early", 2'000'000'000LL);
+  const PJ::ObjectTopicId survivor = make_object_dataset("middle", 5'000'000'000LL);
+  const PJ::ObjectTopicId non_origin = make_object_dataset("late", 8'000'000'000LL);
+  ASSERT_NE(earliest.id, 0U);
+  ASSERT_NE(survivor.id, 0U);
+  ASSERT_NE(non_origin.id, 0U);
+  session.notifyIngest({}, /*live=*/false);
+  session.setUseTimeOffset(true);
+  ASSERT_EQ(session.globalTimeReference(), 2'000'000'000LL);
+
+  QSignalSpy global_changes(&session, qOverload<>(&PJ::SessionManager::displayOffsetChanged));
+  session.evictObjectTopics({non_origin});
+  EXPECT_EQ(session.globalTimeReference(), 2'000'000'000LL);
+  EXPECT_EQ(global_changes.count(), 0) << "removing a later object must not emit a spurious frame change";
+
+  session.evictObjectTopics({earliest});
+  EXPECT_EQ(session.globalTimeReference(), 5'000'000'000LL);
+  EXPECT_EQ(global_changes.count(), 1) << "removing the object-only t0 owner must reframe surviving data exactly once";
+}
+
+TEST(SessionManagerTimeOffsetTest, ClearAllObjectsRebasesToSurvivingScalarData) {
+  PJ::SessionManager session;
+  const PJ::DatasetId scalar_dataset = addDataset(session, "scalar", "/scalar", {8'000'000'000LL, 9'000'000'000LL});
+  const auto object_dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "object"});
+  ASSERT_TRUE(object_dataset.has_value()) << object_dataset.error();
+  const auto object_topic = session.objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{.dataset_id = *object_dataset, .topic_name = "/object", .metadata_json = "{}"});
+  ASSERT_TRUE(object_topic.has_value()) << object_topic.error();
+  ASSERT_TRUE(session.objectStore().pushOwned(*object_topic, 3'000'000'000LL, std::vector<uint8_t>{1}).has_value());
+  session.notifyIngest({}, /*live=*/false);
+
+  session.setUseTimeOffset(true);
+  ASSERT_EQ(session.globalTimeReference(), 3'000'000'000LL);
+  QSignalSpy global_changes(&session, qOverload<>(&PJ::SessionManager::displayOffsetChanged));
+
+  session.clearAllObjects();
+
+  EXPECT_TRUE(session.objectStore().listTopics().empty());
+  EXPECT_EQ(session.globalTimeReference(), 8'000'000'000LL);
+  const auto scalar_range = session.datasetDisplayRange(scalar_dataset);
+  ASSERT_TRUE(scalar_range.has_value());
+  EXPECT_DOUBLE_EQ(scalar_range->min.value, 0.0);
+  EXPECT_EQ(global_changes.count(), 1) << "the scalar survivor must become t0 after object data is cleared";
+}
+
 TEST(SessionManagerTimeOffsetTest, RetentionDoesNotMoveRelativeOffsetForward) {
   PJ::SessionManager session;
   auto dataset_or = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "stream"});
@@ -606,20 +936,19 @@ TEST(SessionManagerRefillGuardTest, DetachEmitsAboutToBeReplacedBeforeEmptyInges
   // Record the emission order of the two signals (direct, same-thread connections).
   std::vector<QString> order;
   QObject::connect(&session, &PJ::SessionManager::datasetAboutToBeReplaced, &session, [&order](PJ::DatasetId) {
-    order.emplace_back(QStringLiteral("about"));
+    order.emplace_back(u"about"_s);
   });
   QObject::connect(
-      &session, &PJ::SessionManager::samplesIngested, &session, [&order](const QVector<PJ::TopicId>&, bool live) {
-        order.emplace_back(live ? QStringLiteral("ingest_live") : QStringLiteral("ingest"));
-      });
+      &session, &PJ::SessionManager::samplesIngested, &session,
+      [&order](const QVector<PJ::TopicId>&, bool live) { order.emplace_back(live ? u"ingest_live"_s : u"ingest"_s); });
 
   {
     PJ::RefillGuard guard = session.beginRefill(*ds);
     // beginRefill's detach MUST emit datasetAboutToBeReplaced before the empty-state
     // (non-live) ingest notify — adapters drop cached TopicChunk* before the data moves.
     ASSERT_EQ(order.size(), 2u);
-    EXPECT_EQ(order[0], QStringLiteral("about"));
-    EXPECT_EQ(order[1], QStringLiteral("ingest"));
+    EXPECT_EQ(order[0], u"about"_s);
+    EXPECT_EQ(order[1], u"ingest"_s);
 
     // Dataset is now empty, but its topic ids stay registered (a refill reuses them).
     EXPECT_FALSE(session.datasetDisplayRange(*ds).has_value());
@@ -690,6 +1019,39 @@ TEST(SessionManagerRefillGuardTest, CommitKeepsRefilledDataAndFreesSnapshot) {
     EXPECT_EQ(storage->timeMin(), 1000);
     EXPECT_EQ(storage->timeMax(), 2000);
   }
+}
+
+TEST(SessionManagerRefillGuardTest, ProcessorOutputsReplayBeforePruneAndKeepStableTopicIds) {
+  PJ::SessionManager session;
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "reload.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  writeScalarSamples(session, *dataset, "/a", {100, 200});
+  const PJ::TopicId input = session.dataEngine().listTopics(*dataset).front();
+  auto filter =
+      session.dataProcessorService().applyFilter(input, *dataset, std::make_unique<PassThroughProcessor>(), "/a[Pass]");
+  ASSERT_TRUE(filter.has_value()) << filter.error();
+  const PJ::TopicId output = filter->output_topic_id;
+  ASSERT_EQ(session.dataEngine().getTopicStorage(output)->metadata().total_row_count, 2U);
+
+  {
+    PJ::RefillGuard guard = session.beginRefill(*dataset);
+    EXPECT_TRUE(session.dataEngine().getTopicStorage(output)->empty());
+    PJ::DataWriter writer = session.dataEngine().createWriter();
+    writer.appendScalar(PJ::ScalarSeriesHandle{input, 0}, 1000, 10.0);
+    writer.appendScalar(PJ::ScalarSeriesHandle{input, 0}, 2000, 20.0);
+    ASSERT_FALSE(session.dataEngine().commitChunks(writer.flushAll()).empty());
+    ASSERT_TRUE(guard.recomputeProcessors().has_value());
+    guard.pruneVanishedTopics();
+    guard.commit();
+  }
+
+  const auto topics = session.dataEngine().listTopics(*dataset);
+  EXPECT_NE(std::find(topics.begin(), topics.end(), output), topics.end());
+  const PJ::TopicStorage* output_storage = session.dataEngine().getTopicStorage(output);
+  ASSERT_NE(output_storage, nullptr);
+  EXPECT_EQ(output_storage->metadata().total_row_count, 2U);
+  EXPECT_EQ(output_storage->timeMin(), 1000);
+  EXPECT_EQ(output_storage->timeMax(), 2000);
 }
 
 TEST(SessionManagerRefillGuardTest, RollbackRetiresTopicsAddedByRefill) {

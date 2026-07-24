@@ -23,6 +23,7 @@
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/SessionManager.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -57,12 +58,12 @@ TEST(AppSessionTest, BuiltinPluginFoldersOrderedWithPluginDirOverride) {
   PJ::AppSession session(dir.path());
 
   const QStringList builtins = session.extensionCatalog().builtinPluginFolders();
-  // Built-in scan order: install dir (= override) > marketplace dir >
-  // <prefix>/lib/plotjuggler/plugins (bundled, FHS-relative to the executable).
-  ASSERT_EQ(builtins.size(), 3);
+  // Built-in scanned folders: install dir (= override) first, then the
+  // marketplace dir. The bundled (share) dir is not listed — it is a seed
+  // source, not a scanned folder.
+  ASSERT_EQ(builtins.size(), 2);
   EXPECT_EQ(builtins.at(0), dir.path());
   EXPECT_NE(builtins.at(1), dir.path());  // marketplace location, distinct from the override
-  EXPECT_TRUE(builtins.at(2).endsWith(QStringLiteral("/lib/plotjuggler/plugins")));
 }
 
 TEST(AppSessionTest, InvalidExtensionDirectoryReportsDiagnostic) {
@@ -209,7 +210,7 @@ TEST(AppSessionTest, TrashedCurvesStopContributingToPlaybackRange) {
   // Trash the long topic's curves (the dataset stays visible through /imu/x).
   std::vector<QString> trashed_keys;
   for (const PJ::CatalogItem& item : session.catalogModel().items()) {
-    if (item.topic_name == QStringLiteral("/gps/fix")) {
+    if (item.topic_name == "/gps/fix"_L1) {
       trashed_keys.push_back(item.key);
     }
   }
@@ -254,6 +255,93 @@ TEST(AppSessionTest, ClearAllThenSeedSnapsPlaybackToNewData) {
       << "playhead must snap to the new data's start after a full clear";
 }
 
+// Removing the LAST visible dataset must collapse the transport to the empty
+// state: range reset to [0,0], cursor to 0, and playback stopped — not left
+// pointing at (and "playing" over) the vanished data's stale range.
+TEST(AppSessionTest, RemovingLastDatasetResetsPlaybackToEmptyAndStops) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  auto dataset = session.sessionManager().dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "only.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  addScalarSamples(session, *dataset, "/imu/x", {1'000, 2'000});
+  session.catalogModel().rebuildFromDatastore();
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+  session.playbackEngine().play();
+  ASSERT_TRUE(session.playbackEngine().isPlaying());
+
+  // Removing the sole dataset empties the catalog (cleared()), which must reset
+  // the transport through the AppSession cleared() hook.
+  ASSERT_TRUE(session.catalogModel().removeDataset(*dataset));
+
+  EXPECT_FALSE(session.playbackEngine().isPlaying()) << "playback must stop when the last dataset is removed";
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMin().value, 0.0);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 0.0) << "empty timeline must reset to [0,0]";
+  EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 0.0) << "cursor must reset to 0 when empty";
+}
+
+// A full catalog clear (Remove-all / trash-all) must likewise stop playback and
+// reset the range to empty, not merely re-arm the first-seed snap.
+TEST(AppSessionTest, ClearAllStopsPlaybackAndResetsRangeToEmpty) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  auto dataset = session.sessionManager().dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "data.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  addScalarSamples(session, *dataset, "/imu/x", {100, 900});
+  session.catalogModel().rebuildFromDatastore();
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+  session.playbackEngine().play();
+  ASSERT_TRUE(session.playbackEngine().isPlaying());
+
+  session.catalogModel().clearAll();
+
+  EXPECT_FALSE(session.playbackEngine().isPlaying()) << "playback must stop on a full clear";
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMin().value, 0.0);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 0.0);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 0.0);
+}
+
+// Removing the EARLIEST of several datasets while "Use time offset" is on must
+// re-base the global time reference to the new earliest sample (the t0 cache
+// cannot keep pointing at the vanished dataset's start). Uses the SessionManager
+// removeDataset seam that invalidates the memoized origin.
+TEST(AppSessionTest, RemovingEarliestDatasetRebasesGlobalTimeReference) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+  session.sessionManager().setUseTimeOffset(true);
+
+  auto early = session.sessionManager().dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "early.mcap"});
+  ASSERT_TRUE(early.has_value()) << early.error();
+  addScalarSamples(session, *early, "/imu/x", {100, 500});
+  auto late = session.sessionManager().dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "late.mcap"});
+  ASSERT_TRUE(late.has_value()) << late.error();
+  addScalarSamples(session, *late, "/gps/x", {1'000, 2'000});
+  session.catalogModel().rebuildFromDatastore();
+
+  EXPECT_EQ(session.sessionManager().globalTimeReference(), 100) << "origin is the earliest sample across datasets";
+
+  // The re-base must also signal a display reframe so surviving curve adapters
+  // drop their now-stale cached offsets (QObject::connect counter — the test
+  // links only Qt6::Core, not Qt6::Test/QSignalSpy).
+  int reframe_count = 0;
+  QObject::connect(
+      &session.sessionManager(), qOverload<>(&PJ::SessionManager::displayOffsetChanged),
+      [&reframe_count]() { ++reframe_count; });
+
+  // Remove the earliest dataset through the session seam, then rebuild.
+  ASSERT_TRUE(session.catalogModel().removeDataset(*early));
+  session.sessionManager().removeDataset(*early);
+  session.catalogModel().rebuildFromDatastore();
+
+  EXPECT_EQ(session.sessionManager().globalTimeReference(), 1'000)
+      << "removing the earliest dataset must re-base the global time reference";
+  EXPECT_GE(reframe_count, 1) << "re-basing the origin must emit displayOffsetChanged() for a plot reframe";
+}
+
 TEST(AppSessionTest, ClearingCatalogForgetsRememberedCurveColors) {
   QTemporaryDir dir;
   ASSERT_TRUE(dir.isValid());
@@ -268,14 +356,14 @@ TEST(AppSessionTest, ClearingCatalogForgetsRememberedCurveColors) {
   session.catalogModel().rebuildFromDatastore();
 
   // A remembered curve color...
-  session.curveColorRegistry().setColor(QStringLiteral("/imu/x"), QStringLiteral("#1f77b4"));
-  ASSERT_TRUE(session.curveColorRegistry().color(QStringLiteral("/imu/x")).has_value());
+  session.curveColorRegistry().setColor(u"/imu/x"_s, u"#1f77b4"_s);
+  ASSERT_TRUE(session.curveColorRegistry().color(u"/imu/x"_s).has_value());
 
   // ...is forgotten when the catalog is cleared (data replaced), via the
   // AppSession wiring of CatalogModel::cleared -> CurveColorRegistry::clear.
   session.catalogModel().clearAll();
 
-  EXPECT_FALSE(session.curveColorRegistry().color(QStringLiteral("/imu/x")).has_value());
+  EXPECT_FALSE(session.curveColorRegistry().color(u"/imu/x"_s).has_value());
 }
 
 TEST(AppSessionTest, DatasetRawTimeRangeReturnsRawBounds) {

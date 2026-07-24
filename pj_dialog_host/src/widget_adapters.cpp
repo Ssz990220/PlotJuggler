@@ -16,6 +16,7 @@
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDialog>
 #include <QFrame>
 #include <QGridLayout>
 #include <QLayout>
@@ -31,15 +32,15 @@
 #include <QVariant>
 #include <algorithm>
 
+#include "pj_widgets/FrameworkTokens.h"
+
 namespace PJ {
 
 namespace {
 
 // Marker properties linking an adapted original to its styled replacement.
 constexpr const char* kDualOptionsWidgetProperty = "_pj_dual_options_widget";
-constexpr const char* kDualOptionsIndexProperty = "_pj_dual_options_index";
-constexpr const char* kDualOptionsRadio0Property = "_pj_dual_options_radio0";
-constexpr const char* kDualOptionsRadio1Property = "_pj_dual_options_radio1";
+constexpr const char* kDualOptionsRadiosProperty = "_pj_dual_options_radios";
 constexpr const char* kDualOptionsDesiredVisibleProperty = "_pj_dual_options_desired_visible";
 
 static PJ::DualOptionsWidget* pairedDualOptionsWidget(const QWidget* widget) {
@@ -47,43 +48,61 @@ static PJ::DualOptionsWidget* pairedDualOptionsWidget(const QWidget* widget) {
   return qobject_cast<PJ::DualOptionsWidget*>(obj);
 }
 
-static QRadioButton* pairedRadio(const PJ::DualOptionsWidget* dual, const char* property_name) {
-  QObject* obj = dual->property(property_name).value<QObject*>();
-  return qobject_cast<QRadioButton*>(obj);
+// The radios an adapted DualOptionsWidget replaces, in segment order. Empty if
+// any of them has been destroyed.
+static QList<QRadioButton*> adaptedRadios(const PJ::DualOptionsWidget* dual) {
+  QList<QRadioButton*> radios;
+  const QObjectList objects = dual->property(kDualOptionsRadiosProperty).value<QObjectList>();
+  for (QObject* obj : objects) {
+    auto* radio = qobject_cast<QRadioButton*>(obj);
+    if (radio == nullptr) {
+      return {};
+    }
+    radios.push_back(radio);
+  }
+  return radios;
 }
 
-static void syncDualOptionsFromRadioPair(QRadioButton* radio) {
+static void syncDualOptionsFromRadios(QRadioButton* radio) {
   auto* dual = pairedDualOptionsWidget(radio);
   if (dual == nullptr) {
     return;
   }
-  auto* first = pairedRadio(dual, kDualOptionsRadio0Property);
-  auto* second = pairedRadio(dual, kDualOptionsRadio1Property);
-  if (first == nullptr || second == nullptr) {
+  const QList<QRadioButton*> radios = adaptedRadios(dual);
+  if (radios.isEmpty()) {
     return;
   }
 
-  first->hide();
-  second->hide();
+  bool enabled = true;
+  bool visible = false;
+  int selected = 0;
+  for (qsizetype i = 0; i < radios.size(); ++i) {
+    radios[i]->hide();
+    enabled = enabled && radios[i]->isEnabled();
+    visible = visible || radios[i]->property(kDualOptionsDesiredVisibleProperty).toBool();
+    if (radios[i]->isChecked()) {
+      selected = static_cast<int>(i);
+    }
+  }
+  dual->setEnabled(enabled);
+  dual->setVisible(visible);
 
-  dual->setEnabled(first->isEnabled() && second->isEnabled());
-  const bool first_visible = first->property(kDualOptionsDesiredVisibleProperty).toBool();
-  const bool second_visible = second->property(kDualOptionsDesiredVisibleProperty).toBool();
-  dual->setVisible(first_visible || second_visible);
-
-  const int selected = second->isChecked() ? 1 : 0;
   const QSignalBlocker blocker(dual);
   dual->setSelectedIndex(selected);
 }
 
-static bool boxSegmentContainsOnlyPairOrSpacer(QBoxLayout* layout, QRadioButton* first, QRadioButton* second) {
-  const int first_index = layout->indexOf(first);
-  const int second_index = layout->indexOf(second);
-  if (first_index < 0 || second_index < 0) {
-    return false;
+static bool boxSegmentContainsOnlyGroupOrSpacer(
+    QBoxLayout* layout, const QList<QRadioButton*>& radios, int& begin, int& end) {
+  begin = -1;
+  end = -1;
+  for (QRadioButton* radio : radios) {
+    const int index = layout->indexOf(radio);
+    if (index < 0) {
+      return false;
+    }
+    begin = (begin < 0) ? index : std::min(begin, index);
+    end = std::max(end, index);
   }
-  const int begin = std::min(first_index, second_index);
-  const int end = std::max(first_index, second_index);
   for (int i = begin; i <= end; ++i) {
     QLayoutItem* item = layout->itemAt(i);
     if (item == nullptr || item->spacerItem() != nullptr) {
@@ -93,7 +112,7 @@ static bool boxSegmentContainsOnlyPairOrSpacer(QBoxLayout* layout, QRadioButton*
       return false;
     }
     QWidget* widget = item->widget();
-    if (widget == nullptr || widget == first || widget == second) {
+    if (widget == nullptr || radios.contains(qobject_cast<QRadioButton*>(widget))) {
       continue;
     }
     return false;
@@ -111,27 +130,28 @@ static bool gridItemPosition(
   return true;
 }
 
-static bool gridSegmentContainsOnlyPairOrSpacer(
-    QGridLayout* layout, QRadioButton* first, QRadioButton* second, int& row, int& column, int& column_span) {
-  int first_row = 0;
-  int first_col = 0;
-  int first_row_span = 0;
-  int first_col_span = 0;
-  int second_row = 0;
-  int second_col = 0;
-  int second_row_span = 0;
-  int second_col_span = 0;
-  if (!gridItemPosition(layout, first, first_row, first_col, first_row_span, first_col_span) ||
-      !gridItemPosition(layout, second, second_row, second_col, second_row_span, second_col_span)) {
-    return false;
-  }
-  if (first_row != second_row || first_row_span != 1 || second_row_span != 1) {
-    return false;
+static bool gridSegmentContainsOnlyGroupOrSpacer(
+    QGridLayout* layout, const QList<QRadioButton*>& radios, int& row, int& column, int& column_span) {
+  row = 0;
+  int begin_col = -1;
+  int end_col = -1;
+  for (qsizetype i = 0; i < radios.size(); ++i) {
+    int radio_row = 0;
+    int radio_col = 0;
+    int radio_row_span = 0;
+    int radio_col_span = 0;
+    if (!gridItemPosition(layout, radios[i], radio_row, radio_col, radio_row_span, radio_col_span)) {
+      return false;
+    }
+    if (radio_row_span != 1 || (i > 0 && radio_row != row)) {
+      return false;
+    }
+    row = radio_row;
+    begin_col = (begin_col < 0) ? radio_col : std::min(begin_col, radio_col);
+    end_col = std::max(end_col, radio_col + radio_col_span);
   }
 
-  row = first_row;
-  column = std::min(first_col, second_col);
-  const int end_col = std::max(first_col + first_col_span, second_col + second_col_span);
+  column = begin_col;
   column_span = end_col - column;
 
   for (int i = 0; i < layout->count(); ++i) {
@@ -151,7 +171,7 @@ static bool gridSegmentContainsOnlyPairOrSpacer(
       return false;
     }
     QWidget* widget = item->widget();
-    if (widget == nullptr || widget == first || widget == second) {
+    if (widget == nullptr || radios.contains(qobject_cast<QRadioButton*>(widget))) {
       continue;
     }
     return false;
@@ -159,32 +179,32 @@ static bool gridSegmentContainsOnlyPairOrSpacer(
   return true;
 }
 
-struct RadioPairPlacement {
+struct RadioGroupPlacement {
   QBoxLayout* box_layout = nullptr;
   QGridLayout* grid_layout = nullptr;
-  int first_index = -1;
-  int second_index = -1;
-  int first_column = 0;
-  int second_column = 0;
+  // Box: index range [begin_index, end_index] the group occupies in the layout.
+  int begin_index = -1;
+  int end_index = -1;
+  // Grid: the cell span covering the whole group.
   int row = 0;
   int column = 0;
   int column_span = 0;
 };
 
-static bool findRadioPairPlacement(
-    QLayout* layout, QRadioButton* first, QRadioButton* second, RadioPairPlacement& placement) {
+static bool findRadioGroupPlacement(
+    QLayout* layout, const QList<QRadioButton*>& radios, RadioGroupPlacement& placement) {
   if (layout == nullptr) {
     return false;
   }
 
   if (auto* box_layout = qobject_cast<QBoxLayout*>(layout)) {
-    const int first_index = box_layout->indexOf(first);
-    const int second_index = box_layout->indexOf(second);
-    if (first_index >= 0 && second_index >= 0 && boxSegmentContainsOnlyPairOrSpacer(box_layout, first, second)) {
+    int begin = -1;
+    int end = -1;
+    if (boxSegmentContainsOnlyGroupOrSpacer(box_layout, radios, begin, end)) {
       placement = {};
       placement.box_layout = box_layout;
-      placement.first_index = first_index;
-      placement.second_index = second_index;
+      placement.begin_index = begin;
+      placement.end_index = end;
       return true;
     }
   }
@@ -193,21 +213,9 @@ static bool findRadioPairPlacement(
     int row = 0;
     int column = 0;
     int column_span = 0;
-    if (gridSegmentContainsOnlyPairOrSpacer(grid_layout, first, second, row, column, column_span)) {
-      int first_row = 0;
-      int first_col = 0;
-      int first_row_span = 0;
-      int first_col_span = 0;
-      int second_row = 0;
-      int second_col = 0;
-      int second_row_span = 0;
-      int second_col_span = 0;
-      (void)gridItemPosition(grid_layout, first, first_row, first_col, first_row_span, first_col_span);
-      (void)gridItemPosition(grid_layout, second, second_row, second_col, second_row_span, second_col_span);
+    if (gridSegmentContainsOnlyGroupOrSpacer(grid_layout, radios, row, column, column_span)) {
       placement = {};
       placement.grid_layout = grid_layout;
-      placement.first_column = first_col;
-      placement.second_column = second_col;
       placement.row = row;
       placement.column = column;
       placement.column_span = column_span;
@@ -217,126 +225,175 @@ static bool findRadioPairPlacement(
 
   for (int i = 0; i < layout->count(); ++i) {
     QLayoutItem* item = layout->itemAt(i);
-    if (item != nullptr && item->layout() != nullptr &&
-        findRadioPairPlacement(item->layout(), first, second, placement)) {
+    if (item != nullptr && item->layout() != nullptr && findRadioGroupPlacement(item->layout(), radios, placement)) {
       return true;
     }
   }
   return false;
 }
 
-static bool radioPairHasExplicitExclusiveGroup(QRadioButton* first, QRadioButton* second) {
-  QButtonGroup* first_group = first->group();
-  QButtonGroup* second_group = second->group();
-  return first_group != nullptr && first_group == second_group && first_group->exclusive() &&
-         first_group->buttons().size() == 2;
-}
-
-static bool sortRadioPairByLayout(QWidget* parent, QRadioButton*& first, QRadioButton*& second) {
-  RadioPairPlacement placement;
-  if (!findRadioPairPlacement(parent->layout(), first, second, placement)) {
+static bool radiosHaveExplicitExclusiveGroup(const QList<QRadioButton*>& radios) {
+  QButtonGroup* group = radios.front()->group();
+  if (group == nullptr || !group->exclusive() || group->buttons().size() != radios.size()) {
     return false;
   }
-  if (placement.box_layout != nullptr && placement.second_index < placement.first_index) {
-    std::swap(first, second);
-  } else if (placement.grid_layout != nullptr && placement.second_column < placement.first_column) {
-    std::swap(first, second);
+  return std::all_of(radios.begin(), radios.end(), [group](QRadioButton* radio) { return radio->group() == group; });
+}
+
+// Orders `radios` left-to-right by their slot in the shared layout (box index
+// or grid column). False when no layout places the whole group together.
+static bool sortRadiosByLayout(QWidget* parent, QList<QRadioButton*>& radios) {
+  RadioGroupPlacement placement;
+  if (!findRadioGroupPlacement(parent->layout(), radios, placement)) {
+    return false;
+  }
+  QList<QPair<int, QRadioButton*>> ordered;
+  for (QRadioButton* radio : radios) {
+    int slot = 0;
+    if (placement.box_layout != nullptr) {
+      slot = placement.box_layout->indexOf(radio);
+    } else if (placement.grid_layout != nullptr) {
+      int row = 0;
+      int row_span = 0;
+      int column_span = 0;
+      (void)gridItemPosition(placement.grid_layout, radio, row, slot, row_span, column_span);
+    }
+    ordered.push_back({slot, radio});
+  }
+  std::sort(ordered.begin(), ordered.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+  for (qsizetype i = 0; i < ordered.size(); ++i) {
+    radios[i] = ordered[i].second;
   }
   return true;
 }
 
-static void insertDualOptionsWidget(
-    QWidget* parent, QRadioButton* first, QRadioButton* second, DualOptionsWidget* dual) {
-  RadioPairPlacement placement;
-  if (!findRadioPairPlacement(parent->layout(), first, second, placement)) {
+static void insertDualOptionsWidget(QWidget* parent, const QList<QRadioButton*>& radios, DualOptionsWidget* dual) {
+  RadioGroupPlacement placement;
+  if (!findRadioGroupPlacement(parent->layout(), radios, placement)) {
     return;
   }
 
   if (placement.box_layout != nullptr) {
-    const int insert_index = std::min(placement.first_index, placement.second_index);
-    placement.box_layout->removeWidget(first);
-    placement.box_layout->removeWidget(second);
-    placement.box_layout->insertWidget(insert_index, dual);
+    QBoxLayout* box = placement.box_layout;
+    const bool horizontal = box->direction() == QBoxLayout::LeftToRight || box->direction() == QBoxLayout::RightToLeft;
+    const int insert_at = placement.begin_index;
+    // The push-to-right-edge rearrangement below is only valid for the classic
+    // `[... group (expanding spacer)]` tail rows. If any real widget follows the
+    // group (e.g. `[label, group, stretch, checkbox]`), rearranging would scramble
+    // the row — those rows keep the group's original slot instead.
+    bool trailing_widget = false;
+    for (int i = placement.end_index + 1; i < box->count(); ++i) {
+      if (box->itemAt(i)->widget() != nullptr) {
+        trailing_widget = true;
+        break;
+      }
+    }
+    for (QRadioButton* radio : radios) {
+      box->removeWidget(radio);
+    }
+    if (horizontal && !trailing_widget) {
+      // Drop the trailing horizontal spacer that used to hold the group on the left,
+      // then re-append as [stretch][group][inset] so the group is pushed to the
+      // right edge of its row with the canonical comfortable inset — lining up
+      // with the row-filling ToggleSwitches (which use the same inset).
+      for (int i = box->count() - 1; i >= 0; --i) {
+        QSpacerItem* sp = box->itemAt(i)->spacerItem();
+        if (sp != nullptr && (sp->expandingDirections() & Qt::Horizontal)) {
+          delete box->takeAt(i);
+          break;
+        }
+      }
+      box->addStretch(1);
+      box->addWidget(dual);
+      box->addSpacing(theme::space(theme::Space::Comfortable));
+    } else {
+      box->insertWidget(insert_at, dual);
+    }
   } else if (placement.grid_layout != nullptr) {
-    placement.grid_layout->removeWidget(first);
-    placement.grid_layout->removeWidget(second);
+    for (QRadioButton* radio : radios) {
+      placement.grid_layout->removeWidget(radio);
+    }
     placement.grid_layout->addWidget(dual, placement.row, placement.column, 1, placement.column_span);
   }
 }
 
-static bool tryAdaptRadioPair(QRadioButton* candidate_first, QRadioButton* candidate_second) {
-  if (candidate_first == nullptr || candidate_second == nullptr || candidate_first == candidate_second) {
+static bool tryAdaptRadios(QList<QRadioButton*> radios) {
+  if (radios.size() < 2) {
     return false;
   }
-  if (pairedDualOptionsWidget(candidate_first) != nullptr || pairedDualOptionsWidget(candidate_second) != nullptr) {
+  QWidget* parent = radios.front()->parentWidget();
+  if (parent == nullptr) {
     return false;
   }
-  if (candidate_first->parentWidget() == nullptr ||
-      candidate_first->parentWidget() != candidate_second->parentWidget()) {
+  int checked_count = 0;
+  for (QRadioButton* radio : radios) {
+    if (pairedDualOptionsWidget(radio) != nullptr || radio->parentWidget() != parent || radio->text().isEmpty()) {
+      return false;
+    }
+    checked_count += radio->isChecked() ? 1 : 0;
+  }
+  if (!radiosHaveExplicitExclusiveGroup(radios)) {
+    return false;
+  }
+  // A group loaded without an initial selection has no segment to highlight —
+  // defer until plugin data checks one (the reactive tryAdaptStyledWidget path).
+  if (checked_count != 1) {
+    return false;
+  }
+  if (!sortRadiosByLayout(parent, radios)) {
     return false;
   }
 
-  QRadioButton* first = candidate_first;
-  QRadioButton* second = candidate_second;
-  QWidget* parent = first->parentWidget();
-  if (!sortRadioPairByLayout(parent, first, second)) {
-    return false;
-  }
-  if (first->text().isEmpty() || second->text().isEmpty()) {
-    return false;
-  }
-  if (!radioPairHasExplicitExclusiveGroup(first, second)) {
-    return false;
-  }
-  if (first->isChecked() == second->isChecked()) {
-    return false;
+  QStringList labels;
+  int selected = 0;
+  for (qsizetype i = 0; i < radios.size(); ++i) {
+    labels.push_back(radios[i]->text());
+    if (radios[i]->isChecked()) {
+      selected = static_cast<int>(i);
+    }
   }
 
-  auto* dual = new DualOptionsWidget(first->text(), second->text(), parent);
+  auto* dual = new DualOptionsWidget(labels, parent);
   dual->setToolTip(parent->toolTip());
-  dual->setEnabled(first->isEnabled() && second->isEnabled());
-  dual->setSelectedIndex(second->isChecked() ? 1 : 0);
-  dual->setProperty(kDualOptionsRadio0Property, QVariant::fromValue<QObject*>(first));
-  dual->setProperty(kDualOptionsRadio1Property, QVariant::fromValue<QObject*>(second));
-  first->setProperty(kDualOptionsWidgetProperty, QVariant::fromValue<QObject*>(dual));
-  first->setProperty(kDualOptionsIndexProperty, 0);
-  first->setProperty(kDualOptionsDesiredVisibleProperty, !first->isHidden());
-  second->setProperty(kDualOptionsWidgetProperty, QVariant::fromValue<QObject*>(dual));
-  second->setProperty(kDualOptionsIndexProperty, 1);
-  second->setProperty(kDualOptionsDesiredVisibleProperty, !second->isHidden());
+  dual->setEnabled(std::all_of(radios.begin(), radios.end(), [](QRadioButton* r) { return r->isEnabled(); }));
+  dual->setSelectedIndex(selected);
+  QObjectList radio_objects;
+  for (QRadioButton* radio : radios) {
+    radio_objects.push_back(radio);
+    radio->setProperty(kDualOptionsWidgetProperty, QVariant::fromValue<QObject*>(dual));
+    radio->setProperty(kDualOptionsDesiredVisibleProperty, !radio->isHidden());
+  }
+  dual->setProperty(kDualOptionsRadiosProperty, QVariant::fromValue(radio_objects));
 
-  insertDualOptionsWidget(parent, first, second, dual);
-  first->hide();
-  second->hide();
+  insertDualOptionsWidget(parent, radios, dual);
+  for (QRadioButton* radio : radios) {
+    radio->hide();
+  }
 
-  const QPointer<QRadioButton> first_ptr(first);
-  const QPointer<QRadioButton> second_ptr(second);
-  QObject::connect(dual, &DualOptionsWidget::selectionChanged, dual, [first_ptr, second_ptr](int index) {
-    QRadioButton* selected = (index == 0) ? first_ptr.data() : second_ptr.data();
-    if (selected != nullptr) {
-      selected->setChecked(true);
+  QObject::connect(dual, &DualOptionsWidget::selectionChanged, dual, [dual](int index) {
+    const QList<QRadioButton*> group_radios = adaptedRadios(dual);
+    if (index >= 0 && index < group_radios.size()) {
+      group_radios[index]->setChecked(true);
     }
   });
-  QObject::connect(first, &QRadioButton::toggled, dual, [first, dual](bool checked) {
-    if (checked) {
-      dual->setSelectedIndex(0);
-    }
-    first->hide();
-  });
-  QObject::connect(second, &QRadioButton::toggled, dual, [second, dual](bool checked) {
-    if (checked) {
-      dual->setSelectedIndex(1);
-    }
-    second->hide();
-  });
+  for (qsizetype i = 0; i < radios.size(); ++i) {
+    QRadioButton* radio = radios[i];
+    const int index = static_cast<int>(i);
+    QObject::connect(radio, &QRadioButton::toggled, dual, [radio, dual, index](bool checked) {
+      if (checked) {
+        dual->setSelectedIndex(index);
+      }
+      radio->hide();
+    });
+  }
   return true;
 }
 
-// Try to adapt the exclusive two-button group that `radio` belongs to. No-op
-// when the radio is already adapted, has no group, the group is non-exclusive,
-// or the group isn't exactly two buttons sharing `radio`'s parent. Cheap and
+// Try to adapt the exclusive button group that `radio` belongs to. No-op when
+// the radio is already adapted, has no group, the group is non-exclusive, or
+// the group has fewer than two radios sharing `radio`'s parent. Cheap and
 // idempotent — safe to call per radio whenever its data is applied, which is
-// how a pair that only becomes adaptable AFTER plugin data selects an option
+// how a group that only becomes adaptable AFTER plugin data selects an option
 // gets converted without re-walking the whole widget tree on every data tick.
 static void tryAdaptRadioGroup(QRadioButton* radio) {
   if (radio == nullptr || pairedDualOptionsWidget(radio) != nullptr) {
@@ -353,8 +410,8 @@ static void tryAdaptRadioGroup(QRadioButton* radio) {
       group_radios.push_back(rb);
     }
   }
-  if (group_radios.size() == 2) {
-    (void)tryAdaptRadioPair(group_radios[0], group_radios[1]);
+  if (group_radios.size() >= 2) {
+    (void)tryAdaptRadios(group_radios);
   }
 }
 
@@ -431,6 +488,10 @@ static bool tryAdaptCheckBox(QCheckBox* checkbox) {
   auto* toggle = new ToggleSwitch(parent);
   toggle->setText(checkbox->text());
   toggle->setLabelSide(ToggleSwitch::LabelSide::Left);
+  // Fill the row so the switch (drawn at the widget's right edge for a Left-side
+  // label) is pushed to the far right of its settings area, settings-list style,
+  // instead of hugging the label text. The pill itself stays a fixed width.
+  toggle->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
   toggle->setToolTip(checkbox->toolTip());
   toggle->setEnabled(checkbox->isEnabled());
   toggle->setChecked(checkbox->isChecked(), /*animate=*/false);
@@ -534,7 +595,7 @@ class InteriorGridDelegate : public QStyledItemDelegate {
 
 }  // namespace
 
-void adaptRadioButtonPairs(QWidget* root) {
+void adaptRadioGroups(QWidget* root) {
   if (root == nullptr) {
     return;
   }
@@ -578,61 +639,10 @@ void adaptComboBoxes(QWidget* root) {
 }
 
 void adaptScrollAreas(QWidget* root) {
-  if (root == nullptr) {
-    return;
-  }
-  static constexpr bool kDefaultAutoHide = true;
-  static constexpr int kDefaultFadeMs = 150;
-
-  const QList<QAbstractScrollArea*> areas = root->findChildren<QAbstractScrollArea*>();
-  for (QAbstractScrollArea* area : areas) {
-    if (area->property("pjScrollbarAttached").toBool() || isInsideHostComposite(area)) {
-      continue;
-    }
-    // FIX 7: skip the internal scroll area of a combo-box container — adapting
-    // it would add pill overlays to the combo's own view and/or its popup list.
-    if (qobject_cast<QComboBox*>(area->parentWidget()) != nullptr) {
-      continue;
-    }
-    // FIX 7: skip a QAbstractItemView whose top-level window is a popup (e.g.
-    // the QListView Qt opens for a combo-box drop-down in a transient popup
-    // window — it is closed on selection and should never receive overlays).
-    if (qobject_cast<QAbstractItemView*>(area) != nullptr && (area->window()->windowFlags() & Qt::Popup) == Qt::Popup) {
-      continue;
-    }
-
-    // Respect a deliberately-pinned scrollbar: a plugin that set an axis to
-    // AlwaysOn wants a persistent, draggable native bar (e.g. a log/console
-    // view), which a hover-only pill would silently replace. Skip that axis and
-    // leave its native bar untouched. AsNeeded (the default) and AlwaysOff are
-    // both compatible with the pill (the pill paints over a hidden gutter).
-    const bool adapt_h = area->horizontalScrollBarPolicy() != Qt::ScrollBarAlwaysOn;
-    const bool adapt_v = area->verticalScrollBarPolicy() != Qt::ScrollBarAlwaysOn;
-    if (!adapt_h && !adapt_v) {
-      continue;  // both axes pinned by the plugin; nothing to adapt
-    }
-
-    const bool auto_hide = area->property("pjScrollbarAutoHide").isValid()
-                               ? area->property("pjScrollbarAutoHide").toBool()
-                               : kDefaultAutoHide;
-    const int fade_ms =
-        area->property("pjScrollbarFadeMs").isValid() ? area->property("pjScrollbarFadeMs").toInt() : kDefaultFadeMs;
-
-    const auto attach_pill = [&](Qt::Orientation orientation) {
-      auto* pill = new PJ::Scrollbar(orientation, area);
-      pill->attach(area);
-      pill->setAutoHide(auto_hide);
-      pill->setFadeDurationMs(fade_ms);
-    };
-    if (adapt_h) {
-      attach_pill(Qt::Horizontal);
-    }
-    if (adapt_v) {
-      attach_pill(Qt::Vertical);
-    }
-
-    area->setProperty("pjScrollbarAttached", true);
-  }
+  // The canonical walker lives in pj_widgets alongside PJ::Scrollbar so app
+  // windows can reuse it; the host only adds its composite-widget veto (a plugin
+  // custom widget's internal scroll areas must not get overlaid).
+  PJ::attachPillScrollbars(root, [](QAbstractScrollArea* area) { return isInsideHostComposite(area); });
 }
 
 void adaptGridTables(QWidget* root) {
@@ -655,7 +665,7 @@ void adaptGridTables(QWidget* root) {
 }
 
 void adaptStyledWidgets(QWidget* root) {
-  adaptRadioButtonPairs(root);
+  adaptRadioGroups(root);
   adaptCheckBoxes(root);
   adaptComboBoxes(root);
   adaptScrollAreas(root);
@@ -675,7 +685,7 @@ void tryAdaptStyledWidget(QWidget* w) {
 
 void syncStyledWidget(QWidget* w) {
   if (auto* rb = qobject_cast<QRadioButton*>(w)) {
-    syncDualOptionsFromRadioPair(rb);
+    syncDualOptionsFromRadios(rb);
     return;
   }
   if (auto* cb = qobject_cast<QCheckBox*>(w)) {
@@ -694,6 +704,16 @@ bool redirectAdaptedVisibility(QWidget* w, bool visible) {
     return true;
   }
   return false;
+}
+
+void forwardEmbeddedDialogClose(QWidget* content, QDialog* outer) {
+  auto* inner = qobject_cast<QDialog*>(content);
+  if (inner == nullptr || outer == nullptr) {
+    return;
+  }
+  // Esc (or any programmatic accept/reject) on the embedded root closes the
+  // hosting chrome with the same result instead of hiding just the content.
+  QObject::connect(inner, &QDialog::finished, outer, [outer](int result) { outer->done(result); });
 }
 
 }  // namespace PJ

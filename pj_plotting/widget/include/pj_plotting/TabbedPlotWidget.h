@@ -4,6 +4,7 @@
 
 #include <QDomDocument>
 #include <QDomElement>
+#include <QSizePolicy>
 #include <QString>
 #include <QWidget>
 #include <functional>
@@ -32,6 +33,8 @@ class SessionManager;
 // containing the tab name label and a close button; clicking a frame
 // switches the stack to its PlotDocker, double-clicking renames it.
 // Same external API the previous QTabWidget-based version exposed.
+// Besides PlotDocker tabs, a tab can host an arbitrary widget
+// (addWidgetTab) — see that method for the lifecycle contract.
 class TabbedPlotWidget : public QWidget {
   Q_OBJECT
  public:
@@ -49,8 +52,35 @@ class TabbedPlotWidget : public QWidget {
   void setDataServices(SessionManager* session, CatalogModel* catalog);
   void setObjectWidgetFactory(ObjectWidgetFactory factory);
 
+  // Hosts an arbitrary non-plot widget as a whole tab (a heterogeneous,
+  // VSCode-style tab — e.g. a pinned toolbox panel). Takes ownership of
+  // `content` (reparented into the tab stack) and selects the new tab.
+  // `on_close` runs exactly once when the tab closes (its X button or
+  // closeWidgetTab), BEFORE `content` is deleted, so the owner can tear
+  // down whatever drives the widget. Widget tabs are never serialized and
+  // survive xmlLoadState (plot tabs are rebuilt around them) — persistence
+  // is the owner's concern, including the tab name: the in-place rename
+  // edits only the strip label (read it back via widgetTabName), and is
+  // not undoable. Adding a widget tab is not an undoable change either.
+  void addWidgetTab(const QString& tab_name, QWidget* content, std::function<void()> on_close);
+  // Selects the tab hosting `content` (added via addWidgetTab). No-op if absent.
+  void focusWidgetTab(QWidget* content);
+  // Closes the tab hosting `content` exactly like its X button: runs its
+  // on_close, removes the tab, deletes the widget. No-op if absent.
+  void closeWidgetTab(QWidget* content);
+  // Current strip label of the widget tab hosting `content` (empty if
+  // absent) — the sole store of a user rename, so owners persisting the
+  // tab must read it at save time.
+  [[nodiscard]] QString widgetTabName(QWidget* content) const;
+  // Renames the widget tab hosting `content` (no-op if absent). Not undoable.
+  void setWidgetTabName(QWidget* content, const QString& name);
+
+  // Docker-tab enumeration: counts/indexes ONLY PlotDocker tabs, skipping
+  // widget tabs, so `for (i < dockerCount()) dockerAt(i)` never yields null
+  // holes. tabCount() is the total including widget tabs.
   [[nodiscard]] int dockerCount() const;
   PlotDocker* dockerAt(int index);
+  [[nodiscard]] int tabCount() const;
 
   // Panel-toggle buttons. Created here but relocated by the MainWindow
   // shell into the title bar (it reparents them after construction).
@@ -82,9 +112,12 @@ class TabbedPlotWidget : public QWidget {
     }
   }
 
-  // Serializes / restores the tab set. Restoration rebuilds all tabs from
-  // scratch and emits no undoableChange (callers can wrap in a guarded
-  // block via the restoring_state_ flag).
+  // Serializes / restores the tab set. Widget tabs are excluded from BOTH
+  // directions: xmlSaveState skips them (undo snapshots and layout files
+  // share this serializer, so undo can never spawn or kill their content)
+  // and xmlLoadState preserves the live ones — only PlotDocker tabs are
+  // torn down and rebuilt, with the surviving widget tabs re-appended after
+  // them. Restoration emits no undoableChange.
   [[nodiscard]] QDomElement xmlSaveState(QDomDocument& doc) const;
   bool xmlLoadState(const QDomElement& tabbed_area);
 
@@ -114,15 +147,33 @@ class TabbedPlotWidget : public QWidget {
 
  private:
   struct TabEntry {
-    PlotTabFrame* frame;
-    PlotDocker* docker;
+    PlotTabFrame* frame = nullptr;
+    // Exactly one of docker / widget is set: docker for plot tabs, widget
+    // (plus its owner-teardown on_close) for hosted widget tabs.
+    PlotDocker* docker = nullptr;
+    QWidget* widget = nullptr;
+    std::function<void()> on_close;
+    // The hosted widget's size policy at addWidgetTab time — restored when
+    // its tab is current; hidden widget pages are set to Ignored so they
+    // never inflate the QStackedWidget's union size hint.
+    QSizePolicy original_policy;
   };
 
   TabEntry* findEntry(PlotTabFrame* frame);
-  TabEntry* findEntry(PlotDocker* docker);
+  TabEntry* findEntry(QWidget* content);
+  // The entry hosting `content` as a WIDGET tab (nullptr for absent content
+  // and for docker pages) — the shared predicate behind the widget-tab API.
+  [[nodiscard]] const TabEntry* findWidgetEntry(QWidget* content) const;
+  // The stack page a tab entry shows (its docker or hosted widget).
+  static QWidget* contentOf(const TabEntry& entry);
   void updateSelectionStyle();
+  // Keeps hidden widget-tab pages from inflating the stack's union size
+  // hint (Ignored while non-current, original policy restored when
+  // current). Connected to QStackedWidget::currentChanged.
+  void adaptWidgetTabPagePolicies();
+  void selectEntry(const TabEntry& entry);
   PlotDocker* createDocker(const QString& tab_name);
-  PlotTabFrame* createTabFrame(const QString& tab_name, PlotDocker* docker);
+  PlotTabFrame* createTabFrame(const QString& tab_name);
 
   QHBoxLayout* tabs_bar_layout_ = nullptr;
   QStackedWidget* stack_ = nullptr;

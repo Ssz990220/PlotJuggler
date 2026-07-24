@@ -6,8 +6,10 @@ find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network Svg Test)
 # transitively. main.cpp installs the signal handler.
 find_package(Backward REQUIRED)
 
-add_executable(pj_app
-    src/main.cpp
+# The whole shell as an OBJECT library so a headless test can link the exact
+# same MainWindow object files (see main_window_source_layout_test) instead of
+# duplicating the widget tree. The executable below is a thin main.cpp wrapper.
+add_library(pj_app_shell OBJECT
     src/Splashscreen.cpp
     src/Splashscreen.h
     src/DialogPresenter.cpp
@@ -16,8 +18,10 @@ add_executable(pj_app
     src/FanoutConfig.h
     src/FileLoader.cpp
     src/FileLoader.h
-    src/PendingCurveBinder.cpp
-    src/PendingCurveBinder.h
+    src/PendingDisplayBinder.cpp
+    src/PendingDisplayBinder.h
+    src/TopicDemandController.cpp
+    src/TopicDemandController.h
     src/StreamingSourceManager.cpp
     src/StreamingSourceManager.h
     src/SourceTimelineController.cpp
@@ -74,26 +78,28 @@ add_executable(pj_app
     src/ui/TimelineWidget.ui
     src/RasterKeyMap.cpp
     src/RasterKeyMap.h
-    ${CMAKE_SOURCE_DIR}/resources/resources.qrc
 )
 
-set_target_properties(pj_app PROPERTIES
-    # The CMake target id stays `pj_app` (internal module name), but the installed
-    # binary is `plotjuggler4` — the user-facing command and what packaging ships
-    # (e.g. /usr/bin/plotjuggler4). Keeps the source module rename a separate concern.
-    OUTPUT_NAME plotjuggler4
+# LayoutXml.cpp is also compiled directly into focused test executables. Its
+# plot-range vocabulary is a header-only contract owned by pj_plotting_core, so
+# expose that one include tree without linking those DOM-only tests to widgets.
+set_property(SOURCE src/LayoutXml.cpp APPEND PROPERTY
+    INCLUDE_DIRECTORIES ${CMAKE_SOURCE_DIR}/pj_plotting/core/include
+)
+
+set_target_properties(pj_app_shell PROPERTIES
     AUTOMOC ON
-    AUTORCC ON
     AUTOUIC ON
     AUTOUIC_SEARCH_PATHS ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-target_include_directories(pj_app PRIVATE
+target_include_directories(pj_app_shell PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_BINARY_DIR}/generated
     ${CMAKE_SOURCE_DIR}/raster_ipc
 )
 
-target_link_libraries(pj_app PRIVATE
+target_link_libraries(pj_app_shell PUBLIC
     pj_runtime
     pj_widgets
     pj_plotting
@@ -103,7 +109,6 @@ target_link_libraries(pj_app PRIVATE
     pj_marketplace_ui
     pj_dialog_engine_qt
     qt_advanced_docking
-    Backward::Backward
     Qt6::Core
     Qt6::Gui
     Qt6::Widgets
@@ -112,15 +117,30 @@ target_link_libraries(pj_app PRIVATE
     Qt6::Svg
 )
 
-# Single source of truth for the app version: the root project(VERSION). Both
-# the About box (applicationVersion()) and the GitHub release check compare
-# against this string.
-target_compile_definitions(pj_app PRIVATE PJ_VERSION_STRING="${PROJECT_VERSION}")
+add_executable(pj_app
+    src/main.cpp
+    ${CMAKE_SOURCE_DIR}/resources/resources.qrc
+)
+set_target_properties(pj_app PROPERTIES
+    # The CMake target id stays `pj_app` (internal module name), but the installed
+    # binary is `plotjuggler4` — the user-facing command and what packaging ships
+    # (e.g. /usr/bin/plotjuggler4). Keeps the source module rename a separate concern.
+    OUTPUT_NAME plotjuggler4
+    AUTORCC ON
+)
+target_include_directories(pj_app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(pj_app PRIVATE pj_app_shell Backward::Backward)
+
+# App version: single source of truth is versions.env, stamped by the root
+# CMakeLists into generated/pj_version.h (PJ_VERSION_STRING). main.cpp — the only
+# user — includes that header directly, so no per-target compile definition is
+# needed (a duplicate -D here would redefine the macro under -Werror).
 
 # -Werror guards against the bug class that bit the reload path: a merge that
 # drops wiring leaves an unused variable behind, which these flags turn into a
 # build failure instead of a silent regression.
 if(DEFINED PJ_WARNING_FLAGS)
+    target_compile_options(pj_app_shell PRIVATE ${PJ_WARNING_FLAGS})
     target_compile_options(pj_app PRIVATE ${PJ_WARNING_FLAGS})
 endif()
 
@@ -141,6 +161,47 @@ endif()
 
 if(PJ_BUILD_TESTS)
     find_package(GTest REQUIRED)
+
+    # A GUI test binary that drives the real MainWindow through a friend peer: it
+    # links the whole shell (pj_app_shell) and compiles resources.qrc (AUTORCC) so
+    # the window's icons resolve. One MainWindow per binary — its dtor leaks
+    # process state — hence one target (and one add_test) per scenario file.
+    #   target   the executable + CTest command name
+    #   test     the human-readable CTest NAME
+    #   source   the test's .cpp under tests/
+    function(add_pj_app_gui_test target test source)
+        add_executable(${target}
+            ${source}
+            ${CMAKE_SOURCE_DIR}/resources/resources.qrc
+        )
+        set_target_properties(${target} PROPERTIES AUTORCC ON)
+        target_include_directories(${target} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_link_libraries(${target} PRIVATE pj_app_shell GTest::gtest)
+        if(DEFINED PJ_WARNING_FLAGS)
+            target_compile_options(${target} PRIVATE ${PJ_WARNING_FLAGS})
+        endif()
+        add_test(NAME ${test} COMMAND ${target})
+    endfunction()
+
+    # Source-bound layout seam: one replayable file that fans out into several
+    # datasets must persist/restore each independent timeline track.
+    add_pj_app_gui_test(main_window_source_layout_test MainWindowSourceLayoutTest
+        tests/main_window_source_layout_test.cpp)
+
+    # Fan-out timeline matcher: when a saved same-named fan-out shape no longer
+    # matches the loaded one, no offset may bind (FIX 4).
+    add_pj_app_gui_test(main_window_fanout_ambiguous_test MainWindowFanoutAmbiguousTest
+        tests/main_window_fanout_ambiguous_test.cpp)
+
+    # Viewport re-frame after a layout's timeline offsets settle: sync leg (FIX 1)
+    # and the progressive-drain pending-timeline seam (FIX 2).
+    add_pj_app_gui_test(main_window_viewport_reframe_test MainWindowViewportReframeTest
+        tests/main_window_viewport_reframe_test.cpp)
+
+    # Transactional workspace history. One MainWindow is shared by all cases in
+    # this binary; the shell leaks process-global widget state across instances.
+    add_pj_app_gui_test(main_window_history_test MainWindowHistoryTest
+        tests/main_window_history_test.cpp)
 
     # Pure config-parsing logic (no GUI), compiled standalone so it's linkable
     # from a plain gtest binary. FanoutConfig.cpp is also part of pj_app itself.
@@ -176,27 +237,80 @@ if(PJ_BUILD_TESTS)
     endif()
     add_test(NAME LayoutXmlTest COMMAND layout_xml_test)
 
-    add_executable(pending_curve_binder_test
-        tests/pending_curve_binder_test.cpp
-        src/PendingCurveBinder.cpp
-        src/PendingCurveBinder.h
+    add_executable(pending_display_binder_test
+        tests/pending_display_binder_test.cpp
+        tests/dataset_test_helpers.h
+        src/PendingDisplayBinder.cpp
+        src/PendingDisplayBinder.h
         src/LayoutXml.cpp
         src/LayoutXml.h
     )
-    target_include_directories(pending_curve_binder_test PRIVATE
+    target_include_directories(pending_display_binder_test PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
     )
-    target_link_libraries(pending_curve_binder_test PRIVATE
+    target_link_libraries(pending_display_binder_test PRIVATE
         pj_runtime
         pj_plotting
+        pj_scene_common
         Qt6::Widgets
         Qt6::Xml
         GTest::gtest
     )
     if(DEFINED PJ_WARNING_FLAGS)
-        target_compile_options(pending_curve_binder_test PRIVATE ${PJ_WARNING_FLAGS})
+        target_compile_options(pending_display_binder_test PRIVATE ${PJ_WARNING_FLAGS})
     endif()
-    add_test(NAME PendingCurveBinderTest COMMAND pending_curve_binder_test)
+    add_test(NAME PendingDisplayBinderTest COMMAND pending_display_binder_test)
+
+    add_executable(multi_dataset_rebind_test
+        tests/multi_dataset_rebind_test.cpp
+        tests/dataset_test_helpers.h
+        src/PendingDisplayBinder.cpp
+        src/PendingDisplayBinder.h
+        src/LayoutXml.cpp
+        src/LayoutXml.h
+    )
+    target_include_directories(multi_dataset_rebind_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(multi_dataset_rebind_test PRIVATE
+        pj_runtime
+        pj_plotting
+        pj_scene_common
+        Qt6::Widgets
+        Qt6::Xml
+        GTest::gtest
+    )
+    if(DEFINED PJ_WARNING_FLAGS)
+        target_compile_options(multi_dataset_rebind_test PRIVATE ${PJ_WARNING_FLAGS})
+    endif()
+    add_test(NAME MultiDatasetRebindTest COMMAND multi_dataset_rebind_test)
+
+    add_executable(topic_demand_controller_test
+        tests/topic_demand_controller_test.cpp
+        src/PendingDisplayBinder.cpp
+        src/PendingDisplayBinder.h
+        src/TopicDemandController.cpp
+        src/TopicDemandController.h
+        src/LayoutXml.cpp
+        src/LayoutXml.h
+    )
+    set_target_properties(topic_demand_controller_test PROPERTIES AUTOMOC ON)
+    target_include_directories(topic_demand_controller_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(topic_demand_controller_test PRIVATE
+        pj_runtime
+        pj_plotting
+        pj_scene_common
+        pj_scripting
+        Qt6::Widgets
+        Qt6::Xml
+        GTest::gtest
+    )
+    if(DEFINED PJ_WARNING_FLAGS)
+        target_compile_options(topic_demand_controller_test PRIVATE ${PJ_WARNING_FLAGS})
+    endif()
+    add_test(NAME TopicDemandControllerTest COMMAND topic_demand_controller_test)
 
     add_executable(key_sequence_matcher_test
         tests/key_sequence_matcher_test.cpp

@@ -2,8 +2,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <variant>
 #include <vector>
@@ -117,6 +119,18 @@ class IMIMOTransform {
   /// >= all previously returned out_times. All M output topics share this timestamp.
   virtual bool calculate(
       PJ::Timestamp time, PJ::Span<const VarValue> inputs, PJ::Timestamp& out_time, std::vector<VarValue>& output) = 0;
+
+  /// Distinguish ordinary row suppression from an unrecoverable transform
+  /// failure that invalidates the current staged batch.
+  [[nodiscard]] virtual bool failed() const {
+    return false;
+  }
+
+  /// Human-readable reason for failed(), or empty for a healthy transform.
+  [[nodiscard]] virtual const std::string& error() const {
+    static const std::string kNone;
+    return kNone;
+  }
 };
 
 // ---------------------------------------------------------------------------
@@ -124,6 +138,13 @@ class IMIMOTransform {
 // ---------------------------------------------------------------------------
 class DerivedEngine {
  public:
+  /// Captured input-column metadata for one node. Kinds are stored with the
+  /// columns because a reload can replace the schema behind a stable TopicId.
+  struct InputBindingState {
+    std::vector<std::size_t> columns;
+    std::vector<StorageKind> kinds;
+  };
+
   explicit DerivedEngine(DataEngine& engine);
   ~DerivedEngine();
   DerivedEngine(const DerivedEngine&) = delete;
@@ -204,23 +225,48 @@ class DerivedEngine {
   // Full history recompute: clear output, reset transform, replay all input.
   PJ::Status recomputeBatch(PJ::NodeId node_id);
 
+  /// Reset and replay the union of every root's downstream graph once in
+  /// global topological order. Invalid roots are rejected before any output is
+  /// changed; an empty root span is a successful no-op.
+  PJ::Status recomputeBatch(PJ::Span<const PJ::NodeId> root_node_ids);
+
   // Replace a SISO node's transform op IN PLACE (same node id, same output topic
-  // id) and fully recompute. Lets a filter's parameters be edited without
-  // dropping and recreating the output topic, so the plot curve keeps its
-  // binding. Errors if the node is unknown, is MIMO, or op is null. The output
-  // StorageKind is unchanged (the materialized topic's schema is fixed); the new
-  // op's values are coerced to it.
+  // id) and fully recompute it plus every downstream node. The swap is
+  // transactional: failure restores the old op and replays the old graph before
+  // returning. Errors if the node is unknown, is MIMO, or op is null. The output
+  // StorageKind is unchanged; the new op's values are coerced to it.
   [[nodiscard]] PJ::Status replaceSisoTransform(PJ::NodeId node_id, std::unique_ptr<ISISOTransform> op);
 
+  /// MIMO counterpart of replaceSisoTransform, with the same stable topology,
+  /// downstream replay, and rollback guarantees.
+  [[nodiscard]] PJ::Status replaceMimoTransform(PJ::NodeId node_id, std::unique_ptr<IMIMOTransform> op);
+
+  /// Capture the binding metadata currently installed on a node.
+  [[nodiscard]] PJ::Expected<InputBindingState> inputBindingState(PJ::NodeId node_id) const;
+
+  /// Validate replacement column indices against the node's current input
+  /// topics and return a complete state without mutating the node.
+  [[nodiscard]] PJ::Expected<InputBindingState> resolvedInputBindingState(
+      PJ::NodeId node_id, const std::vector<std::size_t>& columns) const;
+
+  /// Restore previously captured or resolved metadata without validating it
+  /// against storage and without recomputing. The node is reset to dirty so the
+  /// caller can replay after the surrounding datastore transaction is settled.
+  [[nodiscard]] PJ::Status restoreInputBindingState(PJ::NodeId node_id, const InputBindingState& state);
+
  private:
-  // *Locked workers: assume the caller ALREADY holds engine_.lockEngine(). The
-  // public scheduleActive/recomputeBatch take that exclusive lock then delegate
-  // here, so the whole recompute (read inputs -> transform -> commit derived
-  // outputs, all via non-locking engine ops) is atomic against concurrent ingest.
-  // Split so scheduleActive's internal recomputeBatch call doesn't re-acquire the
-  // non-recursive engine mutex (which would self-deadlock).
+  // *Locked workers assume the caller already holds engine_.lockEngine(). Public
+  // scheduling, recompute, and binding-state methods acquire that lock internally;
+  // callers must not nest them while holding a different DataEngine's lock.
+  // Keeping the workers separate also avoids redundant recursive re-locks while
+  // one transaction reads inputs, runs transforms, and commits derived outputs.
   PJ::Status scheduleActiveLocked(const std::unordered_set<PJ::NodeId>& active_nodes);
   PJ::Status recomputeBatchLocked(PJ::NodeId node_id);
+  PJ::Status recomputeBatchLocked(PJ::Span<const PJ::NodeId> root_node_ids);
+  /// Shared rollback contract for in-place node mutations: replay the mutated
+  /// node's graph; on failure run `revert` and replay again, composing
+  /// "<op>: <err>; rollback failed: <err2>" if even the rollback replay fails.
+  PJ::Status recomputeOrRevertLocked(PJ::NodeId node_id, std::string_view op_name, const std::function<void()>& revert);
 
   DataEngine& engine_;
   PJ::NodeId next_node_id_ = 1;

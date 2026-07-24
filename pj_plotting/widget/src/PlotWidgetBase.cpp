@@ -19,8 +19,10 @@
 #include <QDragEnterEvent>
 #include <QDragLeaveEvent>
 #include <QDropEvent>
+#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QMouseEvent>
+#include <QPalette>
 #include <QPen>
 #include <QSettings>
 #include <QWheelEvent>
@@ -35,7 +37,9 @@
 #include "pj_plotting/PlotLegend.h"
 #include "pj_plotting/PlotMagnifier.h"
 #include "pj_plotting/PlotPanner.h"
+#include "pj_plotting/PlotScaleDraw.h"
 #include "pj_plotting/PlotZoomer.h"
+#include "pj_widgets/FrameworkTokens.h"
 
 namespace PJ {
 namespace {
@@ -43,6 +47,14 @@ namespace {
 [[nodiscard]] bool isUsableRect(const QRectF& rect) noexcept {
   return rect.width() >= 0.0 && rect.height() >= 0.0 && std::isfinite(rect.left()) && std::isfinite(rect.right()) &&
          std::isfinite(rect.top()) && std::isfinite(rect.bottom());
+}
+
+// The Data Backdrop fill for the active theme. Theme detection uses the synced
+// application palette's Window lightness (Theme::syncApplicationPalette keeps it
+// in lockstep with the theme tokens), so this must be read AFTER a theme applies.
+[[nodiscard]] QColor dataBackdropForCurrentTheme() {
+  const bool is_light = QGuiApplication::palette().color(QPalette::Window).lightness() >= 128;
+  return PJ::theme::surface(PJ::theme::Surface::DataBackdrop, PJ::theme::themeFor(is_light));
 }
 
 [[nodiscard]] QColor colorFromIndex(int index) {
@@ -79,26 +91,37 @@ class PlotWidgetBase::QwtPlotPimpl : public QwtPlot {
         event_callback(std::move(event_callback)),
         parent(parent_widget) {
     setCanvas(canvas_widget);
+    for (const int axis : {QwtPlot::yLeft, QwtPlot::yRight, QwtPlot::xBottom, QwtPlot::xTop}) {
+      setAxisScaleDraw(axis, new PlotScaleDraw);
+    }
+    const auto fw_theme = theme::appTheme();
     legend = new PlotLegend(this);
     grid = new QwtPlotGrid();
     grid->enableX(false);
     grid->enableXMin(false);
     grid->enableY(false);
     grid->enableYMin(false);
-    grid->setMajorPen(QPen(QColor(150, 150, 150), 0.0, Qt::DashLine));
-    grid->setMinorPen(QPen(QColor(210, 210, 210), 0.0, Qt::DotLine));
+    grid->setMajorPen(
+        QPen(theme::outline(theme::OutlineRole::Gridline, theme::OutlineState::Rest, fw_theme), 0.0, Qt::DashLine));
+    grid->setMinorPen(
+        QPen(theme::outline(theme::OutlineRole::Gridline, theme::OutlineState::Rest, fw_theme), 0.0, Qt::DotLine));
     grid->attach(this);
     magnifier = new PlotMagnifier(canvas_widget);
     panner1 = new PlotPanner(canvas_widget);
     panner2 = new PlotPanner(canvas_widget);
     zoomer = new PlotZoomer(canvas_widget);
 
-    zoomer->setRubberBandPen(QPen(QColor(Qt::red), 1, Qt::DotLine));
-    zoomer->setTrackerPen(QPen(QColor(Qt::green), 1, Qt::DotLine));
+    zoomer->setRubberBandPen(
+        QPen(theme::outline(theme::OutlineRole::Interactive, theme::OutlineState::Focused, fw_theme), 1, Qt::DotLine));
+    zoomer->setTrackerPen(
+        QPen(theme::onSurface(theme::Surface::DataBackdrop, theme::Emphasis::Default, fw_theme), 1, Qt::DotLine));
     zoomer->setMousePattern(QwtEventPattern::MouseSelect1, Qt::LeftButton, Qt::NoModifier);
 
     magnifier->setAxisEnabled(QwtPlot::xTop, false);
     magnifier->setAxisEnabled(QwtPlot::yRight, false);
+    // Plots default to time-series (xy_mode_ == false); enable the ≥2 ns X zoom
+    // floor up front so a plot that never calls setModeXY is still clamped.
+    magnifier->setTimeXAxis(true);
     magnifier->setZoomInKey(Qt::Key_Plus, Qt::ControlModifier);
     magnifier->setZoomOutKey(Qt::Key_Minus, Qt::ControlModifier);
     magnifier->setMouseButton(Qt::NoButton);
@@ -107,10 +130,9 @@ class PlotWidgetBase::QwtPlotPimpl : public QwtPlot {
     panner2->setMouseButton(Qt::MiddleButton, Qt::NoModifier);
 
     connect(zoomer, &PlotZoomer::zoomed, this, [this](const QRectF& rect) { this->resized_callback(rect); });
-    connect(magnifier, &PlotMagnifier::rescaled, this, [this](const QRectF& rect) {
-      this->resized_callback(rect);
-      replot();
-    });
+    // No replot here: PlotMagnifier::rescale() replots before emitting so the
+    // canvas maps are already committed when this callback runs.
+    connect(magnifier, &PlotMagnifier::rescaled, this, [this](const QRectF& rect) { this->resized_callback(rect); });
     connect(panner1, &PlotPanner::rescaled, this, [this](const QRectF& rect) { this->resized_callback(rect); });
     connect(panner2, &PlotPanner::rescaled, this, [this](const QRectF& rect) { this->resized_callback(rect); });
 
@@ -137,7 +159,12 @@ class PlotWidgetBase::QwtPlotPimpl : public QwtPlot {
 
   void resizeEvent(QResizeEvent* event) override {
     QwtPlot::resizeEvent(event);
-    resized_callback(canvasBoundingRect());
+    // Window geometry is not a viewport gesture. XY plots still need their
+    // aspect ratio corrected, but that correction must not create history.
+    if (parent->isXYPlot() && parent->keepRatioXY()) {
+      parent->applyRectKeepingRatio(canvasBoundingRect());
+      replot();
+    }
   }
 
   void dragEnterEvent(QDragEnterEvent* event) override {
@@ -179,15 +206,22 @@ PlotWidgetBase::PlotWidgetBase(QWidget* parent) : QWidget(parent) {
 
   const bool use_opengl = !g_opengl_disabled_override && QSettings().value("Preferences::use_opengl", true).toBool();
 
-  // TODO(theme): QwtPlotCanvas uses a backing-store paint path that ignores
-  //   QSS background rules, so the canvas needs a solid palette colour here.
-  //   Currently baked to the light-theme ${dark_background} value (#F5F5F5);
-  //   should be wired to react on themeChanged. See resources/visual_guidelines.md §5.
-  const QColor canvas_bg(0xf5, 0xf5, 0xf5);
+  // QwtPlotCanvas uses a backing-store paint path that ignores QSS background
+  // rules, so the canvas needs a solid palette colour. The Main Plot is the
+  // Data Backdrop surface (ui_framework.md § Data Backdrop); read it from the
+  // framework for the current theme. changeEvent() re-applies it when the theme
+  // is applied after construction or toggled at runtime.
+  const QColor canvas_bg = dataBackdropForCurrentTheme();
 
   QWidget* abs_canvas = nullptr;
   if (use_opengl) {
     auto* canvas = new QwtPlotOpenGLCanvas();
+    // Drop Qwt's own backing-store FBO: it is a persistent-content GL resource
+    // that outlives context recreation (ADS float/re-dock) and GPU resets, and
+    // QOpenGLWidget's internal FBO already restores content on re-expose. Its
+    // only saving was skipping a redraw on rare non-replot repaints (focus
+    // activation); without it every canvas paint re-renders from live state.
+    canvas->setPaintAttribute(QwtPlotOpenGLCanvas::BackingStore, false);
     canvas->setFrameStyle(QFrame::Box | QFrame::Plain);
     canvas->setLineWidth(1);
     canvas->setPalette(canvas_bg);
@@ -205,8 +239,17 @@ PlotWidgetBase::PlotWidgetBase(QWidget* parent) : QWidget(parent) {
   plot_ = new QwtPlotPimpl(this, abs_canvas, on_view_resized, on_event);
 
   auto* layout = new QHBoxLayout(this);
-  layout->setContentsMargins(0, 0, 0, 0);
+  layout->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
   layout->addWidget(plot_);
+
+  // Charts fill their container edge-to-edge; breathing room lives INSIDE the
+  // chart. QwtPlot lays out within contentsRect() and the QSS `QwtPlot` rule
+  // paints the Data Backdrop across the full widget rect, so this margin reads
+  // as chart surface — never as the dock backdrop ringing the plot.
+  const int chart_pad = PJ::theme::space(theme::Space::Comfortable);
+  plot_->setContentsMargins(chart_pad, chart_pad, chart_pad, chart_pad);
 
   plot_->setMinimumSize(100, 100);
   plot_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
@@ -227,6 +270,25 @@ PlotWidgetBase::~PlotWidgetBase() {
   plot_ = nullptr;
 }
 
+void PlotWidgetBase::refreshCanvasBackground() {
+  QwtPlot* plot = qwtPlot();
+  QWidget* canvas = (plot != nullptr) ? plot->canvas() : nullptr;
+  if (canvas == nullptr) {
+    return;
+  }
+  canvas->setPalette(dataBackdropForCurrentTheme());
+  canvas->update();
+}
+
+void PlotWidgetBase::changeEvent(QEvent* event) {
+  QWidget::changeEvent(event);
+  // QGuiApplication::setPalette (Theme::syncApplicationPalette) delivers
+  // ApplicationPaletteChange to every widget; re-derive the Data Backdrop then.
+  if (event->type() == QEvent::ApplicationPaletteChange || event->type() == QEvent::PaletteChange) {
+    refreshCanvasBackground();
+  }
+}
+
 PlotWidgetBase::CurveInfo* PlotWidgetBase::addCurve(
     const QString& name, QwtSeriesData<QPointF>* series, QColor color, const QString& display_name) {
   if (series == nullptr || curveFromTitle(name) != nullptr) {
@@ -243,10 +305,20 @@ PlotWidgetBase::CurveInfo* PlotWidgetBase::addCurve(
   curve->setRenderHint(QwtPlotItem::RenderAntialiased, true);
   curve->attach(qwtPlot());
 
+  // Per-curve tracker marker: the dot that rides an XY curve at the playback
+  // cursor (PlotWidget's XY tracker moves + shows it). Fill matches the curve so
+  // multi-curve XY plots stay legible (all markers show at once — a single
+  // shared color would make them unattributable); hidden until the XY tracker
+  // reveals it. The outline uses the data-backdrop ink so the dot separates
+  // from the identically-colored curve underneath.
   auto* marker = new QwtPlotMarker;
   marker->attach(qwtPlot());
   marker->setVisible(false);
-  marker->setSymbol(new QwtSymbol(QwtSymbol::Ellipse, Qt::red, QPen(Qt::black), QSize(8, 8)));
+  const auto fw_theme = theme::appTheme();
+  const QColor marker_fill = curve->pen().color();
+  marker->setSymbol(new QwtSymbol(
+      QwtSymbol::Ellipse, marker_fill,
+      QPen(theme::onSurface(theme::Surface::DataBackdrop, theme::Emphasis::Default, fw_theme)), QSize(8, 8)));
 
   plot_->curve_list.push_back(CurveInfo{.source_name = name, .curve = curve, .marker = marker});
   emit curveListChanged();
@@ -390,7 +462,14 @@ Range<double> PlotWidgetBase::getVisualizationRangeY(Range<double> range_x) cons
     top = 1.0;
   }
 
-  const double margin = (top - bottom) * 0.025;
+  // A curve (or set of curves) whose samples all share one value collapses to a
+  // zero-height range, which Qwt renders as an unreadable flat axis. The 2.5%
+  // proportional margin is 0 in that case, so fall back to a fixed ±0.1 pad that
+  // centers the constant value with visible headroom.
+  double margin = (top - bottom) * 0.025;
+  if (margin == 0.0) {
+    margin = 0.1;
+  }
   return Range<double>{.min = bottom - margin, .max = top + margin};
 }
 
@@ -398,6 +477,12 @@ void PlotWidgetBase::setModeXY(bool enable) {
   // XY (scatter) plots use the plot-level curve style like any other plot — the
   // Curve Style toolbar controls them; the mode is not tied to a forced style.
   xy_mode_ = enable;
+  // A time-series plot's X is absolute time; enable the magnifier's ≥2 ns zoom
+  // floor for it. An XY plot's X is a data value with no ns quantization, so no
+  // clamp there.
+  if (plot_ != nullptr && plot_->magnifier != nullptr) {
+    plot_->magnifier->setTimeXAxis(!enable);
+  }
 }
 
 bool PlotWidgetBase::isXYPlot() const noexcept {
@@ -434,6 +519,15 @@ void PlotWidgetBase::setGridVisible(bool visible) {
 
 bool PlotWidgetBase::gridVisible() const noexcept {
   return plot_->grid->xEnabled();
+}
+
+void PlotWidgetBase::setCanvasAlignedToScales(bool aligned) {
+  plot_->plotLayout()->setAlignCanvasToScales(aligned);
+  // The internal chart padding belongs to the default (dock-hosted) mode only;
+  // embedded charts sit flush against the surrounding chrome.
+  const int chart_pad = aligned ? PJ::theme::space(theme::Space::Comfortable) : PJ::theme::space(theme::Space::None);
+  plot_->setContentsMargins(chart_pad, chart_pad, chart_pad, chart_pad);
+  plot_->updateLayout();
 }
 
 void PlotWidgetBase::setZoomEnabled(bool enabled) {
@@ -563,10 +657,13 @@ void PlotWidgetBase::removeAllCurves() {
 void PlotWidgetBase::setStyle(QwtPlotCurve* curve, CurveStyle style) {
   const double width = style == kDots ? dotWidthValue(lineWidth()) : lineWidthValue(lineWidth());
   curve->setPen(curve->pen().color(), width);
+  applyStyleToCurve(curve, style);
+}
 
-  // Qwt's QwtPlotCurve::LinesAndDots style on its own does not draw visible
-  // dots at the pen widths we use (1.4-4.2 px); attach an explicit symbol so
-  // each sample is rendered as a small filled circle. Cleared for plain Lines.
+void PlotWidgetBase::applyStyleToCurve(QwtPlotCurve* curve, CurveStyle style) {
+  // kLinesAndDots draws plain Lines plus an explicit symbol: dots drawn by the
+  // curve pen itself are not visible at the pen widths we use (1.4-4.2 px), so
+  // each sample gets a small filled circle instead. Cleared for other styles.
   switch (style) {
     case kLines:
       curve->setStyle(QwtPlotCurve::Lines);

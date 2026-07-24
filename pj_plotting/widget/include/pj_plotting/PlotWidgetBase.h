@@ -91,6 +91,13 @@ class PlotWidgetBase : public QWidget {
   void setGridVisible(bool visible);
   [[nodiscard]] bool gridVisible() const noexcept;
 
+  // When true (the default), Qwt aligns the canvas to the axis scales, reserving
+  // a small margin above the canvas for the top axis label, and the chart keeps
+  // its internal breathing-room padding. Set false so the canvas fills to the
+  // widget's top edge with zero internal padding — used by embedded charts that
+  // must sit flush against surrounding chrome (e.g. a toolbox banner).
+  void setCanvasAlignedToScales(bool aligned);
+
   void setZoomEnabled(bool enabled);
   [[nodiscard]] bool isZoomEnabled() const noexcept;
   void setSwapZoomPan(bool swapped);
@@ -159,6 +166,10 @@ class PlotWidgetBase : public QWidget {
   class QwtPlotPimpl;
 
   void setStyle(QwtPlotCurve* curve, CurveStyle style);
+  // Maps a CurveStyle onto the Qwt style/symbol/attribute triple without
+  // touching the pen, so callers that manage pen width separately (per-curve
+  // width) can restyle a curve non-destructively.
+  void applyStyleToCurve(QwtPlotCurve* curve, CurveStyle style);
   QColor nextColor();
 
   [[nodiscard]] QwtPlot* qwtPlot();
@@ -171,6 +182,13 @@ class PlotWidgetBase : public QWidget {
 
   void updateMaximumZoomArea();
   bool eventFilter(QObject* obj, QEvent* event) override;
+
+  // Re-reads the Data Backdrop surface for the active theme and re-applies it to
+  // the Qwt canvas. QwtPlotCanvas paints via a backing store that ignores QSS, so
+  // the canvas background is a solid palette colour resolved from the framework;
+  // reacting to ApplicationPaletteChange keeps the empty-plot backdrop correct
+  // when the theme is applied after construction or toggled at runtime.
+  void changeEvent(QEvent* event) override;
 
   // Corrects rect to the canvas aspect ratio (when XY + keepRatioXY) and
   // applies it to the axes. Caller decides whether to replot. Pass the rect
@@ -188,6 +206,8 @@ class PlotWidgetBase : public QWidget {
   [[nodiscard]] std::pair<double, double> pinYRange(double proposed_min, double proposed_max) const;
 
  private:
+  void refreshCanvasBackground();
+
   QwtPlotPimpl* plot_ = nullptr;
   bool xy_mode_ = false;
   QRectF max_zoom_rect_;

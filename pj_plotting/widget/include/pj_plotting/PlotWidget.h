@@ -10,6 +10,8 @@
 #include <QMetaObject>
 #include <QRectF>
 #include <QStringList>
+#include <QTimer>
+#include <cstddef>
 #include <optional>
 #include <vector>
 
@@ -17,6 +19,7 @@
 #include "pj_plotting/PlotWidgetBase.h"
 #include "pj_plotting/SnapshotGroupResolver.h"
 #include "pj_runtime/CurveDescriptor.h"
+#include "pj_runtime/Time.h"
 
 class QDragEnterEvent;
 class QDragLeaveEvent;
@@ -72,7 +75,12 @@ class PlotWidget : public PlotWidgetBase {
   // layout restore can bind a curve later (once its topic finishes loading) WITHOUT
   // re-running xmlLoadState, whose remove-pass would drop the already-live curves.
   // Returns the curve, or null if the element's key attribute is empty/unresolvable.
-  CurveInfo* applyCurveElement(const QDomElement& curve_element);
+  CurveInfo* applyCurveElement(const QDomElement& curve_element, bool preserve_viewport = false);
+
+  /// Adds a curve while optionally suppressing the normal curve-list auto-fit.
+  /// Pending completion uses this when an existing or layout-restored viewport
+  /// must stay fixed as the late curve materializes.
+  CurveInfo* addCurveFromPending(const QString& name, bool preserve_viewport);
 
   // Replace the curve plotting `source_key` with one plotting `output_key`, the
   // new curve inheriting the source's color and taking its place (PJ3 in-place
@@ -126,6 +134,17 @@ class PlotWidget : public PlotWidgetBase {
   [[nodiscard]] QDomElement xmlSaveState(QDomDocument& doc) const;
   bool xmlLoadState(const QDomElement& plot_element, bool autozoom = true);
 
+  /// Retains one unresolved ordinary <curve pending_intent="true"> element as
+  /// real workspace state until the pending binder fulfills it.
+  bool rememberPendingCurveIntent(const QDomElement& curve_element, bool notify = true);
+  void forgetPendingCurveIntent(const QDomElement& curve_element, bool notify = false);
+  [[nodiscard]] std::size_t pendingCurveIntentCount() const noexcept {
+    return pending_curve_intents_.size();
+  }
+  [[nodiscard]] bool hasSavedViewport() const noexcept {
+    return saved_viewport_.has_value();
+  }
+
   // Re-frame to the viewport stashed by the last xmlLoadState, converting any
   // absolute-time X with the display offset in effect NOW. xmlLoadState applies it
   // once, but during a PROGRESSIVE restore the catalog is still empty then (offset
@@ -155,6 +174,9 @@ class PlotWidget : public PlotWidgetBase {
   void trackerMoved(QPointF point);
   void curvesDropped();
   void statusMessageRequested(QString message);
+  /// The serialized unresolved-curve set changed and binder registrations must
+  /// be rebuilt from the plot's current XML state.
+  void pendingCurveIntentsChanged();
   void splitHorizontal();
   void splitVertical();
   void curveColorChanged(QString curve_name, QColor color);
@@ -162,6 +184,11 @@ class PlotWidget : public PlotWidgetBase {
   // Editor panel (chart-area takeover) scoped to `sources` and, on Apply, calls
   // `origin->replaceCurve()` so the filtered output replaces each source in place.
   void filterEditorRequested(std::vector<CurveDescriptor> sources, PlotWidget* origin);
+  // A dropped catalog key named an ADVERTISED (not-yet-subscribed) placeholder
+  // topic rather than resolved data — dropping it must not fabricate a curve
+  // (there is no storage id yet). The shell resolves demand + a pending bind
+  // (see pj_app's TopicDemandController) instead of this widget.
+  void placeholderCurveDropped(QString catalog_key);
 
  protected:
   bool eventFilter(QObject* obj, QEvent* event) override;
@@ -212,12 +239,23 @@ class PlotWidget : public PlotWidgetBase {
   // can hold snapshot curves (empty or already a snapshot plot).
   void addSnapshotGroupInteractive();
   void setAxisScale(QwtAxisId axis_id, double min, double max);
-  // The representative per-dataset display offset (in seconds) for this plot's
-  // time axis: the offset of the first datastore-backed curve's dataset. Used to
-  // convert the saved X-axis range between display-relative and absolute time at
-  // the layout save/load boundary (xmlSaveState/xmlLoadState). Returns 0 when
-  // there is no session or no datastore-backed curve — then display == absolute.
+  // The representative per-dataset display offset for this plot's time axis: the
+  // offset of the FIRST datastore-backed curve's dataset. The axis is shared
+  // across curves; in the common case they share a dataset (one offset), and when
+  // they don't the first datastore-backed curve is the representative — the same
+  // rule must hold at save and load so the absolute<->display round-trip is
+  // stable. nullopt when there is no session or no datastore-backed curve (then
+  // display == absolute). displayOffsetSeconds/Nanoseconds convert at the edge.
+  [[nodiscard]] std::optional<DisplayOffset> representativeDisplayOffset() const;
+  // representativeDisplayOffset() in seconds. Used to convert the saved X-axis
+  // range between display-relative and absolute time at the layout save/load
+  // boundary (xmlSaveState/xmlLoadState). Returns 0 when there is no offset.
   [[nodiscard]] double displayOffsetSeconds() const;
+  // representativeDisplayOffset() in integer nanoseconds — the datastore's native
+  // precision. Used at the viewport save/load boundary so an epoch-scale absolute
+  // range can be built and undone in the ns domain without a double's ~238 ns ULP
+  // rounding away a deeply-zoomed window. Returns 0 when there is no offset.
+  [[nodiscard]] qint64 displayOffsetNanoseconds() const;
   void reconnectDataSignals();
   // Coalesced streaming refresh: a samplesIngested burst (live streaming can fire
   // hundreds of Hz) only marks the plot dirty + arms snapshot_ingest_timer_; this
@@ -260,6 +298,17 @@ class PlotWidget : public PlotWidgetBase {
   bool invalidateAdapterOffsets(std::optional<DatasetId> only = std::nullopt);
   [[nodiscard]] QStringList decodeCurveDrop(const QMimeData* mime_data, const QString& format) const;
   [[nodiscard]] bool allCurvesKnown(const QStringList& curves) const;
+  // Time-series drop gate (curveslist/add_curve): a curve name is droppable when
+  // it resolves to real data OR names a scalar-shaped advertised placeholder
+  // (kNone classification) — both are legitimate drop targets even though only
+  // the former can materialize a curve immediately (onDropEvent routes the
+  // latter to placeholderCurveDropped instead of addCurve). Unlike
+  // allCurvesKnown (real curves only), used by the XY gesture, which has no
+  // placeholder analogue.
+  [[nodiscard]] bool allCurvesDroppable(const QStringList& curves) const;
+  // True iff `name` is a scalar-shaped (kNone) advertised placeholder — i.e. a
+  // droppable name allCurvesKnown would reject.
+  [[nodiscard]] bool isPlaceholderCurveName(const QString& name) const;
   [[nodiscard]] static QString lineWidthToString(LineWidth width);
   [[nodiscard]] static LineWidth lineWidthFromString(QString value);
   // Maps a raw pen-width pixel value (older layouts' per-curve width) to the
@@ -275,22 +324,30 @@ class PlotWidget : public PlotWidgetBase {
   QMetaObject::Connection dataset_replace_connection_;
   QMetaObject::Connection display_offset_connection_;          // global "Use time offset" frame
   QMetaObject::Connection display_offset_dataset_connection_;  // per-source Timeline drag
+  Timestamp last_global_time_reference_ = 0;
   DragInfo dragging_;
   CurveTracker* tracker_ = nullptr;
   CurveTracker* reference_tracker_ = nullptr;
   bool tracker_enabled_ = true;
+  // Last display time pushed through setTrackerPosition, so a newly-created XY
+  // curve can place its ride-along marker at the current cursor immediately
+  // instead of waiting for the next playback tick / seek.
+  double last_tracker_time_sec_ = 0.0;
   bool show_points_ = true;
   bool loading_state_ = false;
   // Snapshot ("current message") mode: X axis is a data field / element index, not
   // the shared time axis. Set by addSnapshotCurveGroup, cleared by removeAllCurves.
   bool snapshot_mode_ = false;
-  // Last tracker position (display seconds). Snapshot curves refresh to this on a
-  // streaming ingest, since samplesIngested carries no time of its own.
-  double last_tracker_time_sec_ = 0.0;
   // Coalescing state for the streaming-ingest snapshot refresh (see flushSnapshotIngest).
+  // Snapshot curves refresh to the last tracker time (see setTrackerPosition) on a
+  // streaming ingest, since samplesIngested carries no time of its own.
   QTimer* snapshot_ingest_timer_ = nullptr;
   bool snapshot_ingest_pending_ = false;
   unsigned long long snapshot_ingest_refresh_count_ = 0;
+  // Trailing-edge coalescer for gesture-driven history snapshots: wheel-zoom and
+  // pan emit per input event, but serializing the whole workspace per event is
+  // wasteful — one undoableChange fires when the gesture goes quiet.
+  QTimer gesture_undo_debounce_;
   QwtPlotMarker* show_point_marker_ = nullptr;
   QwtPlotMarker* show_point_text_ = nullptr;
   // Used to skip replot when the mouse drifts but the snapped sample is unchanged.
@@ -307,8 +364,21 @@ class PlotWidget : public PlotWidgetBase {
     double top = 0.0;
     double left = 0.0;
     double right = 0.0;
+    // Authoritative integer-nanosecond absolute X edges for a time axis. Present
+    // only when the loaded <range> carried left_ns/right_ns (schema v4+); a v3
+    // decimal-only range leaves these unset and applySavedViewportOrZoom falls
+    // back to the double `left`/`right`. Doubles lose precision once an
+    // epoch-scale value (~1.6e9 s) is stored, so the integer edges are preferred
+    // whenever available to make a deep-zoom viewport exactly round-trippable.
+    std::optional<qint64> left_ns;
+    std::optional<qint64> right_ns;
+    // True for a time axis (X is absolute time, converted with the display offset
+    // on apply); false for an XY plot (X is a data value used verbatim). Decided
+    // from the <range>'s explicit x_basis marker, never re-inferred from plot mode.
+    bool x_is_absolute = true;
   };
   std::optional<SavedViewport> saved_viewport_;
+  std::vector<QDomDocument> pending_curve_intents_;
 
   QAction* action_split_horizontal_ = nullptr;
   QAction* action_split_vertical_ = nullptr;

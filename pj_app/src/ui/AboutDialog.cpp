@@ -8,6 +8,7 @@
 
 #include "pj_widgets/SvgUtil.h"
 #include "ui_AboutDialog.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -19,7 +20,7 @@ AboutDialog::AboutDialog(QWidget* parent) : Dialog(parent), ui_(new Ui::AboutDia
   contentLayout()->addWidget(body);
 
   // LoadSvg caches a 64x64 render; the logo shows at that native size.
-  ui_->logoLabel->setPixmap(loadSvg(QStringLiteral(":/resources/svg/plotjuggler.svg"), currentTheme()));
+  ui_->logoLabel->setPixmap(loadSvg(u":/resources/svg/plotjuggler.svg"_s, currentTheme()));
   ui_->versionLabel->setText(tr("Version %1").arg(QApplication::applicationVersion()));
 
   // The frameless Dialog chrome otherwise opens at its 320x120 base minimum and

@@ -13,6 +13,7 @@
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QWidget>
+#include <algorithm>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <limits>
@@ -21,6 +22,7 @@
 #include <string>
 #include <utility>
 
+#include "layer_xml_validation.h"
 #include "mesh_load_set.h"
 #include "mesh_loader.h"
 #include "pj_base/builtin/scene_entities.hpp"
@@ -31,8 +33,10 @@
 #include "pj_scene3d_widgets/parse_locked.h"
 #include "pj_widgets/ColorPickerWidget.h"
 #include "pj_widgets/DoubleScrubber.h"
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/ToggleSwitch.h"
 #include "url_fetcher.h"
+using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
 
@@ -67,19 +71,19 @@ std::uint64_t fnv1a(const std::vector<std::uint8_t>& data) {
 QString hintFromMediaType(const std::string& media_type, const std::string& url) {
   const QString media = QString::fromStdString(media_type).toLower();
   if (media == QLatin1String("model/gltf-binary") || media == QLatin1String("application/octet-stream+glb")) {
-    return QStringLiteral("glb");
+    return u"glb"_s;
   }
   if (media == QLatin1String("model/gltf+json") || media == QLatin1String("model/gltf")) {
-    return QStringLiteral("gltf");
+    return u"gltf"_s;
   }
   if (media == QLatin1String("model/vnd.collada+xml")) {
-    return QStringLiteral("dae");
+    return u"dae"_s;
   }
   if (media == QLatin1String("model/stl")) {
-    return QStringLiteral("stl");
+    return u"stl"_s;
   }
   if (media == QLatin1String("model/obj")) {
-    return QStringLiteral("obj");
+    return u"obj"_s;
   }
   if (!media.isEmpty()) {
     const qsizetype slash = media.lastIndexOf('/');
@@ -113,7 +117,7 @@ std::string sourceSignature(const PJ::sdk::ModelPrimitive& primitive) {
 // per newly-seen model source — a URL blocked under the old value stays recorded
 // (no per-tick re-check) until the layer re-attaches.
 bool remoteModelFetchAllowed() {
-  return QSettings().value(QStringLiteral("pj_scene3d/allow_remote_model_fetch"), true).toBool();
+  return QSettings().value(u"pj_scene3d/allow_remote_model_fetch"_s, true).toBool();
 }
 
 // Lifetime expiry with overflow-safe boundary handling (lifetime_ns == 0 means
@@ -196,7 +200,7 @@ PJ::SceneLayerInfo SceneEntitiesLayer::info() const {
       .topic_id = topic_id_,
       .object_type = PJ::sdk::BuiltinObjectType::kSceneEntities,
       .display_name = display_name_,
-      .family_name = QStringLiteral("Markers"),
+      .family_name = u"Markers"_s,
       .visible = visible_,
   };
 }
@@ -224,32 +228,40 @@ QString SceneEntitiesLayer::sourceFrame() const {
 }
 
 QDomElement SceneEntitiesLayer::xmlSaveState(QDomDocument& doc) const {
-  QDomElement el = doc.createElement(QStringLiteral("markers"));
-  el.setAttribute(QStringLiteral("opacity"), QString::number(static_cast<double>(overrides_.opacity), 'g', 6));
-  el.setAttribute(
-      QStringLiteral("color_override"), overrides_.color_override ? QStringLiteral("true") : QStringLiteral("false"));
-  el.setAttribute(QStringLiteral("override_color"), overrideColor().name(QColor::HexRgb));
-  el.setAttribute(QStringLiteral("wireframe"), overrides_.wireframe ? QStringLiteral("true") : QStringLiteral("false"));
+  QDomElement el = doc.createElement(u"markers"_s);
+  el.setAttribute(u"opacity"_s, QString::number(static_cast<double>(overrides_.opacity), 'g', 6));
+  el.setAttribute(u"color_override"_s, overrides_.color_override ? u"true"_s : u"false"_s);
+  el.setAttribute(u"override_color"_s, overrideColor().name(QColor::HexRgb));
+  el.setAttribute(u"wireframe"_s, overrides_.wireframe ? u"true"_s : u"false"_s);
   return el;
 }
 
 bool SceneEntitiesLayer::xmlLoadState(const QDomElement& element) {
-  if (element.isNull() || element.tagName() != QStringLiteral("markers")) {
+  if (element.isNull() || element.tagName() != "markers"_L1 || !detail::isLeafPayload(element)) {
     return false;
   }
-  bool ok = false;
-  const float op = element.attribute(QStringLiteral("opacity"), QStringLiteral("1")).toFloat(&ok);
-  if (ok) {
-    setOpacity(op);
+  float restored_opacity = 0.0f;
+  bool restored_color_override = false;
+  bool restored_wireframe = false;
+  if (!detail::parseFiniteFloat(element, "opacity", 1.0f, 0.0f, 1.0f, restored_opacity) ||
+      !detail::parseTrueFalse(element, "color_override", false, restored_color_override) ||
+      !detail::parseTrueFalse(element, "wireframe", false, restored_wireframe)) {
+    return false;
   }
-  if (element.hasAttribute(QStringLiteral("override_color"))) {
-    const QColor c(element.attribute(QStringLiteral("override_color")));
-    if (c.isValid()) {
-      setOverrideColor(c);
+  QColor restored_color;
+  const bool has_override_color = element.hasAttribute(u"override_color"_s);
+  if (has_override_color) {
+    restored_color = QColor(element.attribute(u"override_color"_s));
+    if (!restored_color.isValid()) {
+      return false;
     }
   }
-  setColorOverrideEnabled(element.attribute(QStringLiteral("color_override")) == QStringLiteral("true"));
-  setWireframe(element.attribute(QStringLiteral("wireframe")) == QStringLiteral("true"));
+  setOpacity(restored_opacity);
+  if (has_override_color) {
+    setOverrideColor(restored_color);
+  }
+  setColorOverrideEnabled(restored_color_override);
+  setWireframe(restored_wireframe);
   return true;
 }
 
@@ -302,7 +314,7 @@ void SceneEntitiesLayer::resetReplayState() {
   entity_expiry_anchor_ns_.clear();
   model_frames_.clear();
   state_built_at_.reset();
-  last_applied_uid_ = {};
+  applied_uid_high_ = {};
   snapshot_cache_.clear();
   snapshot_cache_bytes_ = 0;
   // Aborts in-flight model-URL fetches and drops their callbacks; the records
@@ -538,29 +550,28 @@ std::vector<MeshRenderPass::DrawCall> SceneEntitiesLayer::modelDrawCallsForFrame
   return draws;
 }
 
-bool SceneEntitiesLayer::applyEntriesAfter(PJ::SequentialUID after_uid, PJ::SequentialUID target_uid) {
-  if (!target_uid.valid()) {
-    return false;
-  }
+bool SceneEntitiesLayer::applyWindow(int64_t lo_ns, int64_t hi_ns) {
   PJ::ObjectStore& store = ctx_.session->objectStore();
   pruneSnapshotCacheBelow(store.firstSequentialUID(topic_id_));
 
   bool applied = false;
-  // Step the topic's sparse UID sequence directly: UID allocation is process-wide,
-  // so consecutive entries of one topic are NOT consecutive integers — each step
-  // is one binary search instead of probing every interleaved value.
-  for (PJ::SequentialUID uid = store.nextUIDAfter(topic_id_, after_uid); uid.valid() && uid <= target_uid;
-       uid = store.nextUIDAfter(topic_id_, uid)) {
+  // rangeByTime is the out-of-order-safe fold source: a decode-free, ascending,
+  // eviction-safe snapshot of (lo, hi]. An arrival-order UID walk would skip a late
+  // (older-ts, newest-UID) batch that sits at a high UID but an in-window timestamp;
+  // this walks by timestamp and cannot. Each ref is resolved afterwards (an entry
+  // evicted between the snapshot and the resolve simply comes back nullopt).
+  const auto window = store.rangeByTime(topic_id_, lo_ns, hi_ns);
+  for (const auto& ref : window) {
     // Cache hit: re-fold the decoded batch (backward scrub / rebuild) without
     // re-parsing — the protobuf decode of heavy embedded models is what hitched.
-    if (const auto cached = snapshot_cache_.find(uid); cached != snapshot_cache_.end()) {
+    if (const auto cached = snapshot_cache_.find(ref.uid); cached != snapshot_cache_.end()) {
       applySnapshot(*cached->second.batch, cached->second.store_ns);
       applied = true;
       continue;
     }
-    auto entry = store.at(topic_id_, uid);
+    auto entry = store.at(topic_id_, ref.uid);
     if (!entry.has_value() || entry->payload.bytes.empty()) {
-      continue;  // evicted between the UID step and the resolve
+      continue;  // evicted between the snapshot and the resolve
     }
     const auto binding = ctx_.session->parserBindingForObjectTopic(topic_id_);
     if (!binding) {
@@ -568,14 +579,14 @@ bool SceneEntitiesLayer::applyEntriesAfter(PJ::SequentialUID after_uid, PJ::Sequ
     }
     auto obj = parseLocked(binding, entry->timestamp, entry->payload);
     if (!obj.has_value()) {
-      qCWarning(lcSceneEntitiesLayer) << "applyEntriesAfter parseObject failed:" << QString::fromStdString(obj.error());
+      qCWarning(lcSceneEntitiesLayer) << "applyWindow parseObject failed:" << QString::fromStdString(obj.error());
       continue;
     }
     auto* snapshot = std::any_cast<PJ::sdk::SceneEntities>(&obj->object);
     if (snapshot != nullptr) {
       applySnapshot(*snapshot, entry->timestamp);
       // Moved, not copied: the ObjectRecord is discarded at the end of this step.
-      cacheSnapshot(uid, std::make_shared<PJ::sdk::SceneEntities>(std::move(*snapshot)), entry->timestamp);
+      cacheSnapshot(ref.uid, std::make_shared<PJ::sdk::SceneEntities>(std::move(*snapshot)), entry->timestamp);
       applied = true;
     }
   }
@@ -619,19 +630,23 @@ void SceneEntitiesLayer::rebuildModelStateAt(PJ::Timepoint time) {
   entities_.clear();
   entity_expiry_anchor_ns_.clear();
   state_built_at_ = time;
-  last_applied_uid_ = {};
+  applied_uid_high_ = {};
 
   if (ctx_.session == nullptr) {
     updateModelFrames();
     return;
   }
-  const auto target = ctx_.session->objectStore().latestAt(topic_id_, PJ::toRaw(time));
-  if (!target.has_value()) {
-    updateModelFrames();
+  PJ::ObjectStore& store = ctx_.session->objectStore();
+  const int64_t time_ns = PJ::toRaw(time);
+  // High-water arrival UID among ts <= time — NOT latestAt()'s UID, which an
+  // out-of-order insert can leave below a retained entry's (see applied_uid_high_).
+  const PJ::SequentialUID high = store.maxUidAtOrBefore(topic_id_, time_ns);
+  if (!high.valid()) {
+    updateModelFrames();  // no batch at/before time
     return;
   }
-  applyEntriesAfter({}, target->sequential_uid);
-  last_applied_uid_ = target->sequential_uid;
+  applyWindow(std::numeric_limits<int64_t>::min(), time_ns);
+  applied_uid_high_ = high;
   dropExpiredEntities(time);
   updateModelFrames();
   startMeshLoadsForCurrentEntities();
@@ -646,39 +661,29 @@ void SceneEntitiesLayer::ensureModelStateAt(PJ::Timepoint time) {
   }
 
   PJ::ObjectStore& store = ctx_.session->objectStore();
-  const auto target = store.latestAt(topic_id_, PJ::toRaw(time));
-  if (state_built_at_.has_value() && *state_built_at_ == time) {
-    if (target.has_value() && target->sequential_uid == last_applied_uid_) {
-      return;  // Already built at this exact playhead and store entry.
-    }
-    if (!target.has_value() && !last_applied_uid_.valid()) {
-      return;  // Already built empty at this exact playhead.
-    }
+  const int64_t time_ns = PJ::toRaw(time);
+  const PJ::SequentialUID high_now = store.maxUidAtOrBefore(topic_id_, time_ns);
+
+  if (state_built_at_.has_value() && *state_built_at_ == time && high_now == applied_uid_high_) {
+    // Already built at this exact playhead and no batch at/before it arrived since
+    // (equal high-water; the both-empty case is invalid == invalid).
+    return;
   }
-  // Incremental forward fold: when the playhead only advanced, parse just the
-  // batches appended since the last build instead of replaying the whole history
-  // (which would re-parse — and re-hash heavy embedded models in — every frame).
-  // Anything else (first build, backward scrub, jump) falls back to a full rebuild.
-  const bool can_incremental = state_built_at_.has_value() && last_applied_uid_.valid() && time >= *state_built_at_;
+
+  // Incremental forward fold: when the playhead only advanced AND nothing changed at
+  // or below the previous build time, fold just the (state_built_at_, time] window
+  // instead of replaying the whole history (which would re-parse — and re-hash heavy
+  // embedded models in — every frame). A late (out-of-order) batch inserted at
+  // ts <= state_built_at_ raises maxUidAtOrBefore THERE above what we folded, and a
+  // forward window cannot reach it — so fall back to a full rebuild. This is the same
+  // retroactive-ingest guard the occupancy layer uses. Backward scrubs / jumps also
+  // fall through to rebuild.
+  const bool can_incremental = state_built_at_.has_value() && applied_uid_high_.valid() && time >= *state_built_at_;
   if (can_incremental) {
-    if (target.has_value() && target->sequential_uid >= last_applied_uid_) {
-      bool cursor_outside_window = false;
-      if (target->sequential_uid > last_applied_uid_) {
-        // Eviction is front-only, so "an unseen entry in (last_applied, target] was
-        // evicted" is exactly "the first retained UID passed the cursor". This also
-        // catches a dataset replace, which re-UIDs every entry (fresh generation).
-        // UID gaps alone signal nothing: allocation is process-global, so one
-        // topic's UIDs are inherently sparse.
-        const PJ::SequentialUID first_retained_uid = store.firstSequentialUID(topic_id_);
-        cursor_outside_window = !first_retained_uid.valid() || first_retained_uid > last_applied_uid_;
-      }
-      if (cursor_outside_window) {
-        rebuildModelStateAt(time);
-        emit repaintRequested();
-        return;
-      }
-      const bool applied_new = applyEntriesAfter(last_applied_uid_, target->sequential_uid);
-      last_applied_uid_ = target->sequential_uid;
+    const PJ::SequentialUID high_at_built = store.maxUidAtOrBefore(topic_id_, PJ::toRaw(*state_built_at_));
+    if (high_at_built == applied_uid_high_) {
+      const bool applied_new = applyWindow(PJ::toRaw(*state_built_at_), time_ns);
+      applied_uid_high_ = high_now;
       state_built_at_ = time;
       const bool dropped = dropExpiredEntities(time);
       updateModelFrames();
@@ -826,7 +831,7 @@ void SceneEntitiesLayer::startMeshLoadIfNeeded(const std::string& key, const PJ:
   const QUrl url(url_text);
   // Local sources (bare paths / file:// URLs) stay ungated: reading the user's
   // disk is not network egress. Only data-supplied http(s) URLs need consent.
-  const bool is_remote = url.scheme() == QStringLiteral("http") || url.scheme() == QStringLiteral("https");
+  const bool is_remote = url.scheme() == "http"_L1 || url.scheme() == "https"_L1;
   if (is_remote && !remoteModelFetchAllowed()) {
     // Recorded once as consumed+failed so the gate is decided per (key,
     // signature), never re-checked per tracker tick.
@@ -933,35 +938,61 @@ void SceneEntitiesLayer::pollMeshLoads() {
 }
 
 void SceneEntitiesLayer::setOpacity(float opacity) {
-  overrides_.opacity = opacity;
+  const float clamped = std::clamp(opacity, 0.0f, 1.0f);
+  if (overrides_.opacity == clamped) {
+    return;
+  }
+  overrides_.opacity = clamped;
+  emit configurationChanged();
   applyOverrides();
 }
 
 void SceneEntitiesLayer::setColorOverrideEnabled(bool enabled) {
+  if (overrides_.color_override == enabled) {
+    return;
+  }
   overrides_.color_override = enabled;
+  emit configurationChanged();
   applyOverrides();
 }
 
 void SceneEntitiesLayer::setOverrideColor(QColor color) {
-  overrides_.override_color = glm::vec4(
-      static_cast<float>(color.redF()), static_cast<float>(color.greenF()), static_cast<float>(color.blueF()), 1.0F);
+  if (!color.isValid()) {
+    return;
+  }
+  const glm::vec4 next{
+      static_cast<float>(color.redF()), static_cast<float>(color.greenF()), static_cast<float>(color.blueF()), 1.0F};
+  if (overrides_.override_color.r == next.r && overrides_.override_color.g == next.g &&
+      overrides_.override_color.b == next.b) {
+    return;
+  }
+  overrides_.override_color = next;
+  emit configurationChanged();
   applyOverrides();
 }
 
 void SceneEntitiesLayer::setWireframe(bool enabled) {
+  if (overrides_.wireframe == enabled) {
+    return;
+  }
   overrides_.wireframe = enabled;
+  emit configurationChanged();
   applyOverrides();
 }
 
 QWidget* SceneEntitiesLayer::createConfigWidget(QWidget* parent) {
   auto* container = new QWidget(parent);
   auto* outer = new QVBoxLayout(container);
-  outer->setContentsMargins(0, 0, 0, 0);
-  outer->setSpacing(4);
+  outer->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
+  outer->setSpacing(PJ::theme::space(PJ::theme::Space::Snug));
   auto* form = new QFormLayout();
-  form->setContentsMargins(0, 0, 0, 0);
-  form->setHorizontalSpacing(8);
-  form->setVerticalSpacing(4);
+  form->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
+  form->setHorizontalSpacing(PJ::theme::space(PJ::theme::Space::Comfortable));
+  form->setVerticalSpacing(PJ::theme::space(PJ::theme::Space::Snug));
   outer->addLayout(form);
 
   // Opacity (always active): multiplies every primitive's alpha.
@@ -979,8 +1010,10 @@ QWidget* SceneEntitiesLayer::createConfigWidget(QWidget* parent) {
   // Picking a color auto-enables it.
   auto* override_row = new QWidget(container);
   auto* override_layout = new QHBoxLayout(override_row);
-  override_layout->setContentsMargins(0, 0, 0, 0);
-  override_layout->setSpacing(8);
+  override_layout->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
+  override_layout->setSpacing(PJ::theme::space(PJ::theme::Space::Comfortable));
   auto* override_toggle = new PJ::ToggleSwitch(override_row);
   override_toggle->setChecked(overrides_.color_override, /*animate=*/false);
   auto* swatch = new PJ::ColorPickerWidget(override_row);

@@ -10,9 +10,11 @@
 #include <QWidget>
 #include <algorithm>
 #include <any>
+#include <cmath>
 #include <glm/glm.hpp>
 #include <optional>
 
+#include "layer_xml_validation.h"
 #include "pj_base/builtin/voxel_grid.hpp"
 #include "pj_base/time.hpp"  // PJ::fromRaw, PJ::toRaw
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
@@ -21,6 +23,8 @@
 #include "pj_scene3d_widgets/parse_locked.h"
 #include "pj_widgets/ComboBox.h"
 #include "pj_widgets/DoubleScrubber.h"
+#include "pj_widgets/FrameworkTokens.h"
+using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
 
@@ -42,7 +46,7 @@ PJ::SceneLayerInfo VoxelGridLayer::info() const {
       .topic_id = topic_id_,
       .object_type = PJ::sdk::BuiltinObjectType::kVoxelGrid,
       .display_name = display_name_,
-      .family_name = QStringLiteral("VoxelGrid"),
+      .family_name = u"VoxelGrid"_s,
       .visible = visible_,
   };
 }
@@ -64,34 +68,53 @@ QString VoxelGridLayer::sourceFrame() const {
 }
 
 QDomElement VoxelGridLayer::xmlSaveState(QDomDocument& doc) const {
-  QDomElement el = doc.createElement(QStringLiteral("voxel_grid"));
-  el.setAttribute(QStringLiteral("field"), QString::fromStdString(active_field_name_));
-  el.setAttribute(QStringLiteral("draw_mode"), static_cast<int>(draw_mode_));
-  el.setAttribute(QStringLiteral("threshold"), threshold_);
-  el.setAttribute(QStringLiteral("auto_range"), auto_range_ ? 1 : 0);
-  el.setAttribute(QStringLiteral("range_lo"), manual_lo_);
-  el.setAttribute(QStringLiteral("range_hi"), manual_hi_);
-  el.setAttribute(QStringLiteral("colormap"), static_cast<int>(colormap_));
-  el.setAttribute(QStringLiteral("opacity"), opacity_);
+  QDomElement el = doc.createElement(u"voxel_grid"_s);
+  el.setAttribute(u"field"_s, QString::fromStdString(active_field_name_));
+  el.setAttribute(u"draw_mode"_s, static_cast<int>(draw_mode_));
+  el.setAttribute(u"threshold"_s, threshold_);
+  el.setAttribute(u"auto_range"_s, auto_range_ ? 1 : 0);
+  el.setAttribute(u"range_lo"_s, manual_lo_);
+  el.setAttribute(u"range_hi"_s, manual_hi_);
+  el.setAttribute(u"colormap"_s, static_cast<int>(colormap_));
+  el.setAttribute(u"opacity"_s, opacity_);
   return el;
 }
 
 bool VoxelGridLayer::xmlLoadState(const QDomElement& element) {
+  if (element.isNull() || element.tagName() != "voxel_grid"_L1 || !detail::isLeafPayload(element)) {
+    return false;
+  }
+  bool mode_ok = false;
+  bool threshold_ok = false;
+  bool auto_range_ok = false;
+  bool range_lo_ok = false;
+  bool range_hi_ok = false;
+  bool colormap_ok = false;
+  bool opacity_ok = false;
+  const int mode = element.attribute(u"draw_mode"_s, u"1"_s).toInt(&mode_ok);
+  const double threshold = element.attribute(u"threshold"_s, u"0"_s).toDouble(&threshold_ok);
+  const int auto_range = element.attribute(u"auto_range"_s, u"1"_s).toInt(&auto_range_ok);
+  const double range_lo = element.attribute(u"range_lo"_s, u"0"_s).toDouble(&range_lo_ok);
+  const double range_hi = element.attribute(u"range_hi"_s, u"1"_s).toDouble(&range_hi_ok);
+  const int colormap = element.attribute(u"colormap"_s, u"0"_s).toInt(&colormap_ok);
+  const double opacity = element.attribute(u"opacity"_s, u"1"_s).toDouble(&opacity_ok);
+  if (!mode_ok || mode < 0 || mode > 3 || !threshold_ok || !std::isfinite(threshold) || !auto_range_ok ||
+      (auto_range != 0 && auto_range != 1) || !range_lo_ok || !std::isfinite(range_lo) || !range_hi_ok ||
+      !std::isfinite(range_hi) || range_lo > range_hi || !colormap_ok || colormap < 0 ||
+      colormap >= PJ::kColormapCount || !opacity_ok || !std::isfinite(opacity) || opacity < 0.0 || opacity > 1.0) {
+    return false;
+  }
   // active_field_name_ is restored verbatim; if the named field is absent when a
   // grid arrives, resolveField() falls back to the default and adopts the saved
   // name later once a grid carrying it appears (late-arrival safe).
-  active_field_name_ = element.attribute(QStringLiteral("field")).toStdString();
+  setActiveField(element.attribute(u"field"_s));
   uploaded_field_setting_ = "\x01";  // force a re-pack on the next render
-
-  const int mode = element.attribute(QStringLiteral("draw_mode"), QStringLiteral("1")).toInt();
-  draw_mode_ = mode >= 0 && mode <= 3 ? static_cast<VoxelDrawMode>(mode) : VoxelDrawMode::kNonZero;
-  threshold_ = element.attribute(QStringLiteral("threshold"), QStringLiteral("0")).toDouble();
-  auto_range_ = element.attribute(QStringLiteral("auto_range"), QStringLiteral("1")).toInt() != 0;
-  manual_lo_ = element.attribute(QStringLiteral("range_lo"), QStringLiteral("0")).toDouble();
-  manual_hi_ = element.attribute(QStringLiteral("range_hi"), QStringLiteral("1")).toDouble();
-  const int cm = element.attribute(QStringLiteral("colormap"), QStringLiteral("0")).toInt();
-  colormap_ = cm >= 0 && cm < PJ::kColormapCount ? static_cast<PJ::Colormap>(cm) : PJ::Colormap::kTurbo;
-  opacity_ = std::clamp(element.attribute(QStringLiteral("opacity"), QStringLiteral("1")).toDouble(), 0.0, 1.0);
+  setDrawMode(static_cast<VoxelDrawMode>(mode));
+  setThreshold(threshold);
+  setAutoRange(auto_range != 0);
+  setManualRange(range_lo, range_hi);
+  setColormap(static_cast<PJ::Colormap>(colormap));
+  setOpacity(opacity);
   pushDisplayParamsToPass();
   return true;
 }
@@ -232,6 +255,22 @@ void VoxelGridLayer::renderAt(int64_t time_ns) {
     emit fallbackFramesChanged(fallbackFrames());
   }
 
+  // Untrusted wire dims: a corrupt grid can declare far more voxels than its
+  // payload backs (see kMaxRenderableVoxels). Packing refuses it and the pass
+  // would drop it silently, so surface a layer-row warning and skip the work
+  // rather than leave the user staring at an empty view with no explanation.
+  const uint64_t voxels = voxelCount(*grid);
+  if (voxels > kMaxRenderableVoxels) {
+    qCWarning(lcVoxel) << "renderAt: voxel count" << voxels << "exceeds render cap" << kMaxRenderableVoxels
+                       << "— grid not displayed (corrupt/unsupported dimensions)";
+    setStatusWarning(tr("Voxel grid too large to display: %1 voxels (corrupt or unsupported dimensions)").arg(voxels));
+    pass_.clearGrid();
+    uploaded_uid_ = entry->sequential_uid;
+    uploaded_field_setting_ = active_field_name_;
+    return;
+  }
+  setStatusWarning(QString());  // a renderable-sized grid arrived → clear any notice
+
   const PJ::sdk::PointField* field = resolveField(*grid);
   if (field == nullptr) {
     pass_.clearGrid();
@@ -263,6 +302,14 @@ void VoxelGridLayer::setFixedFrame(const QString& frame) {
   // The grid is frame-relative; the pass places it per-frame via FrameContext.
   Q_UNUSED(frame);
   emit repaintRequested();
+}
+
+void VoxelGridLayer::setStatusWarning(const QString& reason) {
+  if (status_warning_ == reason) {
+    return;
+  }
+  status_warning_ = reason;
+  emit statusWarningChanged();  // dock re-combines this into the layer-row warning
 }
 
 void VoxelGridLayer::setTrackerTime(PJ::Timepoint time) {
@@ -322,56 +369,93 @@ void VoxelGridLayer::pushDisplayParamsToPass() {
 }
 
 void VoxelGridLayer::setActiveField(const QString& field_name) {
-  active_field_name_ = field_name.toStdString();
+  const std::string next = field_name.toStdString();
+  if (active_field_name_ == next) {
+    return;
+  }
+  active_field_name_ = next;
   tracker_dirty_ = true;  // force renderAt → re-pack with the new field
+  emit configurationChanged();
   emit repaintRequested();
 }
 
 void VoxelGridLayer::setDrawMode(VoxelDrawMode mode) {
+  if (draw_mode_ == mode) {
+    return;
+  }
   draw_mode_ = mode;
   pass_.setDrawMode(mode);
+  emit configurationChanged();
   emit repaintRequested();
 }
 
 void VoxelGridLayer::setThreshold(double threshold) {
+  if (threshold_ == threshold) {
+    return;
+  }
   threshold_ = threshold;
   pass_.setThreshold(static_cast<float>(threshold));
+  emit configurationChanged();
   emit repaintRequested();
 }
 
 void VoxelGridLayer::setAutoRange(bool on) {
+  if (auto_range_ == on) {
+    return;
+  }
   auto_range_ = on;
   pass_.setAutoRange(on);
+  emit configurationChanged();
   emit repaintRequested();
 }
 
 void VoxelGridLayer::setManualRange(double lo, double hi) {
+  if (manual_lo_ == lo && manual_hi_ == hi) {
+    return;
+  }
   manual_lo_ = lo;
   manual_hi_ = hi;
   pass_.setManualRange(static_cast<float>(lo), static_cast<float>(hi));
+  emit configurationChanged();
   emit repaintRequested();
 }
 
 void VoxelGridLayer::setColormap(PJ::Colormap colormap) {
+  if (colormap_ == colormap) {
+    return;
+  }
   colormap_ = colormap;
   pass_.setColormap(colormap);
+  emit configurationChanged();
   emit repaintRequested();
 }
 
 void VoxelGridLayer::setOpacity(double opacity) {
-  opacity_ = std::clamp(opacity, 0.0, 1.0);
+  const double clamped = std::clamp(opacity, 0.0, 1.0);
+  if (opacity_ == clamped) {
+    return;
+  }
+  opacity_ = clamped;
   pass_.setOpacity(static_cast<float>(opacity_));
+  emit configurationChanged();
   emit repaintRequested();
 }
 
 QWidget* VoxelGridLayer::createConfigWidget(QWidget* parent) {
   auto* container = new QWidget(parent);
   auto* outer = new QVBoxLayout(container);
-  outer->setContentsMargins(0, 0, 0, 0);
-  outer->setSpacing(6);
+  outer->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
+  outer->setSpacing(PJ::theme::space(PJ::theme::Space::Snug));
   auto* form = new QFormLayout();
-  form->setContentsMargins(0, 0, 0, 0);
-  form->setSpacing(6);
+  form->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
+  // Match the Grid / Transforms section grids in Scene3DConfigPanel: comfortable
+  // label↔field gap, snug row pitch — so the panel keeps one consistent rhythm.
+  form->setHorizontalSpacing(PJ::theme::space(PJ::theme::Space::Comfortable));
+  form->setVerticalSpacing(PJ::theme::space(PJ::theme::Space::Snug));
   outer->addLayout(form);
 
   // Field selector — populated from the last decoded grid's fields.

@@ -30,6 +30,7 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
 #include "pj_scene3d_widgets/transform_service.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -86,7 +87,7 @@ TEST(Scene3DDockDepthGate, AcceptsDepthEncodedImageAsDepthCloud) {
 
   // kImage is handled at the type level; the dock then peeks the encoding.
   EXPECT_TRUE(PJ::Scene3DDockWidget::handlesObjectType(PJ::sdk::BuiltinObjectType::kImage));
-  ASSERT_TRUE(dock.addTopic(depth, PJ::sdk::BuiltinObjectType::kImage, QStringLiteral("depth")));
+  ASSERT_TRUE(dock.addTopic(depth, PJ::sdk::BuiltinObjectType::kImage, u"depth"_s));
   EXPECT_EQ(dock.layers().size(), 1U) << "a depth image must create a DepthCloud layer";
 }
 
@@ -106,7 +107,7 @@ TEST(Scene3DDockDepthGate, RefusesColorImage) {
   dock.setTransformService(&transform_service);
 
   // The encoding gate refuses a color image even though kImage is "handled".
-  EXPECT_FALSE(dock.addTopic(color, PJ::sdk::BuiltinObjectType::kImage, QStringLiteral("color")));
+  EXPECT_FALSE(dock.addTopic(color, PJ::sdk::BuiltinObjectType::kImage, u"color"_s));
   EXPECT_TRUE(dock.layers().empty()) << "a color image must NOT become a 3D layer";
 }
 

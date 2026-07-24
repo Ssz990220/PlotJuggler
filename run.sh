@@ -1,21 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/versions.env"
+
+# aqtinstall lays Qt out under a host-specific subdir: linux uses gcc_64, macOS
+# uses macos (arch-neutral universal). Pick by uname so run.sh points Qt plugin
+# discovery at the right tree on the unofficial macOS build as well as Linux CI
+# (mirrors the QT_HOST_DIR switch in build.sh).
+case "$(uname -s)" in
+  Darwin) QT_HOST_DIR="macos" ;;
+  *)      QT_HOST_DIR="gcc_64" ;;
+esac
 
 # Disable the IBus platform input context: it's loaded from the system Qt
-# install (often an older major version) and segfaults under Qt 6.11.
+# install (often an older major version) and can segfault under the pinned Qt.
 export QT_IM_MODULE=""
 
 # Native Wayland for ADS drag is patched in 3rdparty/Qt-Advanced-Docking/.
 # Uncomment the next line to fall back to XWayland if a regression appears.
 # export QT_QPA_PLATFORM=xcb
 
-# Point Qt plugin discovery at the bundled Qt 6.11.1 only. If the user's shell
+# Point Qt plugin discovery at the Qt version pinned in versions.env only. If the user's shell
 # has QT_PLUGIN_PATH set to a stale Qt (e.g. /home/.../qt/6.4.2/plugins), Qt
 # scans it first, picks up the cert-only TLS backend there, then fails to load
 # its OpenSSL sibling (symbol mismatch against the newer libstdc++) and all
 # HTTPS traffic breaks — including the marketplace registry fetch.
-export QT_PLUGIN_PATH="${SCRIPT_DIR}/.qt/6.11.1/gcc_64/plugins"
+export QT_PLUGIN_PATH="${SCRIPT_DIR}/.qt/${PJ_QT_VERSION}/${QT_HOST_DIR}/plugins"
 
 BIN="${SCRIPT_DIR}/build/pj_app/plotjuggler4"
 

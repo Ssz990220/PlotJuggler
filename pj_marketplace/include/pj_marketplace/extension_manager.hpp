@@ -10,13 +10,12 @@
 #include <QString>
 
 #include "pj_base/diagnostic_sink.hpp"
+#include "pj_marketplace/download_manager.hpp"
 #include "pj_marketplace/extension.hpp"
 #include "pj_marketplace/installed_extension.hpp"
 #include "pj_marketplace/platform_utils.hpp"
 
 namespace PJ {
-
-class DownloadManager;
 
 // One user-visible diagnostic emitted by marketplace lifecycle operations.
 struct ExtensionDiagnostic {
@@ -48,6 +47,15 @@ class ExtensionManager : public QObject {
   // Removes an installed extension or schedules Windows cleanup after restart.
   void uninstall(const QString& extension_id);
 
+  // Reverts a core extension that was updated ABOVE its bundled version back to the
+  // shipped one. Staged, not immediate: it marks the updated copy for restart
+  // cleanup (so the card shows "Needs Restart", not "Install") and emits
+  // downgradePendingRestart(). On the next launch applyPendingUninstalls removes it
+  // and the host seed restores the bundled version. Safe because the bundled build
+  // ships with the app and is always compatible. No-op if `id` is not a core
+  // extension sitting above its bundled version.
+  void downgradeToBundled(const QString& extension_id);
+
   // Replaces an installed extension. Stages the new version in pending_dir_;
   // applyPendingInstalls() promotes it (backing up the old one) at the next
   // startup, so an update never hot-swaps a loaded DSO.
@@ -61,6 +69,24 @@ class ExtensionManager : public QObject {
 
   // Returns true when the latest disk scan found this extension id.
   bool isInstalled(const QString& id) const;
+
+  // Sets id -> version for the plugins that ship with the application ("core"),
+  // computed by the host from the bundled plugin directory. Membership (not a
+  // per-folder marker) gates uninstall, so it survives updates and needs no
+  // on-disk flag; the version enables the "downgrade to bundled" affordance.
+  void setBundledVersions(const QMap<QString, QString>& id_to_version);
+
+  // Returns true when `id` ships with the application ("core"). A core extension
+  // at its bundled version cannot be uninstalled (uninstall() refuses it, the UI
+  // disables the action); a core extension updated ABOVE its bundled version can
+  // be reverted via "downgrade to bundled". False when no bundled set was provided
+  // (standalone app / --plugin-dir run).
+  bool isBundled(const QString& id) const;
+
+  // The version `id` ships with, or empty if `id` is not core. Used to decide
+  // between the disabled Uninstall (installed == bundled) and the "downgrade to
+  // bundled" action (installed > bundled), and to show the version transition.
+  QString bundledVersion(const QString& id) const;
 
   // Rebuilds installed state by scanning extension directories for plugin DSOs.
   void refreshInstalledFromDisk();
@@ -89,6 +115,16 @@ class ExtensionManager : public QObject {
   // Clears the in-memory diagnostic history.
   void clearDiagnostics();
 
+  // True when a diagnostic has been recorded that has not yet been surfaced to
+  // the user via markDiagnosticsSurfaced(). Lets the UI show a diagnostic on
+  // window open exactly once (diagnostics live here and persist across the
+  // per-open window instances), instead of re-showing a stale one every re-open.
+  bool hasUnsurfacedDiagnostics() const;
+
+  // Marks every diagnostic recorded so far as surfaced, so hasUnsurfacedDiagnostics()
+  // returns false until a newer one arrives.
+  void markDiagnosticsSurfaced();
+
   // Root directory where extension DSOs are discovered and managed.
   QString extensionsDir() const {
     return extensions_dir_;
@@ -109,6 +145,11 @@ class ExtensionManager : public QObject {
   // Emitted with percentage progress for the active download.
   void installProgress(const QString& id, int percent);
 
+  // Reports post-download work whose duration is not covered by installProgress.
+  // See DownloadManager::WorkPhase for the meaning of each value; consumers
+  // should switch their UI to an indeterminate/busy indicator when this fires.
+  void installPhase(const QString& id, PJ::DownloadManager::WorkPhase phase);
+
   // Emitted when install or update completes.
   void installFinished(const QString& id, bool success);
 
@@ -127,6 +168,10 @@ class ExtensionManager : public QObject {
 
   // Emitted when uninstall requires restart cleanup.
   void uninstallPendingRestart(const QString& id);
+
+  // Emitted when a core extension is staged to revert to its bundled version on the
+  // next launch (downgradeToBundled). The card shows "Needs Restart".
+  void downgradePendingRestart(const QString& id);
 
   // Emitted whenever a diagnostic is appended to diagnostics().
   void diagnosticReported(const QString& id, const QString& message, bool is_error);
@@ -157,6 +202,14 @@ class ExtensionManager : public QObject {
   // already populated from the embedded manifest.
   void registerInstalledExtension(const QString& id, const QString& dst, InstalledExtension record);
 
+  // Backs up (or removes) any directory under extensions_dir_ — other than
+  // `keep_dir` — whose embedded plugin id equals `id`. Called before promoting
+  // an install/update so a prior copy stored under a DIFFERENT directory name
+  // (e.g. a bundled plugin in "data-load-foo" for id "foo") is replaced instead
+  // of left behind as a duplicate that refreshInstalledFromDisk would then
+  // resolve non-deterministically by directory name.
+  void replaceConflictingInstallDirs(const QString& id, const QString& keep_dir);
+
   // Emits uninstallError + uninstallFinished(false) and records a diagnostic.
   void emitUninstallFailure(const QString& id, const QString& message);
 
@@ -166,6 +219,11 @@ class ExtensionManager : public QObject {
   DiagnosticSink sink_;
 
   QMap<QString, InstalledExtension> installed_;
+
+  // id -> version for the plugins that ship with the application ("core"), set by
+  // the host via setBundledVersions(). Membership locks uninstall (isBundled); the
+  // version drives the downgrade-to-bundled affordance. Empty by default.
+  QMap<QString, QString> bundled_versions_;
 
   // Non-empty while a fetch is running; guards against concurrent install() calls.
   QString pending_id_;
@@ -181,9 +239,15 @@ class ExtensionManager : public QObject {
   // promotes a staged update; used for failure diagnostics.
   QString pending_backup_path_;
   QList<ExtensionDiagnostic> diagnostics_;
+  // Monotonic count of every diagnostic ever recorded (never reset by the
+  // kMaxDiagnostics ring-buffer trim), and how many have been surfaced to the
+  // user. total > surfaced means there is an unsurfaced diagnostic.
+  quint64 diagnostics_recorded_ = 0;
+  quint64 diagnostics_surfaced_ = 0;
 
   // Stored so we can disconnect cleanly after each operation completes.
   QMetaObject::Connection dl_progress_conn_;
+  QMetaObject::Connection dl_phase_conn_;
   QMetaObject::Connection dl_finished_conn_;
   QMetaObject::Connection dl_failed_conn_;
   QMetaObject::Connection dl_cancelled_conn_;

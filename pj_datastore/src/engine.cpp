@@ -332,6 +332,18 @@ void DataEngine::enforceRetention(Timestamp retention_window_ns, DatasetId datas
   }
 }
 
+void DataEngine::evictTopicHistory(TopicId topic_id) {
+  std::unique_lock<std::recursive_mutex> lock(impl_->mutex_);
+  auto it = impl_->topics.find(topic_id);
+  if (it == impl_->topics.end()) {
+    return;
+  }
+  auto& storage = *it.value();
+  if (!storage.empty()) {
+    storage.evictBefore(storage.timeMax() + 1);
+  }
+}
+
 void DataEngine::retireTopic(TopicId topic_id) {
   std::unique_lock<std::recursive_mutex> lock(impl_->mutex_);
   // Mirror replaceDatasetFrom's retire: exclude the id from listTopics (the catalog

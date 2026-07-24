@@ -4,13 +4,13 @@
  <widget class="QWidget" name="DiagnosticsDetailContent">
   <layout class="QVBoxLayout" name="bodyLayout">
    <property name="leftMargin"><number>16</number></property>
-   <property name="topMargin"><number>12</number></property>
+   <property name="topMargin"><number>16</number></property>
    <property name="rightMargin"><number>16</number></property>
    <property name="bottomMargin"><number>16</number></property>
    <property name="spacing"><number>8</number></property>
    <item>
     <layout class="QFormLayout" name="metadataLayout">
-     <property name="horizontalSpacing"><number>12</number></property>
+     <property name="horizontalSpacing"><number>16</number></property>
      <property name="verticalSpacing"><number>4</number></property>
      <item row="0" column="0"><widget class="QLabel" name="labelLevel"><property name="text"><string>Level</string></property></widget></item>
      <item row="0" column="1"><widget class="QLabel" name="detailLevel"><property name="text"><string/></property></widget></item>
@@ -33,16 +33,14 @@
      <item>
       <spacer name="footerSpacer">
        <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
-       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+       <property name="sizeHint" stdset="0"><size><width>16</width><height>20</height></size></property>
       </spacer>
      </item>
      <item>
-      <widget class="QToolButton" name="buttonCopy">
+      <widget class="QPushButton" name="buttonCopy">
        <property name="text"><string>Copy</string></property>
        <property name="toolTip"><string>Copy to clipboard</string></property>
-       <property name="toolButtonStyle"><enum>Qt::ToolButtonStyle::ToolButtonTextBesideIcon</enum></property>
        <property name="iconSize"><size><width>16</width><height>16</height></size></property>
-       <property name="autoRaise"><bool>true</bool></property>
       </widget>
      </item>
     </layout>

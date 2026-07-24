@@ -10,40 +10,32 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded runs on PRs only. Push-to-main runs publish any Conan
+  # binaries built from source to Artifactory for subsequent jobs.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  pre-commit:
-    if: github.event.pull_request.draft == false
-    uses: ./.github/workflows/pre-commit.yml
-    permissions:
-      contents: read
-
+  # pre-commit runs once per PR cycle, from linux-ci.yml.
   build:
     if: github.event.pull_request.draft == false
-    needs: pre-commit
-    runs-on: windows-latest
-    # PJ4 v1 is Linux-only by policy (see CLAUDE.md). This job runs as a
-    # portability tracker: it surfaces POSIX-isms early without blocking
-    # PRs while the codebase converges on cross-platform cleanliness.
+    # Keep the application CI ABI-compatible with the published official
+    # plugins and windows-release.yml. windows-latest now selects VS18/MSVC
+    # 14.5x, while both release pipelines deliberately use VS2022/MSVC 14.44.
+    # Pinning this also lets CI and the installer share the same sccache objects
+    # and Conan package IDs instead of maintaining two Windows toolchain graphs.
+    runs-on: depot-windows-2022-4
+    # Windows is a required shipped target (CLAUDE.md), but this job stays
+    # non-blocking for now: Windows runtime packaging is still being
+    # productionized, so failures surface on the PR without gating the merge.
     continue-on-error: true
-    # Backstop against hangs (a deadlocked test otherwise holds the runner for
-    # GitHub's 6-hour default). Worst observed legitimate run — cold sccache —
-    # is ~59 min.
-    timeout-minutes: 90
+    # Backstop against hangs (a deadlocked build otherwise holds the runner for
+    # GitHub's 6-hour default). A first run can still rebuild a missing Conan
+    # closure from source before the cache save persists it, then compile the
+    # app with a cold sccache. Keep enough margin for that bootstrap case.
+    # 150 leaves margin over that while still catching real hangs.
+    timeout-minutes: 150
     permissions:
       contents: read
-      packages: write   # push/pull the Conan cache OCI artifact on ghcr.io
-
-    env:
-      # Pin sccache's object cache to a known path so actions/cache can persist
-      # it across runs (see the "Restore/Save sccache cache" steps). Without a
-      # persisted cache, sccache's local disk starts empty every run — a 0% hit
-      # rate that forces all ~585 translation units to recompile cold (~30 min).
-      # SCCACHE_CACHE_SIZE bounds the dir so the cached artifact stays well under
-      # the 10 GB Actions-cache budget shared with the Conan/Qt caches.
-      SCCACHE_DIR: ${{ github.workspace }}/.sccache
-      SCCACHE_CACHE_SIZE: "2G"
 
     steps:
       - name: Use HTTPS for github.com submodules
@@ -54,219 +46,185 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Read versions
+        id: versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ./versions.env
+          echo "PJ_APP_VERSION=${PJ_APP_VERSION}" >> "${GITHUB_ENV}"
+          echo "PJ_QT_VERSION=${PJ_QT_VERSION}" >> "${GITHUB_ENV}"
+          echo "PJ_APPIMAGE_ARCH=${PJ_APPIMAGE_ARCH}" >> "${GITHUB_ENV}"
+          echo "app_version=${PJ_APP_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "qt_version=${PJ_QT_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "appimage_arch=${PJ_APPIMAGE_ARCH}" >> "${GITHUB_OUTPUT}"
+
       - uses: conan-io/setup-conan@v1
         with:
-          # Backed by ghcr.io via oras (see steps below) instead of
-          # actions/cache (10 GB soft cap, 7-day eviction, branch-scoped).
-          # ghcr.io public repos: unlimited storage, tags survive forever,
-          # cross-branch.
+          # Binaries come from the Depot-backed Actions cache below, with
+          # ConanCenter source builds as the fallback. Do not also archive
+          # ~/.conan2 through setup-conan itself.
           cache_packages: false
 
-      - name: Setup oras (OCI Registry As Storage)
-        # Primary install path. continue-on-error so a 5xx on the github.com
-        # release CDN doesn't kill CI — we have a fallback below, and worst
-        # case we degrade to "no Conan cache this run" (build still completes).
-        id: setup_oras
-        uses: oras-project/setup-oras@v1
-        continue-on-error: true
+      - name: Setup MSVC environment
+        # Conan's package ID includes the detected compiler settings, so activate
+        # MSVC before detecting the profile or resolving Artifactory binaries.
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
 
-      - name: Setup oras (manual download fallback)
-        # Only fires if setup-oras failed. Re-download from the same release
-        # URL but with longer exponential backoff (5 retries) — covers brief
-        # 5xx blips that exceed the action's built-in retry budget.
-        id: setup_oras_fallback
-        if: steps.setup_oras.outcome == 'failure'
-        continue-on-error: true
+      - name: Compute Conan cache key
+        id: public_conan_cache
         shell: pwsh
         run: |
-          $version = "1.3.0"
-          $url = "https://github.com/oras-project/oras/releases/download/v$version/oras_${version}_windows_amd64.zip"
-          $zip = Join-Path $env:RUNNER_TEMP "oras.zip"
-          $installDir = Join-Path $env:RUNNER_TEMP "oras-bin"
-          New-Item -ItemType Directory -Force -Path $installDir | Out-Null
-
-          $attempts = 0
-          while ($attempts -lt 5) {
-            try {
-              Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
-              break
-            } catch {
-              $attempts++
-              if ($attempts -ge 5) { throw }
-              $delay = [math]::Pow(2, $attempts) * 5
-              Write-Host "Download attempt $attempts failed: $_. Retry in ${delay}s..."
-              Start-Sleep -Seconds $delay
-            }
-          }
-          Expand-Archive -Path $zip -DestinationPath $installDir -Force
-          "$installDir" | Out-File -FilePath $env:GITHUB_PATH -Append
-          & "$installDir\oras.exe" version
-
-      - name: Compute Conan cache tag
-        id: conan_cache
-        shell: pwsh
-        run: |
-          # Cache identity = CACHE_VERSION salt + conanfile.txt hash. Bump the salt
-          # to evict a poisoned cache: the ghcr.io tag for a given conanfile can be
-          # saved incomplete (e.g. a recipe export folder missing), after which every
-          # restoring build dies during graph resolution — "fmt/<ver>: Cannot load
-          # recipe ... conanfile.py not found", or "Recipe 'fmt/<ver>' seems broken ...
-          # not Conan 2.0 ready" from the same truncated blob. A re-run restores the
-          # same bad blob, so the only fix is a new cache identity that forces a clean
-          # cold rebuild (and a fresh save on the next push-to-main).
-          $cacheVersion = "v4"
-          $fileHash = (Get-FileHash conanfile.txt -Algorithm SHA256).Hash.Substring(0, 16).ToLower()
+          # The runner is pinned to windows-2022 above, so this identity maps to
+          # one stable MSVC/RelWithDebInfo graph. The Depot-backed Actions cache
+          # is the binary store; ConanCenter is the source-build fallback.
+          $cacheVersion = "v6"
+          $combined = (Get-FileHash conanfile.txt -Algorithm SHA256).Hash + (Get-FileHash conan.lock -Algorithm SHA256).Hash
+          $stream = [System.IO.MemoryStream]::new([System.Text.Encoding]::UTF8.GetBytes($combined))
+          $fileHash = (Get-FileHash -InputStream $stream -Algorithm SHA256).Hash.Substring(0, 16).ToLower()
           $hash = "$cacheVersion-$fileHash"
-          $owner = "${{ github.repository_owner }}".ToLower()
-          $tag = "ghcr.io/$owner/pj4-conan-cache:windows-msvc-relwithdebinfo-$hash"
           "hash=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          Write-Host "Cache tag: $tag"
+          "restore_prefix=conan-windows-msvc-relwithdebinfo-$cacheVersion-" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
-      - name: Login to ghcr.io
-        if: github.repository_owner == 'PlotJuggler' && (steps.setup_oras.outcome == 'success' || steps.setup_oras_fallback.outcome == 'success')
-        shell: pwsh
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          $env:GHCR_TOKEN | oras login ghcr.io -u $env:GITHUB_ACTOR --password-stdin
-
-      - name: Restore Conan cache from ghcr.io
-        if: github.repository_owner == 'PlotJuggler' && (steps.setup_oras.outcome == 'success' || steps.setup_oras_fallback.outcome == 'success')
-        shell: pwsh
-        run: |
-          $tag = "${{ steps.conan_cache.outputs.tag }}"
-          $pullDir = Join-Path $env:RUNNER_TEMP "conan-cache-pull"
-          New-Item -ItemType Directory -Force -Path $pullDir | Out-Null
-          Push-Location $pullDir
-          try {
-            oras pull $tag 2>&1 | Out-Host
-            $pulled = $LASTEXITCODE
-          } finally {
-            Pop-Location
-          }
-          $tarball = Join-Path $pullDir "conan-cache.tar.zst"
-          if ($pulled -eq 0 -and (Test-Path $tarball)) {
-            Write-Host "Cache HIT: extracting $tarball"
-            New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.conan2" | Out-Null
-            tar --zstd -xf $tarball -C $env:USERPROFILE
-            "CONAN_CACHE_HIT=1" | Out-File -FilePath $env:GITHUB_ENV -Append
-          } else {
-            Write-Host "Cache MISS for $tag (cold start or first build of this conanfile)"
-          }
-          # Reset exit code so a missing tag doesn't fail the step
-          $global:LASTEXITCODE = 0
-
-      - name: Restore Conan cache from GitHub Actions cache
-        # Fallback layer under the ghcr.io cache above (same rationale as the
-        # Linux job): ghcr.io only restores on the canonical PlotJuggler repo and
-        # only saves on push-to-main, so PRs that touch conanfile.txt and all
-        # fork builds rebuild every Conan dep from source. The native Actions
-        # cache works on PRs/forks with no token and fills that gap. Skipped when
-        # ghcr.io already produced a HIT — %USERPROFILE%\.conan2 is populated.
+      - name: Restore Conan cache
+        # On Depot runners actions/cache is backed by Depot Cache storage.
+        # Prefix fallback: an older closure for the same toolchain still seeds
+        # most packages, so only changed deps rebuild.
         id: conan-gha-cache
-        if: env.CONAN_CACHE_HIT != '1'
         uses: actions/cache/restore@v5
         with:
           path: ~/.conan2
-          key: conan-windows-msvc-relwithdebinfo-${{ steps.conan_cache.outputs.hash }}
+          key: conan-windows-msvc-relwithdebinfo-${{ steps.public_conan_cache.outputs.hash }}
           restore-keys: |
-            conan-windows-msvc-relwithdebinfo-v4-
+            ${{ steps.public_conan_cache.outputs.restore_prefix }}
 
-      - name: Cache Qt
-        id: qt-cache
-        uses: actions/cache@v5
+      - name: Seed Conan source download cache
+        # Some third-party source tarballs live on hosts that reject
+        # GitHub-runner IPs (zlib.net answers HTTP 415; minizip — a hard
+        # requirement of assimp — downloads zlib's tarball from there and has
+        # no mirror in its recipe). Those tarballs are versioned in-repo under
+        # .github/conan/source-backup/, addressed by sha256, and copied into
+        # Conan's source download cache here so a source() fetch is served
+        # locally and never touches the flaky host. Conan still verifies the
+        # recipe-pinned sha256 on every use, and anything not seeded falls
+        # through to the recipe's own URLs as usual. (An HTTP backup via
+        # raw.githubusercontent does NOT work here: this repo is private, so
+        # unauthenticated raw fetches 404.) See
+        # .github/conan/source-backup/README.md.
+        #
+        # The write is idempotent so repeated local runs do not accumulate
+        # duplicate core.sources:download_cache entries.
+        shell: pwsh
+        run: |
+          $cacheDir = (Join-Path $env:RUNNER_TEMP "conan-source-cache").Replace('\', '/')
+          New-Item -ItemType Directory -Force -Path "$cacheDir/s" | Out-Null
+          Get-ChildItem ".github/conan/source-backup" -Exclude "README.md" |
+            Copy-Item -Destination "$cacheDir/s"
+          $conanHome = (conan config home | Out-String).Trim()
+          $conf = Join-Path $conanHome "global.conf"
+          $lines = @()
+          if (Test-Path $conf) {
+            $lines = @(Get-Content $conf | Where-Object { $_ -notmatch '^core\.sources:download_cache=' })
+          }
+          $lines + "core.sources:download_cache=$cacheDir" | Set-Content $conf
+          # Surface the effective conf in the log so a clobber regression is
+          # visible at a glance.
+          Get-Content $conf
+
+      - name: Restore Qt SDK cache
+        # Split restore/save (not actions/cache) so the entry is written by an
+        # explicit step right after the install instead of a post-job save:
+        # push-to-main only, to keep this multi-hundred-MB blob from being
+        # duplicated across PR refs (shared 10 GB budget), and never capturing
+        # a tree mutated by later steps.
+        id: qt-sdk-cache
+        uses: actions/cache/restore@v5
+        with:
+          # Must match windows-release.yml exactly: cache versions include the
+          # path as well as the key.
+          path: .qt/${{ steps.versions.outputs.qt_version }}/msvc2022_64
+          key: qt-sdk-${{ steps.versions.outputs.qt_version }}-windows-msvc2022_64-v1
+
+      - name: Restore canonical main Qt cache
+        # Migration fallback for PR refs: the feature-branch qt-sdk cache is
+        # intentionally not visible to refs/pull/*, while the proven cache
+        # published by current main is. Restoring its original path/key avoids
+        # a 380 MB aqt download now. The next push-to-main will save the same
+        # verified SDK under qt-sdk-* for sharing with windows-release.yml.
+        if: steps.qt-sdk-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v5
         with:
           path: .qt
-          key: qt-6.11.1-windows-msvc2022_64
+          key: qt-${{ steps.versions.outputs.qt_version }}-windows-msvc2022_64
 
-      - name: Install Qt 6.11.1 via aqt
-        # Inline (not install_qt6.sh): that script is Linux-only (gcc_64); this
-        # job needs the win64_msvc2022_64 build. Keep the version in sync with
-        # install_qt6.sh / the cache key above on upgrade.
-        if: steps.qt-cache.outputs.cache-hit != 'true'
+      - name: Verify Qt cache content
+        # actions/cache can report cache-hit=true while the restored tree is
+        # incomplete (interrupted Save, partial eviction). Without this guard
+        # the next step skips aqtinstall and the Configure step then fails with
+        # "Qt not found at $QT_DIR". Probe qmake.exe (the artifact the
+        # rest of the pipeline actually needs) and force a reinstall on miss.
+        id: qt-sdk-verify
         shell: bash
         run: |
-          # Released aqt (<=3.3.0) can't install Qt >= 6.11 on Windows: Qt moved
+          if [[ -x ".qt/${PJ_QT_VERSION}/msvc2022_64/bin/qmake.exe" ]]; then
+            echo "valid=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "valid=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Qt via aqt
+        # Inline (not install_qt6.sh): that script is Linux-only (gcc_64); this
+        # job needs the win64_msvc2022_64 build. The version comes from versions.env.
+        if: steps.qt-sdk-verify.outputs.valid != 'true'
+        shell: bash
+        run: |
+          # Released aqt (<=3.3.0) can't install the pinned Qt on Windows: Qt moved
           # the Windows repo to per-arch folders and released aqt still requests
           # the old nested path (miurahr/aqtinstall#959 / #1007), failing with
-          # "Failed to locate XML data for Qt version '6.11.1'". The fix (PR #1000)
+          # "Failed to locate XML data for Qt version". The fix (PR #1000)
           # is merged but unreleased, so pin to that merge commit.
           # TODO: revert to `pip install 'aqtinstall>=3.3.1'` once it ships.
           pip install "git+https://github.com/miurahr/aqtinstall.git@8c3695d4a4e1ceabf6a74dc6c79681656dc6b74b"
           # Retry with backoff for transient mirror failures.
+          rm -rf ".qt/${PJ_QT_VERSION}/msvc2022_64"
           attempt=0
-          until aqt install-qt windows desktop 6.11.1 win64_msvc2022_64 --outputdir ./.qt; do
+          until aqt install-qt windows desktop "${PJ_QT_VERSION}" win64_msvc2022_64 --outputdir ./.qt; do
             attempt=$((attempt + 1))
             if [ "$attempt" -ge 5 ]; then echo "aqt failed after ${attempt} attempts" >&2; exit 1; fi
             echo "aqt attempt ${attempt} failed (transient mirror?); retrying in $((attempt * 15))s..."
             sleep $((attempt * 15))
           done
 
+      - name: Save Qt SDK cache
+        # Immutable, version-keyed blob: saved once per Qt version, from a
+        # push-to-main run (see the restore step's comment for why not per-PR).
+        if: github.event_name == 'push' && steps.qt-sdk-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: .qt/${{ steps.versions.outputs.qt_version }}/msvc2022_64
+          key: qt-sdk-${{ steps.versions.outputs.qt_version }}-windows-msvc2022_64-v1
+
       - name: Install sccache
         # sccache is a compile-cache speedup, NOT load-bearing: the build is
         # correct without it, just slower. So this step must never fail the run.
-        # `version` is pinned because the default `latest` does a GitHub API
-        # release lookup that intermittently returns undefined ("Unable to
-        # locate executable file: undefined") and was red-X'ing this job — and
-        # main's — for builds that have nothing to do with sccache.
-        # continue-on-error + the outcome gate in Build mirror the graceful
-        # degradation already used for oras above.
+        # The action only installs the binary; the backend is Depot Cache via
+        # the SCCACHE_WEBDAV_* env vars the Depot runner pre-sets — an org-wide
+        # object store shared with windows-release.yml and the Pixi win-64 leg.
+        # The outcome gate in Build keeps this optional if installation flakes.
         id: setup_sccache
         continue-on-error: true
-        uses: mozilla-actions/sccache-action@v0.0.9
+        uses: mozilla-actions/sccache-action@v0.0.10
         with:
-          version: "v0.8.2"
+          version: "v0.16.0"
 
-      - name: Restore sccache cache
-        # The decisive Windows-CI speedup. With a warm cache, almost all ~585
-        # translation units become cache fetches instead of cold MSVC compiles,
-        # cutting the Build step from ~30 min to a few minutes. Rolling key
-        # (per-SHA) + prefix restore-keys: each run restores the most recent
-        # cache and the Save step persists a fresh superset, so the warm set
-        # accumulates run over run. Same within-PR scope that already lets the
-        # Conan GHA cache below hit across synchronize events.
-        id: sccache-cache
-        uses: actions/cache/restore@v5
-        with:
-          path: ${{ github.workspace }}/.sccache
-          key: sccache-windows-msvc-relwithdebinfo-${{ github.sha }}
-          restore-keys: |
-            sccache-windows-msvc-relwithdebinfo-
-
-      - name: Setup MSVC environment
-        # Loads cl.exe / link.exe / rc.exe etc. into PATH so the Ninja
-        # generator can find them. The VS generator did this implicitly;
-        # Ninja does not.
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-
-      - name: Build
+      - name: Conan install
+        # The restored closure supplies prebuilt binaries; ConanCenter covers
+        # (and builds from source) anything missing.
+        id: conan_install
         shell: bash
-        env:
-          # sccache uses its LOCAL-DISK cache (relocated to SCCACHE_DIR at job
-          # level) which the "Restore/Save sccache cache" steps persist across
-          # runs via actions/cache. We intentionally do NOT set
-          # SCCACHE_GHA_ENABLED: sccache 0.8.2's native GHA backend needs
-          # ACTIONS_CACHE_URL, a legacy runner env var GitHub retired in favor
-          # of the v2 cache service, so enabling it makes the sccache server
-          # fail to start ("ACTIONS_CACHE_URL not found") and every compile dies
-          # with exit 2. Persisting the local-disk dir ourselves sidesteps that
-          # while still giving cross-run compiler caching (the Conan third-party
-          # closure is cached separately by the ghcr.io / actions cache steps).
-          #
-          # "true" only if the install step actually succeeded; gates the
-          # compiler-launcher wiring below so a flaked sccache install degrades
-          # to an uncached (but correct) build instead of failing.
-          SCCACHE_AVAILABLE: ${{ steps.setup_sccache.outcome == 'success' }}
         run: |
-          QT_DIR="$(pwd)/.qt/6.11.1/msvc2022_64"
-          if [[ ! -d "$QT_DIR" ]]; then
-            echo "::error::Qt 6.11.1 not found at $QT_DIR"
-            exit 1
-          fi
-
           conan profile detect --force
           # Tell Conan to generate a Ninja-compatible toolchain. Without this
           # override Conan auto-picks "Visual Studio 17 2022" and stamps the
@@ -281,10 +239,47 @@ jobs:
           # CRT-compatible with the rest of the RelWithDebInfo graph (both use the
           # release /MD runtime). Both overrides are scoped to cpython only and
           # Windows-CI-only; Linux links CPython statically.
-          conan install . --output-folder=build --build=missing \
+          conan_log="${RUNNER_TEMP}/pj4-conan-install.log"
+          conan install . --output-folder=build --build=missing -r=conancenter \
+            --lockfile=conan.lock --lockfile-partial \
             -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
             -o "cpython/*:shared=True" -s "cpython/*:build_type=Release" \
-            -c tools.cmake.cmaketoolchain:generator="Ninja Multi-Config"
+            -c tools.cmake.cmaketoolchain:generator="Ninja Multi-Config" \
+            2>&1 | tee "$conan_log"
+          if grep -q "Building from source" "$conan_log"; then
+            echo "::notice::Conan built missing binaries; the cache save below persists them."
+          fi
+
+      - name: Trim Conan cache before saving
+        # Drop build/source/temp trees so only recipes and package binaries
+        # persist.
+        if: always() && steps.conan-gha-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: conan cache clean "*" --build --source --temp || true
+
+      - name: Save Conan cache
+        # always(): a failed app compile must still persist the expensive
+        # third-party closure. Immutable keys make a re-save a no-op, so skip
+        # only on an exact-key hit.
+        if: always() && steps.conan-gha-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.conan2
+          key: conan-windows-msvc-relwithdebinfo-${{ steps.public_conan_cache.outputs.hash }}
+
+      - name: Build
+        shell: bash
+        env:
+          # "true" only if the install step actually succeeded; gates the
+          # compiler-launcher wiring below so a flaked sccache install degrades
+          # to an uncached (but correct) build instead of failing.
+          SCCACHE_AVAILABLE: ${{ steps.setup_sccache.outcome == 'success' }}
+        run: |
+          QT_DIR="$(pwd)/.qt/${PJ_QT_VERSION}/msvc2022_64"
+          if [[ ! -d "$QT_DIR" ]]; then
+            echo "::error::Qt ${PJ_QT_VERSION} not found at $QT_DIR"
+            exit 1
+          fi
 
           # Use Ninja Multi-Config so sccache is actually invoked: CMake's
           # CMAKE_<LANG>_COMPILER_LAUNCHER is honored by the Ninja and
@@ -329,78 +324,7 @@ jobs:
           # appear in the Build step's log next to the compile output.
           if [[ "$SCCACHE_AVAILABLE" == "true" ]]; then
             sccache --show-stats
-            # Flush the on-disk cache and release file handles so the
-            # "Save sccache cache" step archives a complete, consistent dir.
-            sccache --stop-server || true
           fi
-
-      - name: Save sccache cache
-        # Persist the now-warm compiler cache for the next run. always() so a
-        # partial cache from a failed compile is still saved (a continue-on-error
-        # job means the build may not succeed); the cache-hit guard skips the
-        # no-op save when this exact SHA's cache already exists (keys are
-        # immutable). On a prefix-only restore (the normal synchronize case)
-        # cache-hit is false, so a fresh superset is saved.
-        if: always() && steps.sccache-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
-        with:
-          path: ${{ github.workspace }}/.sccache
-          key: sccache-windows-msvc-relwithdebinfo-${{ github.sha }}
-
-      - name: Save Conan cache to ghcr.io
-        # Only push from the canonical repo on real pushes (forks lack write
-        # access to ghcr.io packages). Skip on cache HIT — the tag content is
-        # already up to date, no point re-uploading the same bytes.
-        # `!cancelled()` lets us save the cache even when the project compile
-        # step (`cmake --build`) fails — Conan deps finished long before, so
-        # the cache is fully populated and worth preserving for the next run.
-        if: |
-          !cancelled() &&
-          github.event_name == 'push' &&
-          github.repository == 'PlotJuggler/PJ4' &&
-          env.CONAN_CACHE_HIT != '1' &&
-          (steps.setup_oras.outcome == 'success' || steps.setup_oras_fallback.outcome == 'success')
-        shell: pwsh
-        run: |
-          $tag = "${{ steps.conan_cache.outputs.tag }}"
-          $tarball = Join-Path $env:RUNNER_TEMP "conan-cache.tar.zst"
-
-          # Trim build trees before packing so the uploaded artifact only
-          # contains the package binaries consumers actually need.
-          conan cache clean "*" --build --source --temp
-
-          Write-Host "Packing ~/.conan2 -> $tarball"
-          tar --zstd -cf $tarball -C $env:USERPROFILE .conan2
-
-          $size = (Get-Item $tarball).Length / 1MB
-          Write-Host ("Compressed cache size: {0:N1} MB" -f $size)
-
-          Push-Location $env:RUNNER_TEMP
-          try {
-            oras push $tag "conan-cache.tar.zst:application/vnd.oci.image.layer.v1.tar+zstd"
-          } finally {
-            Pop-Location
-          }
-
-      - name: Trim Conan cache before saving
-        # Drop build/source/temp trees so only the package binaries are persisted
-        # (matches the ghcr.io save above). Runs only when about to save a fresh
-        # GHA cache entry.
-        if: always() && env.CONAN_CACHE_HIT != '1' && steps.conan-gha-cache.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: conan cache clean "*" --build --source --temp; $global:LASTEXITCODE = 0
-
-      - name: Save Conan cache to GitHub Actions cache
-        # Persist the built closure under the exact conanfile hash so the next
-        # run on this branch (or any identically-keyed branch) restores it.
-        # `always()` so a failing project compile still saves the third-party
-        # deps that finished earlier. Skipped on a ghcr.io HIT or exact GHA-key
-        # hit: %USERPROFILE%\.conan2 is already current and GHA keys are immutable.
-        if: always() && env.CONAN_CACHE_HIT != '1' && steps.conan-gha-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
-        with:
-          path: ~/.conan2
-          key: conan-windows-msvc-relwithdebinfo-${{ steps.conan_cache.outputs.hash }}
 
       - name: Test
         # Prepend Qt's and FFmpeg's bin/ dirs to PATH so the OS loader can resolve
@@ -409,18 +333,12 @@ jobs:
         # (STATUS_DLL_NOT_FOUND) before any test code runs.
         shell: bash
         run: |
-          export PATH="$(pwd)/.qt/6.11.1/msvc2022_64/bin:$PATH"
+          export PATH="$(pwd)/.qt/${PJ_QT_VERSION}/msvc2022_64/bin:$PATH"
           # FFmpeg's Conan bin dir(s) are emitted at configure time by
           # pj_scene2D/core/CMakeLists.txt (Conan's package path is hashed and not
           # knowable here). Prepend each so every exe that transitively links
           # pj_scene2d_core resolves the FFmpeg DLLs — covers all such tests at once,
           # no per-target list.
-          #
-          # DEFERRED: a shipped Windows pj_app.exe needs these same 4 DLLs at startup.
-          # PJ4 v1 is Linux-only and this job is a non-blocking portability tracker,
-          # so real packaging (windeployqt + bundling the FFmpeg DLLs via CPack/
-          # install) is intentionally NOT done here. Wire that up when Windows
-          # becomes a supported release target.
           if [[ -f build/pj_ffmpeg_bin_dirs.txt ]]; then
             while IFS= read -r _d; do
               [[ -n "$_d" ]] && export PATH="$(cygpath -u "$_d"):$PATH"

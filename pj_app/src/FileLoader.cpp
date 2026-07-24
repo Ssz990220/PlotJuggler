@@ -5,23 +5,29 @@
 
 #include <QCoreApplication>
 #include <QFileInfo>
+#include <QFontDatabase>
+#include <QFrame>
+#include <QHBoxLayout>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLabel>
 #include <QLoggingCategory>
-#include <QMessageBox>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSettings>
 #include <QString>
 #include <QStringList>
+#include <QStyle>
 #include <QThread>
+#include <QVBoxLayout>
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -41,9 +47,13 @@
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_widgets/transform_service.h"
+#include "pj_widgets/Dialog.h"
 #include "pj_widgets/FileDialog.h"
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/MessageBox.h"
 #include "pj_widgets/ProgressDialog.h"
+#include "pj_widgets/SvgUtil.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -56,7 +66,7 @@ constexpr const char* kPluginConfigKeyPrefix = "PluginConfig/";
 
 QString normalizeExtension(const QString& path) {
   const QString suffix = QFileInfo(path).suffix();
-  return suffix.isEmpty() ? QString() : QStringLiteral(".") + suffix.toLower();
+  return suffix.isEmpty() ? QString() : u"."_s + suffix.toLower();
 }
 
 // Merge the file path into the (possibly empty) saved JSON config. Saved
@@ -72,13 +82,150 @@ std::string buildLoadConfig(std::string_view saved_config, const QString& path) 
       obj = doc.object();
     }
   }
-  obj.insert(QStringLiteral("filepath"), path);
+  obj.insert(u"filepath"_s, path);
   const QByteArray out = QJsonDocument(obj).toJson(QJsonDocument::Compact);
   return std::string(out.constData(), static_cast<std::size_t>(out.size()));
 }
 
 QString pluginConfigKey(const std::string& plugin_id) {
   return QString::fromLatin1(kPluginConfigKeyPrefix) + QString::fromStdString(plugin_id);
+}
+
+// A long plugin message (e.g. a per-row list of thousands of skipped CSV
+// lines) would stretch a plain QMessageBox label past the screen and push
+// the action buttons out of reach. Render it in an app-styled PJ::Dialog
+// (same chrome as DiagnosticsDetailDialog): themed icon + summary on top, the
+// error text in a read-only monospace scroll view that manages its own space,
+// and role-styled buttons at the bottom. The scroll view bounds the dialog,
+// so it never grows past the screen no matter how many lines the plugin sends.
+//
+// A namespace-scope function rather than a branch inside the message-box
+// handler's nested lambdas: MSVC's front end rejects by-ref captures through
+// that lambda chain (bogus C3493 "'this' cannot be implicitly captured" /
+// C2065 '__this'), so the dialog construction lives here.
+//
+// Returns the PJ_MSG_BTN_* mask of the clicked button; a window-close (✕ /
+// Esc) returns -1, i.e. neither Continue nor OK — the caller treats that as
+// "do not proceed".
+int execScrollableMessageDialog(
+    QWidget* dialog_parent, const QString& q_title, const QString& q_text, int type, int buttons) {
+  // Keep the first line as the summary (the non-scrolling label) and
+  // route everything else into the bounded scroll view. Producers put
+  // a one-line summary first; anything longer must scroll, never
+  // inflate the label -- otherwise we reproduce the very overflow this
+  // dialog exists to prevent. (A leading blank line, when a producer
+  // separates summary from detail with "\n\n", is dropped by trimmed().)
+  const qsizetype nl = q_text.indexOf(QLatin1Char('\n'));
+  const QString head = nl < 0 ? q_text : q_text.left(nl);
+  const QString body = nl < 0 ? QString() : q_text.mid(nl + 1).trimmed();
+
+  QString icon_path = u":/resources/svg/diag_info.svg"_s;
+  if (type == PJ_MESSAGE_BOX_ERROR) {
+    icon_path = u":/resources/svg/diag_error.svg"_s;
+  } else if (type == PJ_MESSAGE_BOX_WARNING || type == PJ_MESSAGE_BOX_QUESTION) {
+    icon_path = u":/resources/svg/diag_warning.svg"_s;
+  }
+
+  Dialog dlg(dialog_parent);
+  dlg.setDialogTitle(q_title);
+  dlg.setMinimumSize(520, 360);
+  dlg.resize(560, 480);
+
+  auto* body_widget = new QWidget;
+  auto* vbox = new QVBoxLayout(body_widget);
+  vbox->setContentsMargins(
+      PJ::theme::space(theme::Space::Section), PJ::theme::space(theme::Space::Section),
+      PJ::theme::space(theme::Space::Section), PJ::theme::space(theme::Space::Section));
+  vbox->setSpacing(PJ::theme::space(theme::Space::Comfortable));
+
+  auto* header = new QHBoxLayout();
+  header->setSpacing(PJ::theme::space(theme::Space::Section));
+  auto* icon_label = new QLabel(body_widget);
+  // Use the (already-shown) parent's DPR; the dialog has no screen yet.
+  const qreal dpr = dialog_parent != nullptr ? dialog_parent->devicePixelRatioF() : dlg.devicePixelRatioF();
+  QPixmap icon_pm = renderSvgPixmap(icon_path, currentTheme(), QSize(32, 32), dpr);
+  if (icon_pm.isNull()) {
+    // A missing bundled resource shouldn't drop the severity cue.
+    QStyle::StandardPixmap sp = QStyle::SP_MessageBoxInformation;
+    if (type == PJ_MESSAGE_BOX_ERROR) {
+      sp = QStyle::SP_MessageBoxCritical;
+    } else if (type == PJ_MESSAGE_BOX_WARNING || type == PJ_MESSAGE_BOX_QUESTION) {
+      sp = QStyle::SP_MessageBoxWarning;
+    }
+    icon_pm = dlg.style()->standardIcon(sp).pixmap(32, 32);
+  }
+  icon_label->setPixmap(icon_pm);
+  header->addWidget(icon_label, 0, Qt::AlignTop);
+  auto* head_label = new QLabel(head, body_widget);
+  head_label->setWordWrap(true);
+  header->addWidget(head_label, 1);
+  vbox->addLayout(header);
+
+  // Read-only, monospace scroll view (the CurveTreeView FixedFont
+  // idiom): it scrolls its own content, so the dialog stays bounded.
+  // Skipped for a short (single-line) message — no detail to scroll, so the
+  // dialog stays compact instead of showing an empty scroll area.
+  if (!body.isEmpty()) {
+    auto* body_view = new QPlainTextEdit(body, body_widget);
+    body_view->setReadOnly(true);
+    body_view->setFrameShape(QFrame::NoFrame);
+    body_view->setLineWrapMode(QPlainTextEdit::NoWrap);
+    QFont mono = body_view->font();
+    mono.setFamily(QFontDatabase::systemFont(QFontDatabase::FixedFont).family());
+    mono.setStyleHint(QFont::Monospace);
+    body_view->setFont(mono);
+    vbox->addWidget(body_view, 1);
+  }
+
+  // App button idiom (see PJ::MessageBox): objectName + msgbox_role
+  // dynamic property drive the themed look (primary = brand gradient,
+  // cancel = subtler). No QDialogButtonBox — the app reserves that for
+  // plugin-hosted dialogs.
+  struct BtnSpec {
+    int mask;
+    const char* label;
+    const char* role;
+  };
+  const BtnSpec specs[] = {
+      {PJ_MSG_BTN_OK, QT_TR_NOOP("OK"), "primary"},      {PJ_MSG_BTN_YES, QT_TR_NOOP("Yes"), "primary"},
+      {PJ_MSG_BTN_NO, QT_TR_NOOP("No"), "neutral"},      {PJ_MSG_BTN_CONTINUE, QT_TR_NOOP("Continue"), "primary"},
+      {PJ_MSG_BTN_ABORT, QT_TR_NOOP("Abort"), "cancel"}, {PJ_MSG_BTN_CANCEL, QT_TR_NOOP("Cancel"), "cancel"},
+  };
+  // Fall back to a lone OK when the plugin passed no button we render
+  // (mirrors the QMessageBox path in the caller); specs[0] is that OK entry.
+  int wanted = buttons;
+  int known = 0;
+  for (const auto& s : specs) {
+    known |= s.mask;
+  }
+  if ((wanted & known) == 0) {
+    wanted = PJ_MSG_BTN_OK;
+  }
+
+  auto* footer = new QHBoxLayout();
+  footer->addStretch(1);
+  int chosen = -1;
+  for (const auto& s : specs) {
+    if ((wanted & s.mask) == 0) {
+      continue;
+    }
+    auto* btn = new QPushButton(QObject::tr(s.label), body_widget);
+    btn->setObjectName(u"pjMessageBoxButton"_s);
+    btn->setProperty("msgbox_role", QLatin1String(s.role));
+    btn->setAutoDefault(false);
+    btn->setDefault(std::strcmp(s.role, "primary") == 0);
+    const int code = s.mask;
+    QObject::connect(btn, &QPushButton::clicked, &dlg, [&chosen, code, &dlg]() {
+      chosen = code;
+      dlg.accept();
+    });
+    footer->addWidget(btn);
+  }
+  vbox->addLayout(footer);
+
+  dlg.contentLayout()->addWidget(body_widget);
+  dlg.exec();
+  return chosen;
 }
 
 }  // namespace
@@ -210,7 +357,10 @@ bool FileLoader::beginLoad(const LoadRequest& request) {
     // dataset so no reader/adapter can keep a dangling TopicStorage pointer.
     session_.evictDatasetObjects(created_live_dataset_id);
     catalog_.removeDataset(created_live_dataset_id, /*tombstone=*/false);
-    session_.dataEngine().removeDataset(created_live_dataset_id);
+    // Route through SessionManager::removeDataset (not dataEngine directly) so the
+    // dataset's pinned time-origin is invalidated and the global reframe fires if
+    // dropping it moved the earliest sample across the surviving datasets.
+    session_.removeDataset(created_live_dataset_id);
     created_live_dataset_id = 0;
   };
 
@@ -276,8 +426,8 @@ bool FileLoader::beginLoad(const LoadRequest& request) {
     // Basename matches; require the same file on disk too. A dataset with no
     // recorded path (created outside FileLoader, e.g. streaming/test data)
     // keeps the legacy basename-only behavior.
-    if (const auto path_it = dataset_source_path_.find(existing_id);
-        path_it != dataset_source_path_.end() && !layout_xml::isSamePath(path_it->second, path)) {
+    if (const QString tracked_path = session_.datasetSourcePath(existing_id);
+        !tracked_path.isEmpty() && !layout_xml::isSamePath(tracked_path, path)) {
       continue;
     }
     if (hints.prefer_reuse) {
@@ -287,14 +437,17 @@ bool FileLoader::beginLoad(const LoadRequest& request) {
       // right file's config when reloading any of its sources.
       QString emit_config = hints.preset_config_json;
       if (emit_config.isEmpty()) {
+        // loadedSources() paths are stored normalized; compare canonically so a
+        // symlink/relative alias of a tracked file still recovers its config.
         const auto& prior = session_.loadedSources();
-        const auto it = std::find_if(prior.begin(), prior.end(), [&path](const auto& src) { return src.path == path; });
+        const auto it = std::find_if(
+            prior.begin(), prior.end(), [&path](const auto& src) { return layout_xml::isSamePath(src.path, path); });
         if (it != prior.end()) {
           emit_config = it->plugin_config_json;
         }
       }
       catalog_.restoreDataset(existing_id);
-      dataset_source_path_[existing_id] = path;
+      session_.setDatasetSourcePath(existing_id, path);
       emit fileLoaded(path, QString(), source_name, emit_config);
       return false;  // layout-replay reuse: done synchronously, no worker
     }
@@ -361,55 +514,10 @@ bool FileLoader::beginLoad(const LoadRequest& request) {
           // the user closes the modal (the documented blocking semantics). On the fanout path
           // we are already on the GUI thread, so call directly to avoid a self-deadlock.
           auto show = [&]() -> int {
-            QMessageBox msg_box(dialog_parent);
-            msg_box.setWindowTitle(q_title);
-            msg_box.setText(q_text);
-            switch (type) {
-              case PJ_MESSAGE_BOX_WARNING:
-                msg_box.setIcon(QMessageBox::Warning);
-                break;
-              case PJ_MESSAGE_BOX_ERROR:
-                msg_box.setIcon(QMessageBox::Critical);
-                break;
-              case PJ_MESSAGE_BOX_QUESTION:
-                msg_box.setIcon(QMessageBox::Question);
-                break;
-              default:
-                msg_box.setIcon(QMessageBox::Information);
-                break;
-            }
-            QPushButton* btn_ok = (buttons & PJ_MSG_BTN_OK) ? msg_box.addButton(QMessageBox::Ok) : nullptr;
-            QPushButton* btn_cancel = (buttons & PJ_MSG_BTN_CANCEL) ? msg_box.addButton(QMessageBox::Cancel) : nullptr;
-            QPushButton* btn_yes = (buttons & PJ_MSG_BTN_YES) ? msg_box.addButton(QMessageBox::Yes) : nullptr;
-            QPushButton* btn_no = (buttons & PJ_MSG_BTN_NO) ? msg_box.addButton(QMessageBox::No) : nullptr;
-            QPushButton* btn_continue = (buttons & PJ_MSG_BTN_CONTINUE)
-                                            ? msg_box.addButton(QObject::tr("Continue"), QMessageBox::AcceptRole)
-                                            : nullptr;
-            QPushButton* btn_abort = (buttons & PJ_MSG_BTN_ABORT)
-                                         ? msg_box.addButton(QObject::tr("Abort"), QMessageBox::RejectRole)
-                                         : nullptr;
-
-            msg_box.exec();
-            const auto* clicked = msg_box.clickedButton();
-            if (clicked == btn_continue) {
-              return PJ_MSG_BTN_CONTINUE;
-            }
-            if (clicked == btn_abort) {
-              return PJ_MSG_BTN_ABORT;
-            }
-            if (clicked == btn_yes) {
-              return PJ_MSG_BTN_YES;
-            }
-            if (clicked == btn_no) {
-              return PJ_MSG_BTN_NO;
-            }
-            if (clicked == btn_ok) {
-              return PJ_MSG_BTN_OK;
-            }
-            if (clicked == btn_cancel) {
-              return PJ_MSG_BTN_CANCEL;
-            }
-            return -1;
+            // Every host-shown plugin message uses the app-styled dialog (PJ::Dialog,
+            // no system/GNOME chrome): it scrolls long detail (per-row lists of
+            // thousands of skipped CSV lines) and stays compact for short text.
+            return execScrollableMessageDialog(dialog_parent, q_title, q_text, type, buttons);
           };
 
           if (QThread::currentThread() == qApp->thread()) {
@@ -540,11 +648,9 @@ bool FileLoader::beginLoad(const LoadRequest& request) {
   // (Primary = Cancel/keep, Secondary = Discard).
   ProgressDialog progress_dlg(dialog_parent);
   progress_dlg.setPrimaryButton(
-      tr("Cancel"), QStringLiteral(":/resources/svg/cancel_keep.svg"),
-      tr("Stop reading; keep the data parsed so far."));
+      tr("Cancel"), u":/resources/svg/cancel_keep.svg"_s, tr("Stop reading; keep the data parsed so far."));
   progress_dlg.setSecondaryButton(
-      tr("Discard"), QStringLiteral(":/resources/svg/cancel_discard.svg"),
-      tr("Stop reading and discard the partial data."));
+      tr("Discard"), u":/resources/svg/cancel_discard.svg"_s, tr("Stop reading and discard the partial data."));
 
   // Progress callbacks are re-wired per ingest_session (once for single-instance,
   // N times in fanout mode) — the dialog itself is shared.
@@ -695,6 +801,9 @@ bool FileLoader::beginLoad(const LoadRequest& request) {
     // remove-then-fresh: tombstone the existing dataset now (objects evicted past the rollback point below) and let
     // the fanout create fresh datasets on the live engine. The handle bound to existing_primary_id above is never
     // start()ed here (fanout mints its own per-entry handles), so the dataset takes no data before its removal.
+    if (replacing) {
+      emit sourceReplacementAboutToCommit(path);
+    }
     if (replacing && catalog_.removeDataset(existing_primary_id)) {
       tombstoned_for_replace.push_back(existing_primary_id);
     }
@@ -852,7 +961,9 @@ bool FileLoader::beginLoad(const LoadRequest& request) {
       transform_service_->invalidateDataset(tombstoned_id);
     }
     session_.evictDatasetObjects(tombstoned_id);
-    engine.removeDataset(tombstoned_id);
+    // Via SessionManager::removeDataset for the origin invalidate + reframe (see the
+    // non-replacing cleanup lambda near the top of loadFile).
+    session_.removeDataset(tombstoned_id);
   }
   tombstoned_for_replace.clear();
 
@@ -891,10 +1002,23 @@ bool FileLoader::beginLoad(const LoadRequest& request) {
   // id (existing on reload, else the fresh one). Fanout: each dataset that took
   // data.
   if (fanouts.size() == 1) {
-    dataset_source_path_[dataset_id] = path;
+    session_.setDatasetSourcePath(dataset_id, path);
   } else {
     for (const DatasetId loaded_id : fanout_loaded_ids) {
-      dataset_source_path_[loaded_id] = path;
+      session_.setDatasetSourcePath(loaded_id, path);
+    }
+  }
+
+  // The synchronous load committed its rows straight to DataEngine via the plugin
+  // write host, bypassing SessionManager::commitChunks — so the cross-dataset time
+  // origin was never re-evaluated. Refresh it per loaded dataset: a file whose data
+  // is EARLIER than any prior dataset must reframe every plot. No-op when "Use time
+  // offset" is off.
+  if (fanouts.size() == 1) {
+    session_.refreshDatasetTimeReference(dataset_id);
+  } else {
+    for (const DatasetId loaded_id : fanout_loaded_ids) {
+      session_.refreshDatasetTimeReference(loaded_id);
     }
   }
 
@@ -962,15 +1086,17 @@ void FileLoader::onWorkerFinished() {
       // path it would wipe the objects the guard is about to restore.
       session_.evictDatasetObjects(dataset_id);
       catalog_.removeDataset(dataset_id, /*tombstone=*/false);
-      session_.dataEngine().removeDataset(dataset_id);
+      // Via SessionManager::removeDataset for the origin invalidate + reframe (see the
+      // non-replacing cleanup lambda near the top of loadFile) — a discarded partial
+      // load may have progress-flushed EARLIER data than any prior dataset.
+      session_.removeDataset(dataset_id);
+      ctx_.reset();
+      emit fileLoadFailed(path, tr("Import discarded"));
     } else {
       // Roll back to the pre-reload data (guard dtor reattaches scalar + object data,
       // retires/removes topics the failed refill added, evicts their parsers).
-      ctx_->refill_guard.reset();
-      refreshAfterReplacingRollback(dataset_id);
+      failReplacingLoad(dataset_id, path, tr("Import discarded"));
     }
-    ctx_.reset();
-    emit fileLoadFailed(path, tr("Import discarded"));
   } else if (!ctx_->start_ok && cancel == 0) {  // start() failed (and not a user stop)
     const QString reason = tr("Plugin '%1': start failed: %2").arg(source_name, ctx_->start_error);
     qCWarning(lcFileLoader).noquote() << reason;
@@ -980,40 +1106,64 @@ void FileLoader::onWorkerFinished() {
       // reattaching to the empty dataset a failed start() left behind.
       session_.evictDatasetObjects(dataset_id);
       catalog_.removeDataset(dataset_id, /*tombstone=*/false);
-      session_.dataEngine().removeDataset(dataset_id);
+      // Via SessionManager::removeDataset for the origin invalidate + reframe (see the
+      // non-replacing cleanup lambda near the top of loadFile).
+      session_.removeDataset(dataset_id);
+      ctx_.reset();
+      emit fileLoadFailed(path, reason);
     } else {
       // Same rollback as Discard: a failed start() on a reload must restore the prior
       // data rather than leave the dataset empty.
-      ctx_->refill_guard.reset();
-      refreshAfterReplacingRollback(dataset_id);
+      failReplacingLoad(dataset_id, path, reason);
     }
-    ctx_.reset();
-    emit fileLoadFailed(path, reason);
   } else {  // Completed, or Cancel(keep): make the parsed rows visible and finalize
     if (cancel == 1) {
       qCInfo(lcFileLoader) << "[FileLoader] import cancelled by user; keeping the partial load";
     }
     ctx_->ingest->flushAll();
+    bool refill_ok = true;
     if (ctx_->refill_guard) {
-      // On a COMPLETE reload (cancel == 0), retire prior topics the new file no
-      // longer has — they stayed empty through the refill (codex #2). Skipped on
-      // Cancel-Keep: a topic the partial load never reached is not "vanished". Must
-      // run BEFORE commit(), which frees the prior-topic snapshots it reads.
-      if (cancel == 0) {
-        ctx_->refill_guard->pruneVanishedTopics();
+      // Derived outputs were detached with the raw dataset. Replay them before
+      // pruning, while failure can still restore the complete prior snapshot.
+      if (const Status replayed = ctx_->refill_guard->recomputeProcessors(); !replayed.has_value()) {
+        const QString reason = tr("Plugin '%1': derived-series replay failed: %2")
+                                   .arg(source_name, QString::fromStdString(replayed.error()));
+        qCWarning(lcFileLoader).noquote() << reason;
+        failReplacingLoad(dataset_id, path, reason);
+        refill_ok = false;
+      } else {
+        // On a COMPLETE reload (cancel == 0), retire prior topics the new file no
+        // longer has — they stayed empty through the refill (codex #2). Skipped on
+        // Cancel-Keep: a topic the partial load never reached is not "vanished". Must
+        // run BEFORE commit(), which frees the prior-topic snapshots it reads.
+        if (cancel == 0) {
+          ctx_->refill_guard->pruneVanishedTopics();
+        }
+        // COMMIT the refill: both Completed and Cancel-Keep keep the refilled data, so
+        // free the prior-data snapshot. Must run BEFORE finishLoadOnGui() — it resets ctx_
+        // (destroying the guard), and an uncommitted guard would then silently roll back
+        // over the new data.
+        ctx_->refill_guard->commit();
       }
-      // COMMIT the refill: both Completed and Cancel-Keep keep the refilled data, so
-      // free the prior-data snapshot. Must run BEFORE finishLoadOnGui() — it resets ctx_
-      // (destroying the guard), and an uncommitted guard would then silently roll back
-      // over the new data.
-      ctx_->refill_guard->commit();
     }
-    finishLoadOnGui();  // emits fileLoaded; resets ctx_
+    if (refill_ok) {
+      finishLoadOnGui();  // emits fileLoaded; resets ctx_
+    }
   }
 
   cancel_mode_.store(0);
   active_load_ = false;
   startNext();
+}
+
+// Shared failure exit for a REPLACING reload: destroy the guard (its dtor
+// reattaches the prior data snapshot), refresh the catalog/UI to the restored
+// state, and report the failure.
+void FileLoader::failReplacingLoad(DatasetId dataset_id, const QString& path, const QString& reason) {
+  ctx_->refill_guard.reset();
+  refreshAfterReplacingRollback(dataset_id);
+  ctx_.reset();
+  emit fileLoadFailed(path, reason);
 }
 
 void FileLoader::refreshAfterReplacingRollback(DatasetId dataset_id) {
@@ -1051,7 +1201,13 @@ void FileLoader::finishLoadOnGui() {
     captured_config.clear();
   }
 
-  dataset_source_path_[dataset_id] = ctx_->path;
+  session_.setDatasetSourcePath(dataset_id, ctx_->path);
+  // The terminal flush (onWorkerFinished) committed the file's rows straight to
+  // DataEngine via the plugin write host, bypassing SessionManager::commitChunks —
+  // so the cross-dataset time origin was never re-evaluated. Refresh it now: a short
+  // file whose data is EARLIER than any prior dataset must reframe every plot to the
+  // new origin. No-op when "Use time offset" is off.
+  session_.refreshDatasetTimeReference(dataset_id);
   const QString path = ctx_->path;
   const QString source_name = ctx_->source_name;
   ctx_.reset();  // drop the handle/host before notifying — the load is complete
@@ -1100,7 +1256,7 @@ void FileLoader::joinForShutdown() {
   if (ctx_ != nullptr && !was_replacing) {
     session_.evictDatasetObjects(reload_id);
     catalog_.removeDataset(reload_id, /*tombstone=*/false);
-    session_.dataEngine().removeDataset(reload_id);
+    session_.removeDataset(reload_id);
   }
   ctx_.reset();  // guard dtor rolls back a replacing reload; any queued onWorkerFinished no-ops
   if (was_replacing) {
@@ -1111,12 +1267,11 @@ void FileLoader::joinForShutdown() {
 }
 
 QString FileLoader::sourcePathForDataset(DatasetId dataset_id) const {
-  const auto it = dataset_source_path_.find(dataset_id);
-  return it != dataset_source_path_.end() ? it->second : QString();
+  return session_.datasetSourcePath(dataset_id);
 }
 
 void FileLoader::untrackDataset(DatasetId dataset_id) {
-  dataset_source_path_.erase(dataset_id);
+  session_.setDatasetSourcePath(dataset_id, {});
 }
 
 bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent) {

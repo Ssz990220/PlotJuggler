@@ -147,19 +147,19 @@
           <number>16</number>
          </property>
          <property name="topMargin">
-          <number>12</number>
+          <number>16</number>
          </property>
          <property name="rightMargin">
           <number>16</number>
          </property>
          <property name="bottomMargin">
-          <number>12</number>
+          <number>16</number>
          </property>
          <property name="horizontalSpacing">
-          <number>12</number>
+          <number>16</number>
          </property>
          <property name="verticalSpacing">
-          <number>10</number>
+          <number>8</number>
          </property>
          <item row="0" column="0">
           <widget class="QLabel" name="labelTheme">
@@ -185,10 +185,10 @@
              <number>4</number>
             </property>
             <property name="topMargin">
-             <number>1</number>
+             <number>2</number>
             </property>
             <property name="bottomMargin">
-             <number>1</number>
+             <number>2</number>
             </property>
             <item>
              <layout class="QHBoxLayout" name="iconSizeRow">
@@ -206,7 +206,7 @@
                 </property>
                 <property name="sizeHint" stdset="0">
                  <size>
-                  <width>40</width>
+                  <width>16</width>
                   <height>0</height>
                  </size>
                 </property>
@@ -240,7 +240,7 @@
                 </property>
                 <property name="sizeHint" stdset="0">
                  <size>
-                  <width>40</width>
+                  <width>16</width>
                   <height>0</height>
                  </size>
                 </property>
@@ -274,7 +274,7 @@
                 </property>
                 <property name="sizeHint" stdset="0">
                  <size>
-                  <width>40</width>
+                  <width>16</width>
                   <height>0</height>
                  </size>
                 </property>
@@ -308,7 +308,7 @@
                 </property>
                 <property name="sizeHint" stdset="0">
                  <size>
-                  <width>40</width>
+                  <width>16</width>
                   <height>0</height>
                  </size>
                 </property>
@@ -427,19 +427,19 @@
           <number>16</number>
          </property>
          <property name="topMargin">
-          <number>12</number>
+          <number>16</number>
          </property>
          <property name="rightMargin">
           <number>16</number>
          </property>
          <property name="bottomMargin">
-          <number>12</number>
+          <number>16</number>
          </property>
          <property name="horizontalSpacing">
-          <number>12</number>
+          <number>16</number>
          </property>
          <property name="verticalSpacing">
-          <number>10</number>
+          <number>8</number>
          </property>
          <item row="0" column="0">
           <widget class="QLabel" name="labelAutoZoom">
@@ -537,7 +537,7 @@
              </property>
              <property name="sizeHint" stdset="0">
               <size>
-               <width>40</width>
+               <width>16</width>
                <height>20</height>
               </size>
              </property>
@@ -600,7 +600,7 @@
            <property name="sizeHint" stdset="0">
             <size>
              <width>20</width>
-             <height>40</height>
+             <height>16</height>
             </size>
            </property>
           </spacer>
@@ -628,7 +628,7 @@
              </property>
              <property name="sizeHint" stdset="0">
               <size>
-               <width>40</width>
+               <width>16</width>
                <height>20</height>
               </size>
              </property>
@@ -648,12 +648,53 @@
          <item>
           <widget class="QLabel" name="label_5">
            <property name="text">
-            <string>List of default folders:</string>
+            <string>List of default folders (in order of precedence):</string>
            </property>
           </widget>
          </item>
          <item>
           <widget class="QListWidget" name="listDefaultPluginFolders"/>
+         </item>
+         <item>
+          <layout class="QHBoxLayout" name="registryUrlHeader">
+           <item>
+            <widget class="QLabel" name="labelRegistryUrl">
+             <property name="text">
+              <string>Marketplace registry URL:</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <spacer name="registryUrlSpacer">
+             <property name="orientation">
+              <enum>Qt::Orientation::Horizontal</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>16</width>
+               <height>20</height>
+              </size>
+             </property>
+            </spacer>
+           </item>
+           <item>
+            <widget class="PJ::DualOptionsWidget" name="registryUrlMode" native="true">
+             <property name="sizePolicy">
+              <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+               <horstretch>0</horstretch>
+               <verstretch>0</verstretch>
+              </sizepolicy>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="lineEditRegistryUrl">
+           <property name="clearButtonEnabled">
+            <bool>true</bool>
+           </property>
+          </widget>
          </item>
          <item>
           <spacer name="verticalSpacer">
@@ -663,7 +704,7 @@
            <property name="sizeHint" stdset="0">
             <size>
              <width>20</width>
-             <height>19</height>
+             <height>16</height>
             </size>
            </property>
           </spacer>
@@ -702,16 +743,16 @@
    <item>
     <layout class="QHBoxLayout" name="buttonLayout">
      <property name="leftMargin">
-      <number>6</number>
+      <number>8</number>
      </property>
      <property name="topMargin">
-      <number>6</number>
+      <number>8</number>
      </property>
      <property name="rightMargin">
-      <number>6</number>
+      <number>8</number>
      </property>
      <property name="bottomMargin">
-      <number>6</number>
+      <number>8</number>
      </property>
      <item>
       <widget class="PJ::SvgButton" name="buttonResetDefaults">
@@ -727,21 +768,11 @@
        </property>
        <property name="sizeHint" stdset="0">
         <size>
-         <width>40</width>
+         <width>16</width>
          <height>20</height>
         </size>
        </property>
       </spacer>
-     </item>
-     <item>
-      <widget class="QPushButton" name="buttonCancel">
-       <property name="text">
-        <string>Cancel</string>
-       </property>
-       <property name="destructive" stdset="0">
-        <bool>true</bool>
-       </property>
-      </widget>
      </item>
      <item>
       <widget class="QPushButton" name="buttonOk">

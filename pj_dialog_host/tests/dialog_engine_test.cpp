@@ -6,8 +6,10 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDialog>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
+#include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -18,14 +20,17 @@
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
+#include <map>
 #include <nlohmann/json.hpp>
 #include <pj_plugins/host/dialog_handle.hpp>
 #include <pj_plugins/host/widget_data_view.hpp>
 #include <pj_plugins/host/widget_event_builder.hpp>
 #include <pj_plugins/host_qt/dialog_engine.hpp>
 #include <pj_plugins/host_qt/widget_binding.hpp>
+using namespace Qt::StringLiterals;
 
 // Defined in mock_dialog.cpp, linked statically
 extern "C" const PJ_dialog_vtable_t* PJ_get_dialog_vtable() noexcept;
@@ -329,6 +334,21 @@ nlohmann::json tableData(
   d[name]["selected_rows"] = selected;
   return d;
 }
+
+// Read a two-column table back into a name→value map, asserting no cell is null.
+// EXPECT (not ASSERT) so a null cell still reports its row while the caller's own
+// ASSERT_EQ(rowCount) guards the loop bound.
+std::map<std::string, std::string> gatherRowPairs(QTableWidget* tw, int row_count) {
+  std::map<std::string, std::string> pairs;
+  for (int r = 0; r < row_count; ++r) {
+    EXPECT_NE(tw->item(r, 0), nullptr) << "row " << r;
+    EXPECT_NE(tw->item(r, 1), nullptr) << "row " << r;
+    if (tw->item(r, 0) != nullptr && tw->item(r, 1) != nullptr) {
+      pairs[tw->item(r, 0)->text().toStdString()] = tw->item(r, 1)->text().toStdString();
+    }
+  }
+  return pairs;
+}
 }  // namespace
 
 // Selecting a row re-delivers identical rows under the same widget-data key.
@@ -424,6 +444,547 @@ TEST(TableBinding, SameShapeCellUpdateIsInPlace) {
   EXPECT_EQ(tw->item(0, 1), item01);  // same item ⇒ updated in place
   EXPECT_EQ(item01->text(), "42 MiB");
   EXPECT_EQ(tw->item(1, 1)->text(), "--");
+}
+
+// selected_items (text-keyed restore, setSelectedItems) must be honored for
+// QTableWidget the same way it already is for QListWidget — plugins with
+// sortable picker tables emit it instead of index-keyed selected_rows.
+TEST(TableBinding, SelectedItemsRestoreByText) {
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  const std::vector<std::vector<std::string>> rows = {{"a0", "b0"}, {"a1", "b1"}};
+  nlohmann::json d;
+  d["tbl"]["headers"] = {"A", "B"};
+  d["tbl"]["rows"] = rows;
+  d["tbl"]["selected_items"] = {"a1"};
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(d.dump()));
+
+  ASSERT_EQ(tw->rowCount(), 2);
+  EXPECT_FALSE(tw->item(0, 0)->isSelected());
+  EXPECT_TRUE(tw->item(1, 0)->isSelected());
+}
+
+// The point of text-keyed restore: it must land on the right row even after the
+// view re-orders (sortingEnabled) — index-keyed selected_rows desyncs here.
+TEST(TableBinding, SelectedItemsSurviveSortedView) {
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  nlohmann::json d;
+  d["tbl"]["headers"] = {"A", "B"};
+  d["tbl"]["rows"] = std::vector<std::vector<std::string>>{{"a0", "b0"}, {"a1", "b1"}};
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(d.dump()));
+  ASSERT_EQ(tw->rowCount(), 2);
+
+  // Re-order the view the way a user header-click would.
+  tw->sortItems(0, Qt::DescendingOrder);
+  ASSERT_EQ(tw->item(0, 0)->text(), "a1");  // sorted: a1 now on top
+
+  nlohmann::json sel;
+  sel["tbl"]["selected_items"] = {"a0"};
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(sel.dump()));
+
+  // "a0" lives at visual row 1 after the sort — text-keyed restore must find it.
+  EXPECT_TRUE(tw->item(1, 0)->isSelected());
+  EXPECT_FALSE(tw->item(0, 0)->isSelected());
+}
+
+// Same reuse guarantee the index-keyed path has: a selection-only re-delivery
+// must not rebuild the QTableWidgetItems.
+TEST(TableBinding, SelectedItemsChangeReusesItems) {
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  const std::vector<std::vector<std::string>> rows = {{"a0", "b0"}, {"a1", "b1"}};
+  nlohmann::json d;
+  d["tbl"]["headers"] = {"A", "B"};
+  d["tbl"]["rows"] = rows;
+  d["tbl"]["selected_items"] = {"a0"};
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(d.dump()));
+  QTableWidgetItem* item00 = tw->item(0, 0);
+  ASSERT_NE(item00, nullptr);
+  EXPECT_TRUE(item00->isSelected());
+
+  d["tbl"]["selected_items"] = {"a1"};
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(d.dump()));
+  EXPECT_EQ(tw->item(0, 0), item00);  // same pointer ⇒ not rebuilt
+  EXPECT_FALSE(tw->item(0, 0)->isSelected());
+  EXPECT_TRUE(tw->item(1, 0)->isSelected());
+}
+
+// A picker table with sortingEnabled=true must survive being populated. Rows
+// arrive in the plugin's order; the host writes them by model-row index. If
+// sorting is not suspended during the write, QTableWidget re-sorts the model
+// mid-loop and the remaining writes land on the wrong rows.
+
+// Populate while sorting is active but no sort indicator has been chosen yet.
+TEST(TableBinding, SortingActivePopulateKeepsRowIntegrity) {
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+  tw->setSortingEnabled(true);
+
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(tableData("tbl", {{"c", "3"}, {"a", "1"}, {"b", "2"}}, {}).dump()));
+
+  ASSERT_EQ(tw->rowCount(), 3);
+  const auto pairs = gatherRowPairs(tw, 3);
+  EXPECT_EQ(pairs.at("a"), "1");
+  EXPECT_EQ(pairs.at("b"), "2");
+  EXPECT_EQ(pairs.at("c"), "3");
+}
+
+// After the user sorts (active sort indicator), a shape change forces a full
+// rebuild. Without suspending sorting the rebuild leaves NULL cells.
+TEST(TableBinding, SortedViewFullRebuildKeepsRowIntegrity) {
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+  tw->setSortingEnabled(true);
+
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(tableData("tbl", {{"c", "3"}, {"a", "1"}}, {}).dump()));
+  tw->sortItems(0, Qt::DescendingOrder);
+  tw->horizontalHeader()->setSortIndicator(0, Qt::DescendingOrder);
+
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(tableData("tbl", {{"c", "3"}, {"a", "1"}, {"b", "2"}}, {}).dump()));
+
+  ASSERT_EQ(tw->rowCount(), 3);
+  const auto pairs = gatherRowPairs(tw, 3);
+  EXPECT_EQ(pairs.at("a"), "1");
+  EXPECT_EQ(pairs.at("b"), "2");
+  EXPECT_EQ(pairs.at("c"), "3");
+}
+
+// Same-shape in-place update where a sort-column cell changes text. Without
+// suspending sorting the in-place setText re-sorts mid-loop and duplicates a row.
+TEST(TableBinding, SortedViewInPlaceTextUpdateKeepsRowIntegrity) {
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+  tw->setSortingEnabled(true);
+
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(tableData("tbl", {{"a", "1"}, {"b", "2"}, {"c", "3"}}, {}).dump()));
+  tw->sortItems(0, Qt::AscendingOrder);
+  tw->horizontalHeader()->setSortIndicator(0, Qt::AscendingOrder);
+
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(tableData("tbl", {{"z", "1"}, {"b", "2"}, {"c", "3"}}, {}).dump()));
+
+  ASSERT_EQ(tw->rowCount(), 3);
+  const auto pairs = gatherRowPairs(tw, 3);
+  EXPECT_EQ(pairs.at("z"), "1");
+  EXPECT_EQ(pairs.at("b"), "2");
+  EXPECT_EQ(pairs.at("c"), "3");
+}
+
+// The protocol has no cell-edit event, so an editable cell would silently drop
+// the edit. The host forces every table read-only regardless of what the .ui
+// declared (here the QTableWidget defaults to editable).
+TEST(TableBinding, RowsFedTableIsForcedReadOnly) {
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+  ASSERT_NE(tw->editTriggers(), QAbstractItemView::NoEditTriggers);
+
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(tableData("tbl", {{"a", "1"}, {"b", "2"}}, {}).dump()));
+
+  EXPECT_EQ(tw->editTriggers(), QAbstractItemView::NoEditTriggers);
+}
+
+// ==========================================================================
+// Table binding — index-keyed state must survive a user-sorted view
+//
+// Plugins compute row indices (selected_rows, visible_rows, disabled_rows,
+// radio_checked_row) against the order they delivered `rows` in, and interpret
+// emitted indices (table_radio_row, item_double_clicked_index) the same way.
+// The host must translate plugin order ↔ view order once sortingEnabled lets
+// the user re-order the view, or every index-keyed exchange lands on the
+// wrong rows.
+// ==========================================================================
+
+namespace {
+
+// View row whose cell at `col` shows `text`; -1 when absent.
+int rowOfText(QTableWidget* tw, int col, const char* text) {
+  for (int r = 0; r < tw->rowCount(); ++r) {
+    if (auto* item = tw->item(r, col); item != nullptr && item->text() == text) {
+      return r;
+    }
+  }
+  return -1;
+}
+
+// Last int emitted under `key` for widget `name` across the captured events;
+// nullopt when no such event was captured.
+std::optional<int> lastEmittedInt(
+    const std::vector<std::pair<std::string, std::string>>& events, const std::string& name, const char* key) {
+  std::optional<int> out;
+  for (const auto& [event_name, json] : events) {
+    auto j = nlohmann::json::parse(json, nullptr, false);
+    if (event_name == name && !j.is_discarded() && j.contains(key)) {
+      out = j[key].get<int>();
+    }
+  }
+  return out;
+}
+
+// View row whose radio cell at `col` is checked; -1 when none.
+int checkedRadioRow(QTableWidget* tw, int col) {
+  for (int r = 0; r < tw->rowCount(); ++r) {
+    if (auto* radio = qobject_cast<QRadioButton*>(tw->cellWidget(r, col)); radio != nullptr && radio->isChecked()) {
+      return r;
+    }
+  }
+  return -1;
+}
+
+// Deliver rows a/b/c in plugin order, then re-order the view the way a user
+// header-click would (descending ⇒ view shows c,b,a).
+void deliverAbcAndSortDescending(QWidget* root, QTableWidget* tw) {
+  PJ::applyWidgetData(root, PJ::WidgetDataView(tableData("tbl", {{"a", "1"}, {"b", "2"}, {"c", "3"}}, {}).dump()));
+  ASSERT_EQ(tw->rowCount(), 3);
+  tw->sortItems(0, Qt::DescendingOrder);
+  tw->horizontalHeader()->setSortIndicator(0, Qt::DescendingOrder);
+  ASSERT_EQ(tw->item(0, 0)->text(), "c");
+}
+
+}  // namespace
+
+// visible_rows carries plugin-order indices: {0,1} means "the rows delivered
+// as a and b", regardless of where the sort put them.
+TEST(TableBinding, VisibleRowsRespectSortedView) {
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+  tw->setSortingEnabled(true);
+  deliverAbcAndSortDescending(&root, tw);
+
+  nlohmann::json d;
+  d["tbl"]["visible_rows"] = {0, 1};
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(d.dump()));
+
+  EXPECT_FALSE(tw->isRowHidden(rowOfText(tw, 0, "a")));
+  EXPECT_FALSE(tw->isRowHidden(rowOfText(tw, 0, "b")));
+  EXPECT_TRUE(tw->isRowHidden(rowOfText(tw, 0, "c")));
+}
+
+// disabled_rows={0} means "the row delivered first" (a), not view row 0.
+TEST(TableBinding, DisabledRowsRespectSortedView) {
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+  tw->setSortingEnabled(true);
+  deliverAbcAndSortDescending(&root, tw);
+
+  nlohmann::json d;
+  d["tbl"]["disabled_rows"] = {0};
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(d.dump()));
+
+  EXPECT_FALSE(tw->item(rowOfText(tw, 0, "a"), 0)->flags() & Qt::ItemIsEnabled);
+  EXPECT_TRUE(tw->item(rowOfText(tw, 0, "b"), 0)->flags() & Qt::ItemIsEnabled);
+  EXPECT_TRUE(tw->item(rowOfText(tw, 0, "c"), 0)->flags() & Qt::ItemIsEnabled);
+}
+
+// cell_tooltips keyed "0,0" means "the row delivered first" (a), not view row 0.
+TEST(TableBinding, CellTooltipsRespectSortedView) {
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+  tw->setSortingEnabled(true);
+  deliverAbcAndSortDescending(&root, tw);
+
+  nlohmann::json d;
+  d["tbl"]["cell_tooltips"]["0,0"] = "locked";
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(d.dump()));
+
+  EXPECT_EQ(tw->item(rowOfText(tw, 0, "a"), 0)->toolTip(), "locked");
+  EXPECT_TRUE(tw->item(rowOfText(tw, 0, "b"), 0)->toolTip().isEmpty());
+  EXPECT_TRUE(tw->item(rowOfText(tw, 0, "c"), 0)->toolTip().isEmpty());
+}
+
+// A delivery that carries cell_tooltips states the complete set: a tooltip the
+// plugin dropped must not linger on its old cell.
+TEST(TableBinding, CellTooltipsDeliveryReplacesStaleOnes) {
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+  tw->setSortingEnabled(true);
+  deliverAbcAndSortDescending(&root, tw);
+
+  nlohmann::json first;
+  first["tbl"]["cell_tooltips"]["0,0"] = "locked";
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(first.dump()));
+  ASSERT_EQ(tw->item(rowOfText(tw, 0, "a"), 0)->toolTip(), "locked");
+
+  nlohmann::json second;
+  second["tbl"]["cell_tooltips"]["1,0"] = "other";
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(second.dump()));
+
+  EXPECT_TRUE(tw->item(rowOfText(tw, 0, "a"), 0)->toolTip().isEmpty());
+  EXPECT_EQ(tw->item(rowOfText(tw, 0, "b"), 0)->toolTip(), "other");
+}
+
+// The streaming-picker shape (e.g. the ROS2 topic table): every tick re-delivers
+// rows plus an index-keyed selection computed in plugin order. Selection must
+// land on the delivered-first row (a) even though the view shows c on top.
+TEST(TableBinding, SelectedRowsRespectSortedView) {
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+  tw->setSortingEnabled(true);
+  deliverAbcAndSortDescending(&root, tw);
+
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(tableData("tbl", {{"a", "1"}, {"b", "2"}, {"c", "3"}}, {0}).dump()));
+
+  EXPECT_TRUE(tw->item(rowOfText(tw, 0, "a"), 0)->isSelected());
+  EXPECT_FALSE(tw->item(rowOfText(tw, 0, "b"), 0)->isSelected());
+  EXPECT_FALSE(tw->item(rowOfText(tw, 0, "c"), 0)->isSelected());
+}
+
+namespace {
+
+// Radio-column fixture: radio widgets occupy column 0, so the row key text
+// lives in column 1 (a/b/c). radio_checked_row is a plugin-order index.
+nlohmann::json radioTableData(int checked_row) {
+  nlohmann::json d;
+  d["tbl"]["headers"] = {"R", "Name"};
+  d["tbl"]["rows"] = std::vector<std::vector<std::string>>{{"", "a"}, {"", "b"}, {"", "c"}};
+  d["tbl"]["radio_column"] = 0;
+  d["tbl"]["radio_checked_row"] = checked_row;
+  return d;
+}
+
+}  // namespace
+
+// radio_checked_row=0 refers to the row delivered as "a"; after a user sort on
+// the name column the check must follow that row, not view row 0.
+TEST(TableBinding, RadioApplyRespectsSortedView) {
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+  tw->setSortingEnabled(true);
+
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(radioTableData(0).dump()));
+  ASSERT_EQ(tw->rowCount(), 3);
+  tw->sortItems(1, Qt::DescendingOrder);
+  tw->horizontalHeader()->setSortIndicator(1, Qt::DescendingOrder);
+  ASSERT_EQ(tw->item(0, 1)->text(), "c");
+
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(radioTableData(0).dump()));
+
+  EXPECT_EQ(checkedRadioRow(tw, 0), rowOfText(tw, 1, "a"));
+}
+
+// A user sort with NO re-delivery: guards the Qt behavior the radio column
+// leans on — cell widgets are anchored to persistent model indexes, so the
+// checked radio travels with its row when the view re-sorts. If a Qt upgrade
+// ever breaks this, the host would need to re-sync radios after layoutChanged.
+TEST(TableBinding, RadioReChecksAfterUserSort) {
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+  tw->setSortingEnabled(true);
+
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(radioTableData(0).dump()));
+  ASSERT_EQ(tw->rowCount(), 3);
+  ASSERT_EQ(checkedRadioRow(tw, 0), 0);
+
+  tw->sortItems(1, Qt::DescendingOrder);
+  tw->horizontalHeader()->setSortIndicator(1, Qt::DescendingOrder);
+  ASSERT_EQ(tw->item(0, 1)->text(), "c");
+
+  EXPECT_EQ(checkedRadioRow(tw, 0), rowOfText(tw, 1, "a"));
+}
+
+// Clicking a radio must report the row's plugin index (its position in the
+// delivered order), not its current view position.
+TEST(TableBinding, RadioEmitTranslatesSortedViewRow) {
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+  tw->setSortingEnabled(true);
+
+  std::vector<std::pair<std::string, std::string>> events;
+  PJ::connectWidgetSignals(
+      &root, [&events](const std::string& name, const std::string& json) { events.push_back({name, json}); });
+
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(radioTableData(0).dump()));
+  ASSERT_EQ(tw->rowCount(), 3);
+  tw->sortItems(1, Qt::DescendingOrder);
+  tw->horizontalHeader()->setSortIndicator(1, Qt::DescendingOrder);
+  ASSERT_EQ(tw->item(0, 1)->text(), "c");
+
+  // View row 0 is now the row delivered as "c" (plugin index 2).
+  auto* radio = qobject_cast<QRadioButton*>(tw->cellWidget(0, 0));
+  ASSERT_NE(radio, nullptr);
+  radio->click();
+
+  const std::optional<int> emitted = lastEmittedInt(events, "tbl", "table_radio_row");
+  ASSERT_TRUE(emitted.has_value());
+  EXPECT_EQ(*emitted, 2);
+}
+
+// Double-clicking a row must report its plugin index, not its view position —
+// plugins resolve the index against the array they delivered rows from.
+TEST(TableBinding, TableDoubleClickEmitsPluginIndex) {
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+  tw->setSortingEnabled(true);
+
+  std::vector<std::pair<std::string, std::string>> events;
+  PJ::connectWidgetSignals(
+      &root, [&events](const std::string& name, const std::string& json) { events.push_back({name, json}); });
+
+  deliverAbcAndSortDescending(&root, tw);
+
+  emit tw->cellDoubleClicked(0, 0);  // view row 0 = "c" = plugin index 2
+
+  const std::optional<int> emitted = lastEmittedInt(events, "tbl", "item_double_clicked_index");
+  ASSERT_TRUE(emitted.has_value());
+  EXPECT_EQ(*emitted, 2);
+}
+
+// Same contract for QListWidget: a sorted list re-orders the view, but the
+// double-click index the plugin receives must be the delivered-order position.
+TEST(TableBinding, ListDoubleClickEmitsPluginIndex) {
+  QWidget root;
+  auto* lw = new QListWidget(&root);
+  lw->setObjectName("lst");
+  lw->setSortingEnabled(true);
+
+  std::vector<std::pair<std::string, std::string>> events;
+  PJ::connectWidgetSignals(
+      &root, [&events](const std::string& name, const std::string& json) { events.push_back({name, json}); });
+
+  nlohmann::json d;
+  d["lst"]["list_items"] = {"c", "a", "b"};
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(d.dump()));
+  ASSERT_EQ(lw->count(), 3);
+  ASSERT_EQ(lw->item(0)->text(), "a");  // list sorted itself on insert
+
+  emit lw->itemDoubleClicked(lw->item(0));  // "a" was delivered at index 1
+
+  const std::optional<int> emitted = lastEmittedInt(events, "lst", "item_double_clicked_index");
+  ASSERT_TRUE(emitted.has_value());
+  EXPECT_EQ(*emitted, 1);
+}
+
+// Two rows sharing a key text: the translation pairs duplicates positionally,
+// which keeps set-level semantics exact — both "x" rows visible, "y" hidden.
+TEST(TableBinding, DuplicateKeysStayConsistentUnderSort) {
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+  tw->setSortingEnabled(true);
+
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(tableData("tbl", {{"x", "1"}, {"x", "2"}, {"y", "3"}}, {}).dump()));
+  ASSERT_EQ(tw->rowCount(), 3);
+  tw->sortItems(1, Qt::DescendingOrder);
+  tw->horizontalHeader()->setSortIndicator(1, Qt::DescendingOrder);
+  ASSERT_EQ(tw->item(0, 1)->text(), "3");
+
+  nlohmann::json d;
+  d["tbl"]["visible_rows"] = {0, 1};  // both "x" rows, delivered first and second
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(d.dump()));
+
+  EXPECT_FALSE(tw->isRowHidden(rowOfText(tw, 1, "1")));
+  EXPECT_FALSE(tw->isRowHidden(rowOfText(tw, 1, "2")));
+  EXPECT_TRUE(tw->isRowHidden(rowOfText(tw, 1, "3")));
+}
+
+namespace {
+
+// Radio-column fixture with a THIRD, differentiating column: two rows share
+// identical key-column ("Name") text but differ in "Type" — e.g. two
+// same-named topics disambiguated by type. Duplicate-key translation must
+// still resolve each row to its own distinct plugin index, not just any row
+// with a matching key.
+nlohmann::json duplicateKeyRadioTableData(int checked_row) {
+  nlohmann::json d;
+  d["tbl"]["headers"] = {"R", "Name", "Type"};
+  d["tbl"]["rows"] = std::vector<std::vector<std::string>>{{"", "x", "typeA"}, {"", "x", "typeB"}};
+  d["tbl"]["radio_column"] = 0;
+  d["tbl"]["radio_checked_row"] = checked_row;
+  return d;
+}
+
+}  // namespace
+
+// radio_checked_row=0 refers to the row DELIVERED first ("x"/"typeA"), not any
+// row whose key-column text happens to match "x" — "typeB" also reads "x" in
+// the Name column, so a text-only lookup can't tell the two rows apart, and
+// the checked radio must still follow the one the plugin actually meant.
+TEST(TableBinding, RadioApplyDisambiguatesDuplicateKeysUnderSort) {
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+  tw->setSortingEnabled(true);
+
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(duplicateKeyRadioTableData(0).dump()));
+  ASSERT_EQ(tw->rowCount(), 2);
+  // Sort descending on Type so the view now shows typeB above typeA — the
+  // duplicate "x" rows have swapped view positions relative to delivery order.
+  tw->sortItems(2, Qt::DescendingOrder);
+  tw->horizontalHeader()->setSortIndicator(2, Qt::DescendingOrder);
+  ASSERT_EQ(tw->item(0, 2)->text(), "typeB");
+
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(duplicateKeyRadioTableData(0).dump()));
+
+  EXPECT_EQ(checkedRadioRow(tw, 0), rowOfText(tw, 2, "typeA"));
+}
+
+// Clicking a radio on a duplicate-key row must report ITS OWN plugin index,
+// not the index of the other row sharing the same key-column text.
+TEST(TableBinding, RadioEmitDisambiguatesDuplicateKeysUnderSort) {
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+  tw->setSortingEnabled(true);
+
+  std::vector<std::pair<std::string, std::string>> events;
+  PJ::connectWidgetSignals(
+      &root, [&events](const std::string& name, const std::string& json) { events.push_back({name, json}); });
+
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(duplicateKeyRadioTableData(0).dump()));
+  ASSERT_EQ(tw->rowCount(), 2);
+  tw->sortItems(2, Qt::DescendingOrder);
+  tw->horizontalHeader()->setSortIndicator(2, Qt::DescendingOrder);
+  ASSERT_EQ(tw->item(0, 2)->text(), "typeB");
+
+  // View row 0 is "typeB" — plugin index 1 — even though its Name column ("x")
+  // matches the other duplicate row too.
+  auto* radio = qobject_cast<QRadioButton*>(tw->cellWidget(0, 0));
+  ASSERT_NE(radio, nullptr);
+  radio->click();
+
+  const std::optional<int> emitted = lastEmittedInt(events, "tbl", "table_radio_row");
+  ASSERT_TRUE(emitted.has_value());
+  EXPECT_EQ(*emitted, 1);
+}
+
+// Tables whose rows never came from the plugin (predefined in a .ui, filled by
+// hand) have no recorded plugin order — index-keyed state must keep meaning
+// raw view rows there.
+TEST(TableBinding, NoStoredOrderFallsBackToRawIndex) {
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+  tw->setColumnCount(2);
+  tw->setRowCount(2);
+  tw->setItem(0, 0, new QTableWidgetItem("a0"));
+  tw->setItem(0, 1, new QTableWidgetItem("b0"));
+  tw->setItem(1, 0, new QTableWidgetItem("a1"));
+  tw->setItem(1, 1, new QTableWidgetItem("b1"));
+
+  nlohmann::json d;
+  d["tbl"]["selected_rows"] = {1};
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(d.dump()));
+
+  EXPECT_FALSE(tw->item(0, 0)->isSelected());
+  EXPECT_TRUE(tw->item(1, 0)->isSelected());
 }
 
 // ==========================================================================
@@ -535,11 +1096,11 @@ TEST(CodeEditorBinding, NoCaretTrackingIgnoresCursorMoves) {
 // ==========================================================================
 
 TEST(NamedIconResolver, MapsKnownIdsToThemedResourcePaths) {
-  EXPECT_EQ(PJ::resolveNamedIconPath("link"), QStringLiteral(":/resources/svg/link.svg"));
-  EXPECT_EQ(PJ::resolveNamedIconPath("contract"), QStringLiteral(":/resources/svg/contract.svg"));
-  EXPECT_EQ(PJ::resolveNamedIconPath("plug_connect"), QStringLiteral(":/resources/svg/plug_connect.svg"));
-  EXPECT_EQ(PJ::resolveNamedIconPath("refresh"), QStringLiteral(":/resources/svg/refresh.svg"));
-  EXPECT_EQ(PJ::resolveNamedIconPath("add"), QStringLiteral(":/resources/svg/add.svg"));
+  EXPECT_EQ(PJ::resolveNamedIconPath("link"), u":/resources/svg/link.svg"_s);
+  EXPECT_EQ(PJ::resolveNamedIconPath("contract"), u":/resources/svg/contract.svg"_s);
+  EXPECT_EQ(PJ::resolveNamedIconPath("plug_connect"), u":/resources/svg/plug_connect.svg"_s);
+  EXPECT_EQ(PJ::resolveNamedIconPath("refresh"), u":/resources/svg/refresh.svg"_s);
+  EXPECT_EQ(PJ::resolveNamedIconPath("add"), u":/resources/svg/add.svg"_s);
 }
 
 TEST(NamedIconResolver, ReturnsEmptyForUnknownOrEmptyId) {
@@ -547,6 +1108,153 @@ TEST(NamedIconResolver, ReturnsEmptyForUnknownOrEmptyId) {
   EXPECT_TRUE(PJ::resolveNamedIconPath("").isEmpty());
   // Case-sensitive: ids are exact semantic tokens, not free text.
   EXPECT_TRUE(PJ::resolveNamedIconPath("Link").isEmpty());
+}
+
+// ==========================================================================
+// Byte-identical payload skip (parity with PanelEngine's applyAndDiff guard)
+// ==========================================================================
+
+namespace identical_mock {
+
+// Chatty-idle plugin: every tick reports "re-read me" while widget_data stays
+// byte-identical — the exact traffic the skip guard exists to absorb. After
+// `accept_after_ticks` ticks (when >= 0) the payload gains __request_accept
+// and stays byte-stable, so the request's first delivery must be honored —
+// there is no identical-bytes retry to fall back on.
+struct Ctx {
+  std::string manifest = R"({"name":"identical"})";
+  std::string ui = R"(<ui version="4.0"><class>D</class><widget class="QWidget" name="D">
+<layout class="QVBoxLayout"><item><widget class="QLineEdit" name="name_input"/></item></layout>
+</widget></ui>)";
+  std::string payload = R"({"name_input":{"text":"fixed"}})";
+  int accept_after_ticks = -1;
+  int ticks = 0;
+};
+
+// Knob consumed by create(): ticks after which the payload raises
+// __request_accept (-1 = never). Set before constructing the DialogHandle.
+int& acceptAfterTicksKnob() {
+  static int v = -1;
+  return v;
+}
+
+void* create() noexcept {
+  auto* c = new Ctx();
+  c->accept_after_ticks = acceptAfterTicksKnob();
+  return c;
+}
+void destroy(void* ctx) noexcept {
+  delete static_cast<Ctx*>(ctx);
+}
+const char* manifest(void* ctx) noexcept {
+  return static_cast<Ctx*>(ctx)->manifest.c_str();
+}
+const char* uiContent(void* ctx) noexcept {
+  return static_cast<Ctx*>(ctx)->ui.c_str();
+}
+const char* widgetData(void* ctx) noexcept {
+  auto* c = static_cast<Ctx*>(ctx);
+  if (c->accept_after_ticks >= 0 && c->ticks >= c->accept_after_ticks) {
+    c->payload = R"({"name_input":{"text":"fixed"},"__request_accept":true})";
+  }
+  return c->payload.c_str();
+}
+bool widgetEvent(void*, const char*, const char*, PJ_error_t*) noexcept {
+  return false;
+}
+bool tick(void* ctx, PJ_error_t*) noexcept {
+  ++static_cast<Ctx*>(ctx)->ticks;
+  return true;
+}
+void accepted(void*, const char*) noexcept {}
+void rejected(void*) noexcept {}
+bool saveConfig(void*, PJ_string_view_t* out_json, PJ_error_t*) noexcept {
+  out_json->data = "";
+  out_json->size = 0;
+  return true;
+}
+bool loadConfig(void*, PJ_string_view_t, PJ_error_t*) noexcept {
+  return true;
+}
+
+const PJ_dialog_vtable_t* vtable() {
+  static const PJ_dialog_vtable_t vt = [] {
+    PJ_dialog_vtable_t v{};
+    v.protocol_version = PJ_DIALOG_PROTOCOL_VERSION;
+    v.struct_size = sizeof(PJ_dialog_vtable_t);
+    v.create = create;
+    v.destroy = destroy;
+    v.get_manifest = manifest;
+    v.get_ui_content = uiContent;
+    v.get_widget_data = widgetData;
+    v.on_widget_event = widgetEvent;
+    v.on_tick = tick;
+    v.on_accepted = accepted;
+    v.on_rejected = rejected;
+    v.save_config = saveConfig;
+    v.load_config = loadConfig;
+    return v;
+  }();
+  return &vt;
+}
+
+}  // namespace identical_mock
+
+TEST_F(DialogEngineTest, IdenticalPayloadTicksAreSkipped) {
+  identical_mock::acceptAfterTicksKnob() = -1;
+  PJ::DialogHandle handle(identical_mock::vtable());
+  PJ::DialogEngineConfig config;
+  config.tick_interval_ms = 1;
+  PJ::DialogEngine engine(std::move(handle), config);
+
+  // Close the modal from inside its own event loop, but only once enough ticks
+  // ran — gating on the live stats keeps this immune to slow-runner startup.
+  QTimer close_timer;
+  close_timer.setInterval(20);
+  QObject::connect(&close_timer, &QTimer::timeout, [&engine] {
+    if (engine.lastStats().tick_count < 3) {
+      return;
+    }
+    for (QWidget* w : QApplication::topLevelWidgets()) {
+      if (auto* dlg = qobject_cast<QDialog*>(w); dlg != nullptr && dlg->isVisible()) {
+        dlg->reject();
+      }
+    }
+  });
+  close_timer.start();
+  (void)engine.showDialog();
+
+  const auto stats = engine.lastStats();
+  ASSERT_GE(stats.tick_count, 2);
+  // Byte-identical re-emissions never reach the parser or the widgets.
+  EXPECT_EQ(stats.diff_apply_count, 0);
+  EXPECT_GE(stats.skipped_identical_count, stats.tick_count - 1);
+}
+
+// The first delivery of a payload carrying __request_accept must be honored on
+// the tick path itself: once the bytes go stable, the skip guard removes the
+// identical-bytes retry that could previously pick the command up later.
+TEST_F(DialogEngineTest, TickHonorsRequestAccept) {
+  identical_mock::acceptAfterTicksKnob() = 2;
+  PJ::DialogHandle handle(identical_mock::vtable());
+  identical_mock::acceptAfterTicksKnob() = -1;
+  PJ::DialogEngineConfig config;
+  config.tick_interval_ms = 1;
+  PJ::DialogEngine engine(std::move(handle), config);
+
+  // Safety net: reject if the accept never happens, so the test cannot hang.
+  QTimer bailout_timer;
+  bailout_timer.setInterval(2000);
+  QObject::connect(&bailout_timer, &QTimer::timeout, [] {
+    for (QWidget* w : QApplication::topLevelWidgets()) {
+      if (auto* dlg = qobject_cast<QDialog*>(w); dlg != nullptr && dlg->isVisible()) {
+        dlg->reject();
+      }
+    }
+  });
+  bailout_timer.start();
+
+  EXPECT_EQ(engine.showDialog(), PJ::DialogResult::kAccepted);
 }
 
 // ==========================================================================

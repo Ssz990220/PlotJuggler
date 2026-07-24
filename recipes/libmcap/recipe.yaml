@@ -1,0 +1,42 @@
+schema_version: 1
+
+# C++ mcap reader/writer (header-only). The conda-forge `mcap` package is the
+# *Python* wrapper, hence the `libmcap` name. Copies the headers and the
+# committed platform-neutral config (INTERFACE mcap::mcap carrying lz4 + zstd).
+
+context:
+  version: "2.1.1"
+
+package:
+  name: libmcap
+  version: ${{ version }}
+
+source:
+  url: https://github.com/foxglove/mcap/archive/refs/tags/releases/cpp/v${{ version }}.tar.gz
+  sha256: f5ec006beccfb6d56a26fee8e460e79bed02f125eb2604159ddfbb9906d57da4
+
+build:
+  number: 0
+  # Not noarch: conda's Windows tree puts headers/cmake under Library\ (the win
+  # branch installs to %LIBRARY_PREFIX%), so the layout is platform-specific.
+  script:
+    - if: unix
+      then:
+        - mkdir -p "$PREFIX/include" "$PREFIX/lib/cmake/mcap"
+        - cp -r cpp/mcap/include/mcap "$PREFIX/include/"
+        - cp "$RECIPE_DIR/mcap-config.cmake" "$PREFIX/lib/cmake/mcap/mcap-config.cmake"
+    - if: win
+      then:
+        - if not exist "%LIBRARY_PREFIX%\lib\cmake\mcap" mkdir "%LIBRARY_PREFIX%\lib\cmake\mcap"
+        - xcopy /E /I /Y cpp\mcap\include\mcap "%LIBRARY_PREFIX%\include\mcap"
+        - copy /Y "%RECIPE_DIR%\mcap-config.cmake" "%LIBRARY_PREFIX%\lib\cmake\mcap\mcap-config.cmake"
+
+requirements:
+  run:
+    - lz4-c
+    - zstd
+
+about:
+  homepage: https://github.com/foxglove/mcap
+  license: MIT
+  summary: C++ implementation of the MCAP container format (header-only)

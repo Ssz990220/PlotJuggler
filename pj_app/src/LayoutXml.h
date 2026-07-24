@@ -8,8 +8,11 @@
 #include <QList>
 #include <QString>
 #include <QStringList>
+#include <cstdint>
 #include <functional>
 #include <optional>
+#include <utility>
+#include <vector>
 
 namespace PJ::layout_xml {
 
@@ -27,6 +30,38 @@ inline constexpr char kLayoutExtension[] = ".pj4.xml";
 // empty out.
 [[nodiscard]] QString ensureLayoutExtension(const QString& path);
 
+// Per-dataset Source Timeline state nested under one replayable file. One file
+// may fan out into several DatasetIds; source_index is the stable position in
+// that file's fan-out order (so two fan-out members with identical display
+// names can't swap offsets) and source_name disambiguates ordinary unique names.
+struct DataSourceDatasetRef {
+  QString source_name;
+  int source_index = -1;
+  qint64 display_offset_ns = 0;
+  bool has_display_offset = false;
+  // Schema v3 wrote SessionManager::displayOffset() (per-source alignment +
+  // global reference); v4 writes sourceDisplayOffset() only. Set true for a v3
+  // read so the apply path subtracts the current global reference — see
+  // DataSourceRef::display_offset_includes_global_reference.
+  bool display_offset_includes_global_reference = false;
+  int timeline_order = -1;
+};
+
+/// Binds each saved <fileInfo>/<dataset> fan-out child to a live candidate
+/// dataset, consuming each candidate at most once. Returns one DatasetId per
+/// saved child (dataset ids as raw std::uint32_t, this header's convention),
+/// aligned by index (0 = unmatched: missing or ambiguous — a
+/// surviving sibling must never inherit an offset that cannot be proven its
+/// own). Policy: a name shared by SEVERAL saved children binds by
+/// source_index ONLY, and only while the same-named fan-out shape is
+/// unchanged (saved count == candidate count for that name); a name-unique
+/// child matches by name first, falling back to its source_index (which must
+/// agree with the saved name when one is present). `source_name_of` supplies
+/// each candidate's live raw source name.
+[[nodiscard]] std::vector<std::uint32_t> matchFanoutDatasets(
+    const QList<DataSourceDatasetRef>& saved, const std::vector<std::uint32_t>& candidates,
+    const std::function<QString(std::uint32_t)>& source_name_of);
+
 // Resolved data-source reference extracted from <previouslyLoaded_Datafiles>.
 // Empty resolved_path means no replayable source was found in the layout.
 struct DataSourceRef {
@@ -40,9 +75,21 @@ struct DataSourceRef {
   // has_display_offset is false when the layout predates this attribute, so the
   // reloaded dataset keeps its natural zero offset. timeline_order is the bar's
   // top-to-bottom slot in the timeline (-1 when absent → fall back to load order).
+  // These flat fields mirror the first <dataset> child (legacy single-track view
+  // for older readers); the per-dataset fan-out state lives in `datasets`.
   qint64 display_offset_ns = 0;
   bool has_display_offset = false;
+  // Schema v3 wrote SessionManager::displayOffset(), which included the global
+  // relative-time reference. Schema v4 writes sourceDisplayOffset() only. The
+  // apply path subtracts its current global reference for this read-only
+  // migration, keeping total placement equal to the v3 value without
+  // double-applying it. Set true only for a v3 (or older) read.
+  bool display_offset_includes_global_reference = false;
   int timeline_order = -1;
+  // Schema-v4 additive extension: one entry per dataset the file fanned out
+  // into. Empty means an older (≤v3) layout whose single legacy timeline state
+  // lives in the flat fields above.
+  QList<DataSourceDatasetRef> datasets;
 };
 
 // CDATA sections cannot contain "]]>"; QDomDocument::createCDATASection
@@ -96,23 +143,56 @@ struct SourceTimelineViewState {
 // Empty inputs are treated as "not the same".
 [[nodiscard]] bool isSamePath(const QString& a, const QString& b);
 
-// Stable, file-portable identity of a series: the topic plus the field path
-// within that topic (e.g. "/vehicle/imu" + "linear_accel.x"). Dataset-agnostic,
-// so a layout built on one recording rebinds to a similar one with the same
-// topics/fields. This replaces the engine's opaque per-load catalog key
-// (CurveDescriptor::name) as the persisted identity in v2 layouts, mirroring
-// PJ3's human series-name identity (split into two attributes only because PJ4
-// field paths can themselves contain '/').
+// Stable identity of a series: topic + field path, optionally qualified by an
+// exact live DatasetId, a portable raw source label, and a full file path. The
+// qualifiers stop same-shaped datasets from being interchanged during undo,
+// while unqualified legacy layouts still rebind when the structural path is
+// globally unique. This replaces the engine's opaque per-load catalog key
+// (CurveDescriptor::name); topic and field stay separate because PJ4 field
+// paths can themselves contain '/'. The explicit constructor keeps existing
+// two-argument brace-initializations compiling.
 struct SeriesPath {
+  SeriesPath(
+      QString topic_in = {}, QString field_in = {}, std::uint32_t dataset_id_in = 0, QString dataset_source_in = {},
+      QString dataset_path_in = {})
+      : topic(std::move(topic_in)),
+        field(std::move(field_in)),
+        dataset_id(dataset_id_in),
+        dataset_source(std::move(dataset_source_in)),
+        dataset_path(std::move(dataset_path_in)) {}
+
   QString topic;
   QString field;
+  // Exact in-session hint for undo/redo (0 = unqualified). A resolver must
+  // reject ambiguity rather than silently pick the first dataset exposing the
+  // same topic/field.
+  std::uint32_t dataset_id = 0;
+  // Portable raw source label (DatasetInfo::source_name), usable for layout
+  // reload after ids are reminted.
+  QString dataset_source;
+  // Full file identity stamped by FileLoader at layout-file save. Unlike
+  // dataset_source (often a basename/display label), it distinguishes same-named
+  // files in different directories and guards a coincidentally reminted id.
+  QString dataset_path;
 
   [[nodiscard]] bool operator==(const SeriesPath& other) const {
-    return topic == other.topic && field == other.field;
+    return topic == other.topic && field == other.field && dataset_id == other.dataset_id &&
+           dataset_source == other.dataset_source && dataset_path == other.dataset_path;
   }
   // Human-readable form for missing-curve lists: "topic/field".
   [[nodiscard]] QString display() const;
 };
+
+// Read one curve's SeriesPath off a <curve> element, honoring the range-checked
+// dataset-id parse (an out-of-range or non-numeric id decays to 0/unqualified).
+// These are the single reader for curve attributes so hand-built SeriesPath call
+// sites (e.g. PendingDisplayBinder) cannot drift from the range-check.
+//   * readTimeSeriesPath: the plain topic/field + dataset_* qualifiers.
+//   * readXyXPath / readXyYPath: the x_/y_-prefixed XY-axis qualifiers.
+// nullopt when the element lacks the relevant topic attribute (no stable identity).
+[[nodiscard]] std::optional<SeriesPath> readTimeSeriesPath(const QDomElement& curve);
+[[nodiscard]] std::optional<SeriesPath> readXyXPath(const QDomElement& curve);
+[[nodiscard]] std::optional<SeriesPath> readXyYPath(const QDomElement& curve);
 
 // Resolves a stable SeriesPath to a concrete catalog key within the target
 // dataset, or std::nullopt when that dataset has no matching topic+field.
@@ -130,9 +210,54 @@ using SeriesKeyResolver = std::function<std::optional<QString>(const SeriesPath&
 // result so the caller can prompt/strip. In place.
 [[nodiscard]] QList<SeriesPath> rebindCurveKeys(QDomDocument& doc, const SeriesKeyResolver& resolve);
 
+// Converts a saved workspace document into a portable generic layout by removing
+// the exact dataset hints (dataset_id / dataset_source / dataset_path and their
+// x_/y_ XY variants) from plotted TS/XY curves, plus input_dataset_* from
+// data-processor <processor> inputs. The topic+field identity remains and may bind
+// at apply time only when unique in the loaded data. Scene docks are deliberately
+// NOT touched — they own their qualifier round-trip and require the numeric id even
+// in a generic layout. Undo snapshots and source-bound layouts keep their qualifiers.
+void removeDatasetQualifiersForGenericLayout(QDomDocument& doc);
+
+// Maps a serialized DatasetId to its FileLoader-known full source path (empty for
+// a non-file/unknown dataset). Supplied to stampDatasetSourcePaths so the XML
+// layer needs no FileLoader dependency of its own.
+using DatasetPathLookup = std::function<QString(std::uint32_t)>;
+
+// Adds the FileLoader-known full-path companion (`*_dataset_path`) next to every
+// persisted `*_dataset_id` on plotted TS/XY curves and data-processor <processor>
+// inputs. Scene docks are NOT visited — they own their qualifier round-trip through
+// their own save/restore (see removeDatasetQualifiersForGenericLayout). A dataset
+// the lookup can't place keeps its id/source qualifier unchanged.
+void stampDatasetSourcePaths(QDomDocument& doc, const DatasetPathLookup& lookup);
+
+// Makes a document safe to persist outside the live session. A non-zero numeric
+// id WITHOUT a full-path qualifier is only a volatile in-session hint; strip it
+// so a later session cannot accept a coincidentally reminted id merely because a
+// basename-like source label also matches. Path-qualified ids and zero-valued
+// local-scene ids are left intact; the retained source label may still rebind
+// when unique. Scoped to plot curves and <processor> inputs (same reason as
+// stampDatasetSourcePaths); scene ids survive so restored scene layers keep binding.
+void removeUnvalidatedDatasetIds(QDomDocument& doc);
+
+// Resolves relative `*_dataset_path` qualifiers against the layout file's
+// directory before any plot/processor/scene restore consumes them, so a
+// source-bound layout moves together with its data. Undo snapshots carry no such
+// portable path attributes and are unchanged.
+void resolveDatasetSourcePaths(QDomDocument& doc, const QDir& layout_dir);
+
 // Removes every <curve> left without any usable key after rebindCurveKeys
 // (empty name and empty curve_x/curve_y). Two-pass so the live node list
 // isn't invalidated mid-iteration.
 void stripUnresolvedCurves(QDomDocument& doc);
+
+// Annotates every <plot>'s <range> with an explicit x_basis marker when it lacks
+// one, so the widget loader never has to infer the X coordinate meaning from plot
+// mode. A read-side migration: it changes NO numeric range values. An XY plot's
+// range becomes x_basis="value"; a time-series range becomes x_basis="absolute"
+// because PJ4 has always persisted time-axis ranges in absolute seconds (the v3
+// writer already did, per PR #248). Idempotent — a range that already carries
+// x_basis is left untouched. Call BEFORE any widget restore consumes the document.
+void normalizePlotRangeBasis(QDomDocument& doc);
 
 }  // namespace PJ::layout_xml

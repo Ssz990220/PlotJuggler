@@ -1,0 +1,68 @@
+schema_version: 1
+
+# Luau (Roblox's sandboxed Lua dialect) — pj_scripting's filter engine.
+# Upstream CMake has no install target, so the script hand-installs the static
+# libs + headers and drops in the committed LuauConfig.cmake (find_library-based,
+# platform-neutral). Common carries StringUtils (format/hashRange), referenced
+# by Ast/Compiler/VM — it must be built and shipped, not treated as header-only.
+
+context:
+  version: "0.700"
+
+package:
+  name: luau
+  version: ${{ version }}
+
+source:
+  url: https://github.com/luau-lang/luau/archive/refs/tags/${{ version }}.tar.gz
+  sha256: e0dffe07a4b27c568b9688916e1d97ba7204b7a4d487d0a03648c99b88fc8df8
+
+build:
+  number: 0
+  script:
+    # Unix: build against the conda cross-compiler ($CC/$CXX) whose default
+    # sysroot is the conda glibc (2.28). Building via the system GCC instead
+    # leaves __isoc23_* refs that won't resolve against that sysroot at consume
+    # time. Install libs to $PREFIX/lib and the config to $PREFIX/lib/cmake/Luau.
+    - if: unix
+      then:
+        - cmake -G Ninja -B build -S . -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" -DCMAKE_BUILD_TYPE=Release -DLUAU_BUILD_CLI=OFF -DLUAU_BUILD_TESTS=OFF -DLUAU_BUILD_WEB=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+        - cmake --build build --target Luau.Common Luau.VM Luau.Compiler Luau.Ast Luau.CodeGen
+        - mkdir -p "$PREFIX/lib/cmake/Luau" "$PREFIX/include"
+        - cp build/libLuau.Common.a build/libLuau.VM.a build/libLuau.Compiler.a build/libLuau.Ast.a build/libLuau.CodeGen.a "$PREFIX/lib/"
+        - cp -r Common/include/. Ast/include/. Compiler/include/. VM/include/. CodeGen/include/. "$PREFIX/include/"
+        - cp "$RECIPE_DIR/LuauConfig.cmake" "$PREFIX/lib/cmake/Luau/LuauConfig.cmake"
+    # Windows: conda's library tree is %LIBRARY_PREFIX% (…\Library). MSVC needs
+    # an explicit Release config; the same find_library config resolves .lib.
+    - if: win
+      then:
+        - cmake -G Ninja -B build -S . -DCMAKE_BUILD_TYPE=Release -DLUAU_BUILD_CLI=OFF -DLUAU_BUILD_TESTS=OFF -DLUAU_BUILD_WEB=OFF
+        - cmake --build build --config Release --target Luau.Common Luau.VM Luau.Compiler Luau.Ast Luau.CodeGen
+        - if not exist "%LIBRARY_PREFIX%\lib\cmake\Luau" mkdir "%LIBRARY_PREFIX%\lib\cmake\Luau"
+        - copy /Y build\Luau.Common.lib "%LIBRARY_PREFIX%\lib\"
+        - copy /Y build\Luau.VM.lib "%LIBRARY_PREFIX%\lib\"
+        - copy /Y build\Luau.Compiler.lib "%LIBRARY_PREFIX%\lib\"
+        - copy /Y build\Luau.Ast.lib "%LIBRARY_PREFIX%\lib\"
+        - copy /Y build\Luau.CodeGen.lib "%LIBRARY_PREFIX%\lib\"
+        - xcopy /E /I /Y Common\include "%LIBRARY_PREFIX%\include"
+        - xcopy /E /I /Y Ast\include "%LIBRARY_PREFIX%\include"
+        - xcopy /E /I /Y Compiler\include "%LIBRARY_PREFIX%\include"
+        - xcopy /E /I /Y VM\include "%LIBRARY_PREFIX%\include"
+        - xcopy /E /I /Y CodeGen\include "%LIBRARY_PREFIX%\include"
+        - copy /Y "%RECIPE_DIR%\LuauConfig.cmake" "%LIBRARY_PREFIX%\lib\cmake\Luau\LuauConfig.cmake"
+
+requirements:
+  build:
+    - ${{ compiler('cxx') }}
+    # Linux only: pins the target glibc sysroot (see recipes/variants.yaml).
+    # Windows/MSVC has no glibc, so the stdlib pin does not apply there.
+    - if: linux
+      then:
+        - ${{ stdlib('c') }}
+    - cmake
+    - ninja
+
+about:
+  homepage: https://luau.org
+  license: MIT
+  summary: Luau — a fast, small, safe, gradually typed embeddable scripting language derived from Lua

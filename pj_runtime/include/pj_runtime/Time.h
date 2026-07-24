@@ -20,6 +20,9 @@
 
 #include <chrono>
 #include <compare>
+#include <limits>
+#include <optional>
+#include <type_traits>
 
 #include "pj_base/dataset.hpp"  // PJ::TimeDomain (display_offset)
 #include "pj_base/time.hpp"     // PJ::Timepoint, PJ::Duration, fromRaw/toRaw (absolute spine)
@@ -81,6 +84,40 @@ using DisplayRange = PJ::Range<DisplaySeconds>;
 /// each app/UI call site.
 [[nodiscard]] constexpr DisplayRange displayRange(double min_seconds, double max_seconds) noexcept {
   return DisplayRange{displaySeconds(min_seconds), displaySeconds(max_seconds)};
+}
+
+/// Signed difference of absolute nanosecond timestamps, converted only after
+/// integer subtraction so a small epoch-scale frame change stays exact.
+[[nodiscard]] constexpr double timestampDifferenceSeconds(Timestamp lhs, Timestamp rhs) noexcept {
+  using UnsignedTimestamp = std::make_unsigned_t<Timestamp>;
+  if (lhs >= rhs) {
+    const UnsignedTimestamp delta = static_cast<UnsignedTimestamp>(lhs) - static_cast<UnsignedTimestamp>(rhs);
+    return static_cast<double>(delta) / kNanosecondsPerSecond;
+  }
+  const UnsignedTimestamp delta = static_cast<UnsignedTimestamp>(rhs) - static_cast<UnsignedTimestamp>(lhs);
+  return -static_cast<double>(delta) / kNanosecondsPerSecond;
+}
+
+/// Whether subtracting an offset from an absolute nanosecond timestamp stays
+/// inside the signed timestamp range.
+[[nodiscard]] constexpr bool timelineDifferenceFits(Timestamp raw_ns, Timestamp offset_ns) noexcept {
+  if (offset_ns > 0) {
+    return raw_ns >= std::numeric_limits<Timestamp>::min() + offset_ns;
+  }
+  if (offset_ns < 0) {
+    return raw_ns <= std::numeric_limits<Timestamp>::max() + offset_ns;
+  }
+  return true;
+}
+
+/// Subtract a display offset without signed overflow; nullopt means the
+/// requested display coordinate is not representable.
+[[nodiscard]] constexpr std::optional<Timestamp> checkedTimelineDifference(
+    Timestamp raw_ns, Timestamp offset_ns) noexcept {
+  if (!timelineDifferenceFits(raw_ns, offset_ns)) {
+    return std::nullopt;
+  }
+  return raw_ns - offset_ns;
 }
 
 // --- display seam: the offset is MANDATORY, so raw->display can't be skipped ---

@@ -11,6 +11,7 @@
 #include <QTemporaryFile>
 
 #include "pj_widgets/CredentialsEditor.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -18,8 +19,8 @@ const QString kTick = QString::fromUtf8("✓");   // green check
 const QString kCross = QString::fromUtf8("✗");  // red cross
 // An example provider-specific pattern + a key that matches it. The widget itself
 // is domain-neutral; a plugin injects this pattern via the `apiKeyPattern` property.
-const QString kKeyPattern = QStringLiteral("^msco_[a-z0-9]{32}_[0-9a-f]{8}$");
-const QString kValidKey = QStringLiteral("msco_abcdefghijklmnopqrstuvwxyz012345_0123abcd");
+const QString kKeyPattern = u"^msco_[a-z0-9]{32}_[0-9a-f]{8}$"_s;
+const QString kValidKey = u"msco_abcdefghijklmnopqrstuvwxyz012345_0123abcd"_s;
 
 // The sub-dialog harvester (PanelEngine) walks findChildren by objectName and
 // drives the plugin's onTextChanged/onToggled from these exact names, so they
@@ -53,7 +54,7 @@ TEST(CredentialsEditor, ApiKeyMaskedByDefaultAndRevealToggleShowsIt) {
 // Validity predicate is pure, so tested directly. With no pattern the widget is
 // domain-neutral: any non-empty key is valid.
 TEST(CredentialsEditor, IsApiKeyValidDefaultsToNonEmpty) {
-  EXPECT_TRUE(PJ::CredentialsEditor::isApiKeyValid(QStringLiteral("anything-non-empty")));
+  EXPECT_TRUE(PJ::CredentialsEditor::isApiKeyValid(u"anything-non-empty"_s));
   EXPECT_TRUE(PJ::CredentialsEditor::isApiKeyValid(kValidKey));
   EXPECT_FALSE(PJ::CredentialsEditor::isApiKeyValid(QString()));
 }
@@ -62,28 +63,24 @@ TEST(CredentialsEditor, IsApiKeyValidDefaultsToNonEmpty) {
 TEST(CredentialsEditor, IsApiKeyValidEnforcesInjectedPattern) {
   EXPECT_TRUE(PJ::CredentialsEditor::isApiKeyValid(kValidKey, kKeyPattern));
   EXPECT_FALSE(PJ::CredentialsEditor::isApiKeyValid(QString(), kKeyPattern));
-  EXPECT_FALSE(PJ::CredentialsEditor::isApiKeyValid(QStringLiteral("msco_short_0123abcd"), kKeyPattern));
+  EXPECT_FALSE(PJ::CredentialsEditor::isApiKeyValid(u"msco_short_0123abcd"_s, kKeyPattern));
   // Hex suffix must be lowercase hex, not arbitrary alnum.
-  EXPECT_FALSE(
-      PJ::CredentialsEditor::isApiKeyValid(
-          QStringLiteral("msco_abcdefghijklmnopqrstuvwxyz012345_0123ABCD"), kKeyPattern));
-  EXPECT_FALSE(
-      PJ::CredentialsEditor::isApiKeyValid(
-          QStringLiteral("nope_abcdefghijklmnopqrstuvwxyz012345_0123abcd"), kKeyPattern));
+  EXPECT_FALSE(PJ::CredentialsEditor::isApiKeyValid(u"msco_abcdefghijklmnopqrstuvwxyz012345_0123ABCD"_s, kKeyPattern));
+  EXPECT_FALSE(PJ::CredentialsEditor::isApiKeyValid(u"nope_abcdefghijklmnopqrstuvwxyz012345_0123abcd"_s, kKeyPattern));
   // A partial match (valid prefix, trailing junk) must be rejected.
-  EXPECT_FALSE(PJ::CredentialsEditor::isApiKeyValid(kValidKey + QStringLiteral("trailing"), kKeyPattern));
+  EXPECT_FALSE(PJ::CredentialsEditor::isApiKeyValid(kValidKey + u"trailing"_s, kKeyPattern));
 }
 
 // A malformed pattern degrades to the non-empty rule rather than rejecting all.
 TEST(CredentialsEditor, IsApiKeyValidFallsBackOnBadPattern) {
-  const QString bad = QStringLiteral("([unterminated");
-  EXPECT_TRUE(PJ::CredentialsEditor::isApiKeyValid(QStringLiteral("key"), bad));
+  const QString bad = u"([unterminated"_s;
+  EXPECT_TRUE(PJ::CredentialsEditor::isApiKeyValid(u"key"_s, bad));
   EXPECT_FALSE(PJ::CredentialsEditor::isApiKeyValid(QString(), bad));
 }
 
 TEST(CredentialsEditor, IsCertReadableChecksFileExistence) {
   EXPECT_FALSE(PJ::CredentialsEditor::isCertReadable(QString()));
-  EXPECT_FALSE(PJ::CredentialsEditor::isCertReadable(QStringLiteral("/no/such/ca.pem")));
+  EXPECT_FALSE(PJ::CredentialsEditor::isCertReadable(u"/no/such/ca.pem"_s));
   QTemporaryFile f;
   ASSERT_TRUE(f.open());
   EXPECT_TRUE(PJ::CredentialsEditor::isCertReadable(f.fileName()));
@@ -100,7 +97,7 @@ TEST(CredentialsEditor, ApiKeyTickDefaultsToNonEmptyLive) {
   ASSERT_NE(tick, nullptr);
 
   EXPECT_TRUE(tick->text().isEmpty());  // empty key → no tick
-  api_key->setText(QStringLiteral("any-non-empty"));
+  api_key->setText(u"any-non-empty"_s);
   EXPECT_EQ(tick->text(), kTick);
   api_key->clear();
   EXPECT_TRUE(tick->text().isEmpty());
@@ -118,7 +115,7 @@ TEST(CredentialsEditor, ApiKeyTickEnforcesInjectedPatternLive) {
   editor.setApiKeyPattern(kKeyPattern);
   api_key->setText(kValidKey);
   EXPECT_EQ(tick->text(), kTick);
-  api_key->setText(QStringLiteral("garbage"));
+  api_key->setText(u"garbage"_s);
   EXPECT_EQ(tick->text(), kCross);
 
   // Setting the pattern after text re-runs the tick (here: relax to non-empty).
@@ -134,7 +131,7 @@ TEST(CredentialsEditor, CertTickReflectsReadabilityLive) {
   ASSERT_NE(tick, nullptr);
 
   EXPECT_TRUE(tick->text().isEmpty());
-  cert->setText(QStringLiteral("/no/such/ca.pem"));
+  cert->setText(u"/no/such/ca.pem"_s);
   EXPECT_EQ(tick->text(), kCross);
   QTemporaryFile f;
   ASSERT_TRUE(f.open());

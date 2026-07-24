@@ -1,0 +1,98 @@
+name: AppImage builder image
+
+# Builds and publishes the THIN AppImage CI builder image (the `ci-base` target
+# of appimage/Dockerfile.build) to GHCR. linux-appimage-release.yml runs its
+# build job inside this image to keep the glibc 2.35 floor after hosted
+# ubuntu-22.04 runners retire (actions/runner-images#14254). The fat local
+# builder target is NOT built here — build_in_docker.sh builds it on demand.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - appimage/Dockerfile.build
+      - .github/workflows/appimage-builder-image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  actions: write    # update the PJ4_APPIMAGE_BUILDER_IMAGE repo variable
+
+concurrency:
+  group: appimage-builder-image-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/plotjuggler/pj4-appimage-builder
+
+jobs:
+  build-push:
+    runs-on: depot-ubuntu-22.04-4
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Read versions.env
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ./versions.env
+          echo "PJ_APPIMAGE_ARCH=${PJ_APPIMAGE_ARCH}" >> "${GITHUB_ENV}"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build ci-base target
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build -f appimage/Dockerfile.build --target ci-base \
+            --build-arg PJ_APPIMAGE_ARCH="${PJ_APPIMAGE_ARCH}" \
+            -t "${IMAGE}:${GITHUB_SHA}" -t "${IMAGE}:latest" .
+
+      - name: Smoke-test the image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm "${IMAGE}:${GITHUB_SHA}" bash -c "
+            set -e
+            command -v conan aqt cmake ninja ccache git wget patchelf
+            test -x /opt/linuxdeploy/linuxdeploy-${PJ_APPIMAGE_ARCH}.AppImage
+            test -x /opt/linuxdeploy/linuxdeploy-plugin-qt-${PJ_APPIMAGE_ARCH}.AppImage
+            test -x /opt/linuxdeploy/appimagetool-${PJ_APPIMAGE_ARCH}.AppImage
+            gcc --version | head -1"
+
+      - name: Push
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker push "${IMAGE}:${GITHUB_SHA}"
+          docker push "${IMAGE}:latest"
+
+      - name: Pin the pushed digest in the repo variable
+        # linux-appimage-release.yml pulls the image by this immutable digest
+        # (falling back to :latest only while the variable does not exist yet),
+        # so a bad image build can never silently retarget release builds.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          digest="$(docker buildx imagetools inspect "${IMAGE}:${GITHUB_SHA}" --format '{{ .Manifest.Digest }}')"
+          test -n "$digest"
+          # GITHUB_TOKEN cannot write repository variables (HTTP 403 even with
+          # actions:write), so this is best-effort: it works once an admin
+          # supplies a PAT-backed variable path or sets the variable manually.
+          # Until then the release workflow's :latest fallback applies — still
+          # gated by this workflow's smoke test, just not digest-immutable.
+          if gh variable set PJ4_APPIMAGE_BUILDER_IMAGE \
+               --repo "${GITHUB_REPOSITORY}" --body "${IMAGE}@${digest}"; then
+            echo "Pinned ${IMAGE}@${digest}"
+          else
+            echo "::warning::Could not update PJ4_APPIMAGE_BUILDER_IMAGE (GITHUB_TOKEN cannot write repo variables). Set it manually to ${IMAGE}@${digest} for digest-pinned pulls."
+          fi

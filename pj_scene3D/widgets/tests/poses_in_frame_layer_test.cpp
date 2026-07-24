@@ -28,6 +28,7 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
 #include "pj_scene_common/layer_params.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -82,12 +83,12 @@ TEST_F(PosesInFrameLayerTest, DecodesPosesIntoThreeArmsEachAtTrackerTime) {
   pushPoses(100, 3);
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session_;
-  pj::scene3d::PosesInFrameLayer layer(topic_, QStringLiteral("poses"));
+  pj::scene3d::PosesInFrameLayer layer(topic_, u"poses"_s);
   ASSERT_TRUE(layer.attach(ctx));
 
   layer.renderAtForTest(100);
   EXPECT_EQ(layer.instancesForTest().size(), 9U);  // 3 poses * 3 arms
-  EXPECT_EQ(layer.sourceFrame(), QStringLiteral("map"));
+  EXPECT_EQ(layer.sourceFrame(), u"map"_s);
 }
 
 // A data-source/toolbox canonical topic carries serialized pj_base blobs and has
@@ -109,12 +110,12 @@ TEST_F(PosesInFrameLayerTest, RendersCanonicalBlobWithoutParser) {
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session_;
-  pj::scene3d::PosesInFrameLayer layer(canon_topic, QStringLiteral("poses_canon"));
+  pj::scene3d::PosesInFrameLayer layer(canon_topic, u"poses_canon"_s);
   ASSERT_TRUE(layer.attach(ctx));  // would FAIL before the canonical fallback: "no parser"
 
   layer.renderAtForTest(200);
   EXPECT_EQ(layer.instancesForTest().size(), 3U);  // 1 pose * 3 arms
-  EXPECT_EQ(layer.sourceFrame(), QStringLiteral("map"));
+  EXPECT_EQ(layer.sourceFrame(), u"map"_s);
   EXPECT_EQ(g_parser_calls.load(), 0);  // canonical path, parser never invoked
 }
 
@@ -122,7 +123,7 @@ TEST_F(PosesInFrameLayerTest, UnchangedSampleIsNotRedecoded) {
   pushPoses(100, 2);
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session_;
-  pj::scene3d::PosesInFrameLayer layer(topic_, QStringLiteral("poses"));
+  pj::scene3d::PosesInFrameLayer layer(topic_, u"poses"_s);
   ASSERT_TRUE(layer.attach(ctx));
 
   layer.renderAtForTest(100);
@@ -137,7 +138,7 @@ TEST_F(PosesInFrameLayerTest, SizeEditReexpandsCurrentSample) {
   pushPoses(100, 1);
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session_;
-  pj::scene3d::PosesInFrameLayer layer(topic_, QStringLiteral("poses"));
+  pj::scene3d::PosesInFrameLayer layer(topic_, u"poses"_s);
   ASSERT_TRUE(layer.attach(ctx));
 
   layer.setGizmoSize(0.5f);
@@ -155,7 +156,7 @@ TEST_F(PosesInFrameLayerTest, OpacityEditReexpandsCurrentSample) {
   pushPoses(100, 1);
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session_;
-  pj::scene3d::PosesInFrameLayer layer(topic_, QStringLiteral("poses"));
+  pj::scene3d::PosesInFrameLayer layer(topic_, u"poses"_s);
   ASSERT_TRUE(layer.attach(ctx));
 
   layer.setGizmoOpacity(0.4f);
@@ -170,12 +171,12 @@ TEST_F(PosesInFrameLayerTest, EmptyPoseSetStagesNoArmsButKeepsFrame) {
   pushPoses(100, 0);
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session_;
-  pj::scene3d::PosesInFrameLayer layer(topic_, QStringLiteral("poses"));
+  pj::scene3d::PosesInFrameLayer layer(topic_, u"poses"_s);
   ASSERT_TRUE(layer.attach(ctx));
 
   layer.renderAtForTest(100);
   EXPECT_TRUE(layer.instancesForTest().empty());
-  EXPECT_EQ(layer.sourceFrame(), QStringLiteral("map"));
+  EXPECT_EQ(layer.sourceFrame(), u"map"_s);
 }
 
 // Per-use parseLocked guard: re-registering the topic's parser (a file reload)
@@ -185,7 +186,7 @@ TEST_F(PosesInFrameLayerTest, DecodeSurvivesParserReRegistration) {
   pushPoses(100, 2);
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session_;
-  pj::scene3d::PosesInFrameLayer layer(topic_, QStringLiteral("poses"));
+  pj::scene3d::PosesInFrameLayer layer(topic_, u"poses"_s);
   ASSERT_TRUE(layer.attach(ctx));
   layer.renderAtForTest(100);
   ASSERT_EQ(layer.instancesForTest().size(), 6U);
@@ -207,7 +208,7 @@ TEST_F(PosesInFrameLayerTest, XArrowOnlyStagesOneArmPerPose) {
   pushPoses(100, 3);
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session_;
-  pj::scene3d::PosesInFrameLayer layer(topic_, QStringLiteral("poses"));
+  pj::scene3d::PosesInFrameLayer layer(topic_, u"poses"_s);
   ASSERT_TRUE(layer.attach(ctx));
 
   layer.renderAtForTest(100);
@@ -222,7 +223,7 @@ TEST_F(PosesInFrameLayerTest, OverrideColorAppliesInXOnlyMode) {
   pushPoses(100, 1);
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session_;
-  pj::scene3d::PosesInFrameLayer layer(topic_, QStringLiteral("poses"));
+  pj::scene3d::PosesInFrameLayer layer(topic_, u"poses"_s);
   ASSERT_TRUE(layer.attach(ctx));
 
   layer.setXArrowOnly(true);
@@ -242,7 +243,7 @@ TEST_F(PosesInFrameLayerTest, OverrideColorRecolorsFullTriad) {
   pushPoses(100, 1);
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session_;
-  pj::scene3d::PosesInFrameLayer layer(topic_, QStringLiteral("poses"));
+  pj::scene3d::PosesInFrameLayer layer(topic_, u"poses"_s);
   ASSERT_TRUE(layer.attach(ctx));
 
   layer.setOverrideColorEnabled(true);  // full triad, x_arrow_only stays false
@@ -263,8 +264,8 @@ TEST(PosesInFrameLayerParamTransfer, SerializeApplyRoundTripsEveryParam) {
   a.id = 1;
   PJ::ObjectTopicId b;
   b.id = 2;
-  pj::scene3d::PosesInFrameLayer src(a, QStringLiteral("A"));
-  pj::scene3d::PosesInFrameLayer dst(b, QStringLiteral("B"));
+  pj::scene3d::PosesInFrameLayer src(a, u"A"_s);
+  pj::scene3d::PosesInFrameLayer dst(b, u"B"_s);
 
   src.setGizmoSize(0.42f);            // default 0.15
   src.setGizmoOpacity(0.33f);         // default 1.0

@@ -11,6 +11,7 @@
 #include <optional>
 #include <shared_mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -28,6 +29,16 @@ namespace PJ {
 class MessageParserPluginBase;
 class DataProcessorService;
 class RefillGuard;
+
+/// Result of resolving a persisted dataset identity against the live session.
+/// `ambiguous` distinguishes "not loaded yet" from multiple equally valid
+/// candidates, which lets deferred scene/plot restore wait for the former and
+/// reject the latter without ever selecting by load order. `id == nullopt` with
+/// `ambiguous == false` means no live dataset matches (yet).
+struct DatasetIdentityResolution {
+  std::optional<DatasetId> id;
+  bool ambiguous = false;
+};
 
 // Owns the datastore for the current app session. v1 scalar commit calls are
 // expected on the GUI thread so plot adapters never observe mutation during
@@ -72,6 +83,49 @@ class SessionManager : public QObject {
   }
 
   [[nodiscard]] DataReader createReader() const;
+
+  /// Associates a file-backed dataset with the normalized full path from which
+  /// FileLoader created it. DatasetInfo::source_name is intentionally only a
+  /// display/raw-source label (often a basename), so it cannot distinguish two
+  /// files with the same name in different directories. The path is normalized
+  /// on store (canonicalFilePath, falling back to absoluteFilePath) so lookups
+  /// match regardless of symlink/relative aliasing. Empty `path` removes the
+  /// association. GUI-thread only.
+  void setDatasetSourcePath(DatasetId dataset_id, QString path);
+
+  /// Normalized full source path registered for `dataset_id`, or empty for a
+  /// streaming/test dataset and for an id no longer tracked by FileLoader.
+  [[nodiscard]] QString datasetSourcePath(DatasetId dataset_id) const;
+
+  /// The physical-path normalization every stored source path goes through
+  /// (setDatasetSourcePath, recordLoadedSource): canonicalFilePath when the
+  /// file exists (resolving symlink/relative aliases), cleaned absolute path
+  /// otherwise. Exposed so callers and tests can compare against the stored
+  /// form — on Windows even an absolute Unix-style input gains a drive prefix.
+  [[nodiscard]] static QString normalizedSourcePath(const QString& path);
+
+  /// Resolves a persisted identity without guessing. Resolution order:
+  ///  1. The exact `saved_id`, trusted only while every supplied qualifier (raw
+  ///     source label and/or full source path) still agrees — this is what lets
+  ///     a same-session undo keep its exact DatasetId even amid duplicates.
+  ///  2. If the id was reminted, a path-qualified identity falls back to exactly
+  ///     one dataset whose registered path (and source label) matches.
+  ///  3. A legacy layout without a path falls back to an exactly-one source-label
+  ///     match.
+  /// More than one candidate at step 2/3 returns `{id=nullopt, ambiguous=true}`
+  /// rather than choosing by load order. An id carrying no portable qualifiers
+  /// (empty source AND empty path) is valid only while that exact id still
+  /// exists; otherwise it resolves to nothing (not ambiguous).
+  [[nodiscard]] DatasetIdentityResolution resolveDatasetIdentity(
+      DatasetId saved_id, const QString& saved_source, const QString& saved_path = {}) const;
+
+  /// Topic-aware fallback for a same-file single<->fan-out remint. When full-path
+  /// identity alone names several datasets (resolveDatasetIdentity returns
+  /// ambiguous), returns a dataset only if exactly one of those siblings owns an
+  /// object topic named `object_topic_name`; still ambiguous if several do.
+  [[nodiscard]] DatasetIdentityResolution resolveObjectDatasetIdentity(
+      DatasetId saved_id, const QString& saved_source, const QString& saved_path,
+      const QString& object_topic_name) const;
 
   /// TOTAL display shift used by everything that renders on the display axis
   /// (plot curves, scenes, the playback range/cursor): the dataset's per-source
@@ -259,11 +313,12 @@ class SessionManager : public QObject {
     }
     return loaded_sources_.back();
   }
-  // Records a loaded file. If a source with the same `path` is already tracked,
-  // its entry is updated in place (preserving list order — a reload keeps the
-  // file's position); otherwise the source is appended. This dedup-by-path keeps
-  // reloads from growing duplicate <fileInfo> entries while additive loads of
-  // distinct files all persist.
+  // Records a loaded file. `path` is normalized on store (same rules as
+  // setDatasetSourcePath), so a symlink/relative alias of an already-tracked
+  // file updates its entry in place (preserving list order — a reload keeps the
+  // file's position); otherwise the source is appended. This dedup-by-physical-
+  // path keeps reloads from growing duplicate <fileInfo> entries while additive
+  // loads of distinct files all persist.
   void recordLoadedSource(QString path, QString prefix, QString plugin_id = {}, QString plugin_config_json = {});
   void clearLoadedSource() noexcept {
     loaded_sources_.clear();
@@ -277,6 +332,24 @@ class SessionManager : public QObject {
   // selection of object-topic entries rather than a whole dataset.
   void evictObjectTopics(const std::vector<ObjectTopicId>& topic_ids);
   void clearAllObjects();
+
+  // REAL removal of a dataset's scalar storage from the engine, paired with
+  // invalidating its time-origin caches so globalTimeReference() re-bases to the
+  // surviving data. Use this instead of reaching into dataEngine().removeDataset
+  // directly — the latter leaves the memoized earliest-sample origin stale.
+  // Callers must first tear down readers/catalog items (removeDataset's
+  // invalidate-first contract) and evict the dataset's objects.
+  void removeDataset(DatasetId dataset_id);
+
+  // Recompute `dataset_id`'s pinned earliest-sample origin from its CURRENT data
+  // and emit the global reframe if the cross-dataset origin moved. FileLoader calls
+  // this at a load-completion seam: plugin ingest commits straight to DataEngine via
+  // the C-ABI write host (bypassing commitChunks/notifyIngest), so a finished short
+  // file whose data is earlier than any prior dataset would otherwise leave curve
+  // adapters on a stale display offset. No-op when "Use time offset" is off (the
+  // global reference is 0 regardless). Invalidates the dataset's min pin first so a
+  // shrunk/earlier range is picked up.
+  void refreshDatasetTimeReference(DatasetId dataset_id);
 
  signals:
   // Emitted when topics receive new samples (commit/ingest path). `live` is
@@ -312,6 +385,13 @@ class SessionManager : public QObject {
   // signal must not be emitted from outside its own members under moc).
   void notifyDatasetAboutToBeReplaced(PJ::DatasetId dataset_id);
 
+  // The distinct datasets that own the given object topics (skipping the unset
+  // dataset id 0). Callers snapshot this set BEFORE removing the topics, so the
+  // affected datasets' pinned minima can be invalidated once their descriptors
+  // are gone. Shared by evictObjectTopics and clearAllObjects.
+  [[nodiscard]] std::unordered_set<DatasetId> datasetsOwningObjectTopics(
+      const std::vector<ObjectTopicId>& topic_ids) const;
+
   // [min, max] raw-ns bounds across one dataset's scalar + object topics, or
   // nullopt when it holds no data. The one time-bounds union loop.
   [[nodiscard]] std::optional<std::pair<Timestamp, Timestamp>> datasetRawBounds(DatasetId dataset_id) const;
@@ -325,6 +405,12 @@ class SessionManager : public QObject {
   [[nodiscard]] Timestamp rememberDatasetMinTimestamp(DatasetId dataset_id, Timestamp observed_min) const;
   void refreshDatasetMinTimestampsForTopics(const QVector<TopicId>& ids) const;
   void invalidateDatasetMinTimestamp(DatasetId dataset_id) const;
+  // Emits the no-arg displayOffsetChanged signal exactly when the numerical
+  // global reference moved since consumers were last notified. Transactional
+  // replace/refill/eviction paths invalidate the origin cache before mutating
+  // data, so comparing at this final seam is more reliable than retaining a
+  // local "old" value across the mutation.
+  void notifyGlobalTimeReferenceIfChanged();
 
   struct ObjectParserSlot {
     // shared_ptr (not unique_ptr) so a display source can hold the handle alive
@@ -356,8 +442,22 @@ class SessionManager : public QObject {
   // Earliest raw stamp across ALL datasets, memoized for globalTimeReference().
   // Independent of the toggle (it's a raw-data fact), so it survives a
   // setUseTimeOffset but is cleared on every commit/ingest like the per-dataset
-  // memo. nullopt = not yet computed / no data.
+  // memo. nullopt = not yet computed; 0 = computed, no data.
+  //
+  // INVARIANT: the globalTimeReference() recompute TRUSTS the per-dataset pins
+  // (dataset_min_cache_) instead of rescanning raw bounds, so anything that can
+  // RAISE a dataset's earliest sample (removeDataset / evictObjectTopics /
+  // clearAllObjects / refill / refreshDatasetTimeReference) MUST invalidate that
+  // dataset's pin AND reset this global memo — invalidateDatasetMinTimestamp does
+  // both. Ingest can only LOWER a pin (rememberDatasetMinTimestamp never raises
+  // it), so the ingest path only resets this memo. Skipping either reset on a
+  // raise path would leave the recompute reading a stale-low origin.
   mutable std::optional<Timestamp> global_min_cache_;
+  // The globalTimeReference() value at the most recent displayOffsetChanged
+  // emission (from setUseTimeOffset or notifyGlobalTimeReferenceIfChanged), so
+  // the latter suppresses a redundant frame-change signal when the origin is
+  // unmoved. 0 matches the neutral "no data / offset off" origin.
+  Timestamp last_notified_global_reference_ = 0;
   // Owns the session's filter/transform engine; constructed in the ctor body
   // after data_engine_ is alive (it binds a DerivedEngine to data_engine_).
   std::unique_ptr<DataProcessorService> processor_service_;
@@ -372,6 +472,10 @@ class SessionManager : public QObject {
   // parser alive for the consumer that captured it.
   mutable std::shared_mutex object_parsers_mutex_;
   std::unordered_map<uint32_t, ObjectParserSlot> object_topic_parsers_;
+  // FileLoader-owned portable identity, centralized here so plots, processors,
+  // and both scene families resolve the same (id, source, full-path) contract.
+  // Paths are stored normalized (see setDatasetSourcePath).
+  std::unordered_map<DatasetId, QString> dataset_source_paths_;
   std::vector<LoadedSource> loaded_sources_;
 };
 
@@ -399,6 +503,9 @@ class RefillGuard {
 
   /// Keep the refilled data: drop the snapshot so the destructor no longer rolls back.
   void commit();
+  /// Replay processor outputs after the final raw flush and before vanished-topic
+  /// pruning. Failure leaves the transaction live for destructor rollback.
+  [[nodiscard]] Status recomputeProcessors();
   /// Retire prior topics that VANISHED from the reloaded file (codex #2): a prior
   /// scalar/object topic still empty after the refill is one the new file no longer
   /// has (beginRefill emptied every prior topic; the refill writes back only the
@@ -421,6 +528,8 @@ class RefillGuard {
   DataEngine::DatasetChunkSnapshot scalar_snapshot_;
   ObjectStore::ObjectDatasetSnapshot object_snapshot_;
   std::vector<ObjectTopicId> prior_object_topic_ids_;
+  std::vector<TopicId> replaced_source_topic_ids_;
+  std::unordered_set<TopicId> processor_output_topic_ids_;
   bool committed_ = false;
 };
 

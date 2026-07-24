@@ -18,6 +18,7 @@
 #include <pj_plugins/host_qt/panel_engine.hpp>
 
 #include "mock_panel_plugin.hpp"
+using namespace Qt::StringLiterals;
 
 // Defined in mock_panel_plugin.cpp via PJ_DIALOG_PLUGIN(MockPanelPlugin).
 extern "C" const PJ_dialog_vtable_t* PJ_get_dialog_vtable() noexcept;
@@ -36,8 +37,8 @@ QApplication* qapp() {
   // so without this its toggle is a silent no-op on Windows (passes on Linux,
   // which is file-backed and lenient). Give the test process a stable identity.
   static const bool kIdentitySet = [] {
-    QCoreApplication::setOrganizationName(QStringLiteral("PlotJugglerTest"));
-    QCoreApplication::setApplicationName(QStringLiteral("panel_engine_test"));
+    QCoreApplication::setOrganizationName(u"PlotJugglerTest"_s);
+    QCoreApplication::setApplicationName(u"panel_engine_test"_s);
     return true;
   }();
   (void)kIdentitySet;
@@ -103,8 +104,8 @@ TEST_F(PanelEngineTest, ThemeChangeReappliesWidgetData) {
   // widget-data to re-tint them. The icon color can't be observed here (no
   // resources linked), so we prove the re-apply fires by watching a plain widget
   // value get restored from the plugin's last data on a StyleChange.
-  const QString saved_theme = QSettings().value(QStringLiteral("StyleSheet::theme")).toString();
-  QSettings().setValue(QStringLiteral("StyleSheet::theme"), QStringLiteral("light"));
+  const QString saved_theme = QSettings().value(u"StyleSheet::theme"_s).toString();
+  QSettings().setValue(u"StyleSheet::theme"_s, u"light"_s);
 
   mockPanelState().label = "FromPlugin";
   PJ::PanelEngine engine(makeMockHandle());
@@ -112,30 +113,30 @@ TEST_F(PanelEngineTest, ThemeChangeReappliesWidgetData) {
   ASSERT_NE(panel, nullptr);
   auto* label = panel->findChild<QLabel*>("labelHello");
   ASSERT_NE(label, nullptr);
-  ASSERT_EQ(label->text(), QStringLiteral("FromPlugin"));
+  ASSERT_EQ(label->text(), u"FromPlugin"_s);
 
   // Externally clobber the label. A normal tick won't restore it — the plugin's
   // data is unchanged, so the diff is empty — only the theme-change re-apply will.
-  label->setText(QStringLiteral("CLOBBERED"));
+  label->setText(u"CLOBBERED"_s);
 
   // Theme changes, then the app re-polishes the panel (StyleChange): the engine
   // re-applies the plugin's last data, restoring the label.
-  QSettings().setValue(QStringLiteral("StyleSheet::theme"), QStringLiteral("dark"));
+  QSettings().setValue(u"StyleSheet::theme"_s, u"dark"_s);
   QEvent style_change(QEvent::StyleChange);
   QApplication::sendEvent(panel, &style_change);
-  EXPECT_EQ(label->text(), QStringLiteral("FromPlugin"));
+  EXPECT_EQ(label->text(), u"FromPlugin"_s);
 
   // A second StyleChange with no further theme change must NOT re-apply (the
   // applied-theme gate prevents redundant re-applies on unrelated polish events).
-  label->setText(QStringLiteral("CLOBBERED2"));
+  label->setText(u"CLOBBERED2"_s);
   QEvent style_change2(QEvent::StyleChange);
   QApplication::sendEvent(panel, &style_change2);
-  EXPECT_EQ(label->text(), QStringLiteral("CLOBBERED2"));
+  EXPECT_EQ(label->text(), u"CLOBBERED2"_s);
 
   if (saved_theme.isEmpty()) {
-    QSettings().remove(QStringLiteral("StyleSheet::theme"));
+    QSettings().remove(u"StyleSheet::theme"_s);
   } else {
-    QSettings().setValue(QStringLiteral("StyleSheet::theme"), saved_theme);
+    QSettings().setValue(u"StyleSheet::theme"_s, saved_theme);
   }
   delete panel;
 }
@@ -145,6 +146,7 @@ TEST_F(PanelEngineTest, TickPropagatesPluginStateChanges) {
       makeMockHandle(), {/*tick_interval_ms=*/10, /*enable_diff=*/true, /*catalog_key_resolver=*/{}});
   QWidget* panel = engine.openPanel();
   ASSERT_NE(panel, nullptr);
+  panel->show();  // hidden panels tick at 1/10 rate; exercise the visible fast path
 
   // After mutating plugin state, the next tick should refresh the label.
   mockPanelState().label = "Updated";
@@ -170,6 +172,7 @@ TEST_F(PanelEngineTest, RequestCloseFiresCallback) {
 
   QWidget* panel = engine.openPanel();
   ASSERT_NE(panel, nullptr);
+  panel->show();  // hidden panels tick at 1/10 rate; exercise the visible fast path
 
   // Ask the plugin to request close on next tick.
   mockPanelState().close_on_next_tick = true;
@@ -179,6 +182,23 @@ TEST_F(PanelEngineTest, RequestCloseFiresCallback) {
 
   EXPECT_TRUE(fired);
   EXPECT_EQ(captured_reason, "import_complete");
+
+  delete panel;
+}
+
+TEST_F(PanelEngineTest, HiddenPanelStillTicksAtReducedRate) {
+  PJ::PanelEngine engine(makeMockHandle(), {/*tick_interval_ms=*/5, /*enable_diff=*/true, /*catalog_key_resolver=*/{}});
+  QWidget* panel = engine.openPanel();
+  ASSERT_NE(panel, nullptr);
+  // Never shown: the plugin's periodic logic must stay alive regardless —
+  // a pinned toolbox in a non-current tab keeps fetching/advancing.
+  mockPanelState().label = "Updated";
+  pumpEventLoop(200);  // 40 timer fires -> at least a few 1/10-rate ticks
+
+  EXPECT_GT(engine.stats().tick_count, 0);
+  auto* label = panel->findChild<QLabel*>("labelHello");
+  ASSERT_NE(label, nullptr);
+  EXPECT_EQ(label->text().toStdString(), "Updated");
 
   delete panel;
 }

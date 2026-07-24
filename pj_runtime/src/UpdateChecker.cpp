@@ -9,15 +9,19 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <chrono>
+#include <utility>
 
+#include "pj_runtime/HttpGet.h"
 #include "pj_runtime/UpdateVersion.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
 namespace {
 // GitHub's REST endpoint returns the latest published, non-draft,
 // non-prerelease release — so betas never trigger the nag on their own.
-constexpr auto kDefaultReleaseApiUrl = "https://api.github.com/repos/PlotJuggler/PJ4/releases/latest";
+constexpr auto kDefaultReleaseApiUrl = "https://api.github.com/repos/PlotJuggler/PlotJuggler/releases/latest";
 constexpr int kTransferTimeoutMs = 15000;
 }  // namespace
 
@@ -34,6 +38,10 @@ void UpdateChecker::setReleaseApiUrl(const QUrl& url) {
   release_api_url_ = url;
 }
 
+QUrl UpdateChecker::releaseApiUrl() const {
+  return release_api_url_;
+}
+
 void UpdateChecker::checkLatestRelease() {
   // Abandon any in-flight check. abort() makes that reply emit finished() with
   // OperationCanceledError, which handleReply() drops silently; and because each
@@ -46,59 +54,49 @@ void UpdateChecker::checkLatestRelease() {
   QNetworkRequest request(release_api_url_);
   request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
   // api.github.com rejects requests without a User-Agent (HTTP 403).
-  request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("PlotJuggler"));
+  request.setHeader(QNetworkRequest::UserAgentHeader, u"PlotJuggler"_s);
   request.setRawHeader("Accept", "application/vnd.github+json");
-  request.setTransferTimeout(kTransferTimeoutMs);
 
-  QNetworkReply* reply = network_->get(request);
-  pending_reply_ = reply;
-  connect(reply, &QNetworkReply::finished, this, [this, reply]() {
-    if (pending_reply_ == reply) {
-      pending_reply_ = nullptr;
-    }
-    handleReply(reply);
-  });
+  pending_reply_ = httpGetWithTimeout(
+      *network_, std::move(request), std::chrono::milliseconds(kTransferTimeoutMs), this, [this](QNetworkReply& reply) {
+        if (pending_reply_ == &reply) {
+          pending_reply_ = nullptr;
+        }
+        handleReply(reply);
+      });
 }
 
-void UpdateChecker::handleReply(QNetworkReply* reply) {
-  if (!reply) {
-    emit checkFailed(QStringLiteral("no reply"));
-    return;
-  }
-
+void UpdateChecker::handleReply(QNetworkReply& reply) {
   // A self-inflicted abort (a newer check superseded this one) is not a
   // user-facing failure — drop it without emitting any outcome.
-  if (reply->error() == QNetworkReply::OperationCanceledError) {
-    reply->deleteLater();
+  if (reply.error() == QNetworkReply::OperationCanceledError) {
     return;
   }
 
   // A 404 (no release published yet) surfaces here as ContentNotFoundError —
   // treated like any other failure, i.e. silently on the startup path.
-  if (reply->error() != QNetworkReply::NoError) {
-    emit checkFailed(reply->errorString());
-    reply->deleteLater();
+  if (reply.error() != QNetworkReply::NoError) {
+    emit checkFailed(reply.errorString());
     return;
   }
 
-  const QByteArray data = reply->readAll();
-  reply->deleteLater();
+  const QByteArray data = reply.readAll();
 
   QJsonParseError parse_error;
   const QJsonDocument doc = QJsonDocument::fromJson(data, &parse_error);
   if (parse_error.error != QJsonParseError::NoError) {
-    emit checkFailed(QStringLiteral("release JSON parse error: %1").arg(parse_error.errorString()));
+    emit checkFailed(u"release JSON parse error: %1"_s.arg(parse_error.errorString()));
     return;
   }
   if (!doc.isObject()) {
-    emit checkFailed(QStringLiteral("release response was not a JSON object"));
+    emit checkFailed(u"release response was not a JSON object"_s);
     return;
   }
 
   const QJsonObject obj = doc.object();
-  const QString tag_name = obj.value(QStringLiteral("tag_name")).toString();
+  const QString tag_name = obj.value(u"tag_name"_s).toString();
   if (tag_name.isEmpty()) {
-    emit checkFailed(QStringLiteral("release JSON missing tag_name"));
+    emit checkFailed(u"release JSON missing tag_name"_s);
     return;
   }
 
@@ -109,8 +107,8 @@ void UpdateChecker::handleReply(QNetworkReply* reply) {
     return;
   }
 
-  const QString name = obj.value(QStringLiteral("name")).toString();
-  const QString html_url = obj.value(QStringLiteral("html_url")).toString();
+  const QString name = obj.value(u"name"_s).toString();
+  const QString html_url = obj.value(u"html_url"_s).toString();
   emit updateAvailable(ReleaseInfo{name.isEmpty() ? tag_name : name, html_url});
 }
 

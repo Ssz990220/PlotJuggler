@@ -55,6 +55,28 @@ class NegateProcessor : public proc::DataProcessor {
   }
 };
 
+// A filter whose output is always NaN (e.g. a user function like `return 0/0`).
+// Exercises the all-non-finite path in FilteredCurveAdapter's bounds computation.
+class NanProcessor : public proc::DataProcessor {
+ public:
+  [[nodiscard]] const char* id() const override {
+    return "nan";
+  }
+  [[nodiscard]] const char* bracketLabel() const override {
+    return "NaN";
+  }
+  [[nodiscard]] proc::TraitMask traits() const override {
+    return proc::kStatelessOneToOne;
+  }
+  [[nodiscard]] bool isStreamSafe() const override {
+    return true;
+  }
+  void reset() override {}
+  [[nodiscard]] std::optional<proc::Sample> calculateNextPoint(const proc::Sample& in) override {
+    return proc::Sample::scalar(in.raw_ts_ns, VarValue(std::numeric_limits<double>::quiet_NaN()));
+  }
+};
+
 class FilteredCurveAdapterTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -140,6 +162,27 @@ TEST_F(FilteredCurveAdapterTest, BoundingRectCoversFilteredValues) {
   const QRectF rect = adapter.boundingRect();
   EXPECT_DOUBLE_EQ(rect.top(), -2.0);
   EXPECT_DOUBLE_EQ(rect.bottom(), 0.0);
+}
+
+// Bug #5: when EVERY filtered value is non-finite (NaN), the bounds must not come
+// out inverted. NaN is ignored by std::min/std::max, so the naive fold left y_min at
+// +max and y_max at lowest() → an inverted range (min > max) that corrupts auto-fit.
+// The adapter must instead report NO valid bounds (invalid rect, empty y-range),
+// matching how an all-empty curve behaves.
+TEST_F(FilteredCurveAdapterTest, AllNanOutputYieldsNoBounds) {
+  FilteredCurveAdapter adapter(
+      &session_, input_, []() -> std::unique_ptr<proc::DataProcessor> { return std::make_unique<NanProcessor>(); });
+  ASSERT_EQ(adapter.size(), 3U);  // 3 NaN points still exist as samples
+
+  const QRectF rect = adapter.boundingRect();
+  const auto y_range = adapter.visibleYRange(Range<double>{.min = -1e30, .max = 1e30});
+
+  // Before the fix: rect is a giant normalized rect [lowest,max] and y_range is
+  // {min=+max, max=lowest} (inverted). After the fix: no valid bounds.
+  EXPECT_FALSE(rect.isValid()) << "bounding rect must be invalid when no finite value exists";
+  if (y_range.has_value()) {
+    EXPECT_LE(y_range->min, y_range->max) << "y-range must never be inverted (min > max)";
+  }
 }
 
 // A null factory / "No Transform" yields an empty curve (nothing to overlay).

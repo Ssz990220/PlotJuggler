@@ -24,6 +24,7 @@
 #include <QUrl>
 #include <functional>
 #include <memory>
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -92,7 +93,7 @@ TEST(UrlFetcherTest, MissingLocalFileFailsWithError) {
   bool called = false;
   pj::scene3d::FetchResult result;
   fetcher.fetch(
-      QUrl::fromLocalFile(QStringLiteral("/nonexistent/url_fetcher_test/missing.bin")),
+      QUrl::fromLocalFile(u"/nonexistent/url_fetcher_test/missing.bin"_s),
       [&called, &result](pj::scene3d::FetchResult fetched) {
         called = true;
         result = std::move(fetched);
@@ -106,15 +107,14 @@ TEST(UrlFetcherTest, UnsupportedSchemeFailsAsynchronously) {
   pj::scene3d::UrlFetcher fetcher;
   bool called = false;
   pj::scene3d::FetchResult result;
-  fetcher.fetch(
-      QUrl(QStringLiteral("ftp://example.invalid/mesh.stl")), [&called, &result](pj::scene3d::FetchResult fetched) {
-        called = true;
-        result = std::move(fetched);
-      });
+  fetcher.fetch(QUrl(u"ftp://example.invalid/mesh.stl"_s), [&called, &result](pj::scene3d::FetchResult fetched) {
+    called = true;
+    result = std::move(fetched);
+  });
   EXPECT_FALSE(called) << "even immediate errors must be delivered through the event loop";
   ASSERT_TRUE(pumpUntil([&called]() { return called; }, 5000));
   EXPECT_FALSE(result.ok);
-  EXPECT_TRUE(result.error.contains(QStringLiteral("unsupported URL scheme"))) << result.error.toStdString();
+  EXPECT_TRUE(result.error.contains("unsupported URL scheme"_L1)) << result.error.toStdString();
 }
 
 // Regression (Windows): an absolute path like "C:/dir/file.bin" becomes a QUrl
@@ -126,15 +126,13 @@ TEST(UrlFetcherTest, WindowsDriveLetterPathTreatedAsLocalFile) {
   pj::scene3d::UrlFetcher fetcher;
   bool called = false;
   pj::scene3d::FetchResult result;
-  fetcher.fetch(
-      QUrl(QStringLiteral("C:/no/such/url_fetcher_test/drive.bin")),
-      [&called, &result](pj::scene3d::FetchResult fetched) {
-        called = true;
-        result = std::move(fetched);
-      });
+  fetcher.fetch(QUrl(u"C:/no/such/url_fetcher_test/drive.bin"_s), [&called, &result](pj::scene3d::FetchResult fetched) {
+    called = true;
+    result = std::move(fetched);
+  });
   ASSERT_TRUE(pumpUntil([&called]() { return called; }, 5000));
   EXPECT_FALSE(result.ok);  // the file does not exist on the test host
-  EXPECT_FALSE(result.error.contains(QStringLiteral("unsupported URL scheme")))
+  EXPECT_FALSE(result.error.contains("unsupported URL scheme"_L1))
       << "drive-letter path misrouted as a URL scheme: " << result.error.toStdString();
 }
 
@@ -148,7 +146,7 @@ TEST(UrlFetcherTest, DestructionDropsInFlightCallback) {
 
   auto fetcher = std::make_unique<pj::scene3d::UrlFetcher>();
   bool called = false;
-  const QUrl url(QStringLiteral("http://127.0.0.1:%1/never").arg(server.serverPort()));
+  const QUrl url(u"http://127.0.0.1:%1/never"_s.arg(server.serverPort()));
   fetcher->fetch(url, [&called](pj::scene3d::FetchResult) { called = true; });
 
   // Let the connection actually establish, then kill the fetcher mid-flight.
@@ -179,7 +177,7 @@ TEST(UrlFetcherTest, ResponseBeyondSizeCapIsAborted) {
   pj::scene3d::UrlFetcher fetcher;
   bool called = false;
   pj::scene3d::FetchResult result;
-  const QUrl url(QStringLiteral("http://127.0.0.1:%1/huge").arg(server.serverPort()));
+  const QUrl url(u"http://127.0.0.1:%1/huge"_s.arg(server.serverPort()));
   fetcher.fetch(url, [&called, &result](pj::scene3d::FetchResult fetched) {
     called = true;
     result = std::move(fetched);
@@ -187,7 +185,7 @@ TEST(UrlFetcherTest, ResponseBeyondSizeCapIsAborted) {
 
   ASSERT_TRUE(pumpUntil([&called]() { return called; }, 10000)) << "capped fetch never completed";
   EXPECT_FALSE(result.ok);
-  EXPECT_TRUE(result.error.contains(QStringLiteral("limit"))) << result.error.toStdString();
+  EXPECT_TRUE(result.error.contains("limit"_L1)) << result.error.toStdString();
 }
 
 namespace {
@@ -246,7 +244,7 @@ TEST(UrlFetcherTest, FreshEntryServedCrossSessionWithoutNetwork) {
   clearModelCache();
   const QByteArray body("MESHBYTES");
   auto server = std::make_unique<CountingHttpServer>(body, "max-age=3600");
-  const QUrl url(QStringLiteral("http://127.0.0.1:%1/lexus.glb").arg(server->port()));
+  const QUrl url(u"http://127.0.0.1:%1/lexus.glb"_s.arg(server->port()));
 
   {
     pj::scene3d::UrlFetcher first_session;
@@ -271,7 +269,7 @@ TEST(UrlFetcherTest, StaleEntryServedFromCacheWhenOffline) {
   clearModelCache();
   const QByteArray body("MESHBYTES");
   auto server = std::make_unique<CountingHttpServer>(body, "max-age=0");  // cacheable but immediately stale
-  const QUrl url(QStringLiteral("http://127.0.0.1:%1/lexus.glb").arg(server->port()));
+  const QUrl url(u"http://127.0.0.1:%1/lexus.glb"_s.arg(server->port()));
 
   pj::scene3d::UrlFetcher fetcher;
   const pj::scene3d::FetchResult first = fetchSync(fetcher, url);
@@ -303,7 +301,7 @@ TEST(UrlFetcherTest, SizeCappedResponseDoesNotPoisonCache) {
       socket->flush();
     });
   });
-  const QUrl url(QStringLiteral("http://127.0.0.1:%1/huge.glb").arg(server.serverPort()));
+  const QUrl url(u"http://127.0.0.1:%1/huge.glb"_s.arg(server.serverPort()));
 
   pj::scene3d::UrlFetcher fetcher;
   const pj::scene3d::FetchResult first = fetchSync(fetcher, url);
@@ -323,7 +321,7 @@ TEST(UrlFetcherTest, SizeCappedResponseDoesNotPoisonCache) {
 int main(int argc, char** argv) {
   QCoreApplication app(argc, argv);
   static QTemporaryDir model_cache_dir;
-  qputenv("PJ_MODEL_CACHE_DIR", (model_cache_dir.path() + QStringLiteral("/models")).toUtf8());
+  qputenv("PJ_MODEL_CACHE_DIR", (model_cache_dir.path() + u"/models"_s).toUtf8());
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }

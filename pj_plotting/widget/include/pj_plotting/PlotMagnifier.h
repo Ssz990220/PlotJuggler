@@ -18,6 +18,17 @@ class PlotMagnifier : public QwtPlotMagnifier {
   ~PlotMagnifier() override = default;
 
   void setAxisLimits(int axis, double lower, double upper);
+  // When true, the X axis carries absolute time (seconds) and magnification is
+  // clamped so the window never shrinks below the smallest non-degenerate window
+  // an integer-nanosecond saved viewport can represent (plotting_detail::
+  // ulpAwareMinTimeXWidthSec, ~2 ns, widened near epoch scale). Saved viewports
+  // persist X as rounded integer nanoseconds, so a sub-floor window would round to
+  // a degenerate (equal-edge) range and could not survive save/load; the clamp
+  // keeps every reachable zoom above that floor. XY plots' X is a data value with
+  // no such quantization, so leave this false for them.
+  void setTimeXAxis(bool is_time) {
+    x_is_time_ = is_time;
+  }
   void widgetWheelEvent(QWheelEvent* event) override;
   void rescale(double factor) override {
     rescale(factor, default_mode_);
@@ -40,6 +51,7 @@ class PlotMagnifier : public QwtPlotMagnifier {
   double upper_bounds_[QwtPlot::axisCnt];
   QPointF mouse_position_;
   AxisMode default_mode_ = kBothAxes;
+  bool x_is_time_ = false;
 };
 
 }  // namespace PJ

@@ -25,23 +25,31 @@ void RegistryManager::fetchRegistry(const QUrl& url) {
   QNetworkRequest request(url);
   request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
 
-  pending_reply_ = network_->get(request);
+  QNetworkReply* reply = network_->get(request);
+  pending_reply_ = reply;
 
-  connect(pending_reply_, &QNetworkReply::finished, this, [this]() {
-    // Guard against a second invocation if the reply is reused.
-    auto* reply = pending_reply_;
+  // Capture this call's own reply (not the shared member): a stale/aborted reply
+  // must not read or clear whatever pending_reply_ points at by the time its
+  // finished() fires.
+  connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+    reply->deleteLater();
+
+    // If this is no longer the current request, it was aborted to start a fresh
+    // fetch (e.g. the user clicked Refresh again while one was in flight). That
+    // is a user-initiated cancellation, not a failure — ignore it silently so a
+    // re-fetch never surfaces a spurious "Failed to load registry".
+    if (reply != pending_reply_ || reply->error() == QNetworkReply::OperationCanceledError) {
+      return;
+    }
     pending_reply_ = nullptr;
 
     if (reply->error() != QNetworkReply::NoError) {
       emit fetchError(reply->errorString());
       emit fetchFinished(false);
-      reply->deleteLater();
       return;
     }
 
     const QByteArray data = reply->readAll();
-    reply->deleteLater();
-
     const bool ok = parseJson(data);
     emit fetchFinished(ok);
   });

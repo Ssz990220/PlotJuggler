@@ -14,6 +14,7 @@
 #include <glm/glm.hpp>
 #include <optional>
 
+#include "layer_xml_validation.h"
 #include "pj_base/builtin/poses_in_frame.hpp"
 #include "pj_base/time.hpp"  // PJ::toRaw
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
@@ -23,7 +24,9 @@
 #include "pj_scene3d_widgets/resolve_object.h"  // resolveObject, hasCanonical3DCodec
 #include "pj_widgets/ColorPickerWidget.h"
 #include "pj_widgets/DoubleScrubber.h"
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/ToggleSwitch.h"
+using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
 
@@ -41,7 +44,7 @@ PJ::SceneLayerInfo PosesInFrameLayer::info() const {
       .topic_id = topic_id_,
       .object_type = PJ::sdk::BuiltinObjectType::kPosesInFrame,
       .display_name = display_name_,
-      .family_name = QStringLiteral("PosesInFrame"),
+      .family_name = u"PosesInFrame"_s,
       .visible = visible_,
   };
 }
@@ -63,34 +66,43 @@ QString PosesInFrameLayer::sourceFrame() const {
 }
 
 QDomElement PosesInFrameLayer::xmlSaveState(QDomDocument& doc) const {
-  QDomElement el = doc.createElement(QStringLiteral("poses_in_frame"));
-  el.setAttribute(QStringLiteral("gizmo_size"), static_cast<double>(gizmo_size_));
-  el.setAttribute(QStringLiteral("gizmo_opacity"), static_cast<double>(gizmo_opacity_));
-  el.setAttribute(QStringLiteral("x_arrow_only"), x_arrow_only_ ? 1 : 0);
-  el.setAttribute(QStringLiteral("override_color"), override_color_enabled_ ? 1 : 0);
-  el.setAttribute(QStringLiteral("override_color_value"), override_color_.name(QColor::HexRgb));
+  QDomElement el = doc.createElement(u"poses_in_frame"_s);
+  el.setAttribute(u"gizmo_size"_s, static_cast<double>(gizmo_size_));
+  el.setAttribute(u"gizmo_opacity"_s, static_cast<double>(gizmo_opacity_));
+  el.setAttribute(u"x_arrow_only"_s, x_arrow_only_ ? 1 : 0);
+  el.setAttribute(u"override_color"_s, override_color_enabled_ ? 1 : 0);
+  el.setAttribute(u"override_color_value"_s, override_color_.name(QColor::HexRgb));
   return el;
 }
 
 bool PosesInFrameLayer::xmlLoadState(const QDomElement& element) {
-  if (element.tagName() != QStringLiteral("poses_in_frame")) {
+  if (element.isNull() || element.tagName() != "poses_in_frame"_L1 || !detail::isLeafPayload(element)) {
     return false;
   }
-  bool ok = false;
-  const float size = element.attribute(QStringLiteral("gizmo_size"), QStringLiteral("0.15")).toFloat(&ok);
-  if (ok) {
-    setGizmoSize(size);
+  float restored_size = 0.0f;
+  float restored_opacity = 0.0f;
+  bool restored_x_arrow_only = false;
+  bool restored_override_enabled = false;
+  if (!detail::parseFiniteFloat(element, "gizmo_size", 0.15f, 0.01f, 100.0f, restored_size) ||
+      !detail::parseFiniteFloat(element, "gizmo_opacity", 1.0f, 0.0f, 1.0f, restored_opacity) ||
+      !detail::parseZeroOne(element, "x_arrow_only", false, restored_x_arrow_only) ||
+      !detail::parseZeroOne(element, "override_color", false, restored_override_enabled)) {
+    return false;
   }
-  const float opacity = element.attribute(QStringLiteral("gizmo_opacity"), QStringLiteral("1.0")).toFloat(&ok);
-  if (ok) {
-    setGizmoOpacity(opacity);
+  QColor restored_color;
+  const bool has_override_color = element.hasAttribute(u"override_color_value"_s);
+  if (has_override_color) {
+    restored_color = QColor(element.attribute(u"override_color_value"_s));
+    if (!restored_color.isValid()) {
+      return false;
+    }
   }
-  setXArrowOnly(element.attribute(QStringLiteral("x_arrow_only"), QStringLiteral("0")) == QStringLiteral("1"));
-  setOverrideColorEnabled(
-      element.attribute(QStringLiteral("override_color"), QStringLiteral("0")) == QStringLiteral("1"));
-  const QColor color(element.attribute(QStringLiteral("override_color_value")));
-  if (color.isValid()) {
-    setOverrideColor(color);
+  setGizmoSize(restored_size);
+  setGizmoOpacity(restored_opacity);
+  setXArrowOnly(restored_x_arrow_only);
+  setOverrideColorEnabled(restored_override_enabled);
+  if (has_override_color) {
+    setOverrideColor(restored_color);
   }
   return true;
 }
@@ -264,6 +276,7 @@ void PosesInFrameLayer::setGizmoSize(float meters) {
   gizmo_size_ = clamped;
   ++style_revision_;
   tracker_dirty_ = true;  // re-expand the current sample on the next paint
+  emit configurationChanged();
   emit repaintRequested();
 }
 
@@ -275,6 +288,7 @@ void PosesInFrameLayer::setGizmoOpacity(float opacity) {
   gizmo_opacity_ = clamped;
   ++style_revision_;
   tracker_dirty_ = true;
+  emit configurationChanged();
   emit repaintRequested();
 }
 
@@ -285,6 +299,7 @@ void PosesInFrameLayer::setXArrowOnly(bool x_arrow_only) {
   x_arrow_only_ = x_arrow_only;
   ++style_revision_;
   tracker_dirty_ = true;  // re-expand the current sample (triad <-> single arm)
+  emit configurationChanged();
   emit repaintRequested();
 }
 
@@ -295,11 +310,12 @@ void PosesInFrameLayer::setOverrideColorEnabled(bool enabled) {
   override_color_enabled_ = enabled;
   ++style_revision_;
   tracker_dirty_ = true;  // re-expand: per-axis RGB <-> shared override color
+  emit configurationChanged();
   emit repaintRequested();
 }
 
 void PosesInFrameLayer::setOverrideColor(QColor color) {
-  if (override_color_ == color) {
+  if (!color.isValid() || override_color_.rgb() == color.rgb()) {
     return;
   }
   override_color_ = color;
@@ -307,18 +323,23 @@ void PosesInFrameLayer::setOverrideColor(QColor color) {
   // Only changes what is drawn while the override is enabled, but bump
   // unconditionally so the next paint reflects it immediately when it is.
   tracker_dirty_ = true;
+  emit configurationChanged();
   emit repaintRequested();
 }
 
 QWidget* PosesInFrameLayer::createConfigWidget(QWidget* parent) {
   auto* container = new QWidget(parent);
   auto* outer = new QVBoxLayout(container);
-  outer->setContentsMargins(0, 0, 0, 0);
-  outer->setSpacing(4);
+  outer->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
+  outer->setSpacing(PJ::theme::space(PJ::theme::Space::Snug));
   auto* form = new QFormLayout();
-  form->setContentsMargins(0, 0, 0, 0);
-  form->setHorizontalSpacing(8);
-  form->setVerticalSpacing(4);
+  form->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
+  form->setHorizontalSpacing(PJ::theme::space(PJ::theme::Space::Comfortable));
+  form->setVerticalSpacing(PJ::theme::space(PJ::theme::Space::Snug));
   outer->addLayout(form);
 
   auto* size_spin = new PJ::DoubleScrubber(container);
@@ -350,8 +371,10 @@ QWidget* PosesInFrameLayer::createConfigWidget(QWidget* parent) {
   // single X arm OR the whole triad; picking a color auto-enables the override.
   auto* override_row = new QWidget(container);
   auto* override_layout = new QHBoxLayout(override_row);
-  override_layout->setContentsMargins(0, 0, 0, 0);
-  override_layout->setSpacing(8);
+  override_layout->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
+  override_layout->setSpacing(PJ::theme::space(PJ::theme::Space::Comfortable));
   auto* override_toggle = new PJ::ToggleSwitch(override_row);
   override_toggle->setChecked(override_color_enabled_, /*animate=*/false);
   auto* swatch = new PJ::ColorPickerWidget(override_row);

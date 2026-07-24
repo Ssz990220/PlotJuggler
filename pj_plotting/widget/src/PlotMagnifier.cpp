@@ -10,6 +10,8 @@
 #include <algorithm>
 #include <limits>
 
+#include "TimeAxisWidth.h"
+
 namespace PJ {
 
 PlotMagnifier::PlotMagnifier(QWidget* canvas) : QwtPlotMagnifier(canvas) {
@@ -81,8 +83,30 @@ void PlotMagnifier::rescale(double factor, AxisMode axis) {
       v2 = scale_map.invTransform(v2);
     }
 
+    // Apply the caller's axis bounds FIRST, so the time-axis floor below sees the
+    // window a bound-clamped edge zoom would actually produce and can re-expand it
+    // past the floor. Doing the floor first and the bounds after would let a bound
+    // shave the window back below the floor and quietly undo the clamp.
     v1 = std::max(v1, lower_bounds_[axis_id]);
     v2 = std::min(v2, upper_bounds_[axis_id]);
+
+    // Time-axis zoom floor: never let the X window shrink below the minimum a
+    // rounded-integer-nanosecond saved viewport can represent as a non-degenerate
+    // range. v1/v2 are in data (seconds) coordinates here; re-expand symmetrically
+    // around the midpoint so the cursor stays roughly centered. The floor is
+    // ULP-aware at the window center: the nominal 2 ns is sub-ULP near epoch scale
+    // (axis at ~1.6e9 s with "Use time offset" off), where a fixed 2 ns window
+    // collapses back to a single double -- the ULP term keeps the edges distinct.
+    // Applied only when zooming IN (new width smaller than the floor) so a
+    // legitimate zoom-out is untouched.
+    if (axis_id == QwtPlot::xBottom && x_is_time_ && !reversed_axis) {
+      const double center = 0.5 * (v1 + v2);
+      const double min_width = plotting_detail::ulpAwareMinTimeXWidthSec(center);
+      if ((v2 - v1) < min_width) {
+        v1 = center - 0.5 * min_width;
+        v2 = center + 0.5 * min_width;
+      }
+    }
     qwt_plot->setAxisScale(axis_id, reversed_axis ? v2 : v1, reversed_axis ? v1 : v2);
 
     if (axis_id == QwtPlot::xBottom) {
@@ -97,6 +121,9 @@ void PlotMagnifier::rescale(double factor, AxisMode axis) {
 
   qwt_plot->setAutoReplot(auto_replot);
   if (do_replot) {
+    // Keep this signal as the gesture commit point: synchronous history
+    // snapshots must observe the new canvas maps, not the preceding viewport.
+    qwt_plot->replot();
     emit rescaled(new_rect);
   }
 }

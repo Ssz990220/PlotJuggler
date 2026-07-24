@@ -3,13 +3,20 @@
 
 #include <qwt_legend.h>
 #include <qwt_legend_data.h>
+#include <qwt_plot_canvas.h>
 #include <qwt_plot_curve.h>
 #include <qwt_plot_item.h>
 #include <qwt_plot_zoomer.h>
 #include <qwt_scale_div.h>
+#include <qwt_scale_draw.h>
+#include <qwt_text.h>
 
 #include <QColor>
 #include <QEvent>
+#include <QFrame>
+#include <QGuiApplication>
+#include <QLocale>
+#include <QPalette>
 #include <QPen>
 #include <QPointF>
 #include <QSignalBlocker>
@@ -19,6 +26,8 @@
 #include <algorithm>
 #include <limits>
 #include <pj_plugins/host_qt/chart_preview_widget.hpp>
+
+#include "pj_widgets/FrameworkTokens.h"
 
 namespace PJ {
 
@@ -33,10 +42,42 @@ const std::vector<QColor>& kDefaultPalette() {
   };
   return k_palette;
 }
+
+/// Fixed-notation tick labels (6 decimals, trailing zeros stripped) so the
+/// preview matches the main plots. Twin of pj_plotting's PlotScaleDraw, which
+/// this module cannot link (module boundary) — keep the two in sync.
+class PreviewScaleDraw : public QwtScaleDraw {
+ public:
+  [[nodiscard]] QwtText label(double value) const override {
+    const QLocale locale;
+    QString str = locale.toString(value, 'f', 6);
+    const QString zero = locale.zeroDigit();
+    const QString point = locale.decimalPoint();
+    while (str.endsWith(zero)) {
+      str.chop(zero.size());
+    }
+    if (str.endsWith(point)) {
+      str.chop(point.size());
+    }
+    return str;
+  }
+};
 }  // namespace
 
 ChartPreviewWidget::ChartPreviewWidget(QWidget* parent) : QwtPlot(parent) {
-  setCanvasBackground(Qt::white);
+  // Theme from the APPLICATION palette, never the widget's: QStyleSheetStyle
+  // rewrites widget palettes under QSS, mis-detecting the theme inside styled
+  // plugin dialogs (Theme.cpp keeps the app palette's Window in lockstep).
+  const auto fw_theme = theme::themeFor(QGuiApplication::palette().color(QPalette::Window).lightness() >= 128);
+  setCanvasBackground(theme::surface(theme::Surface::DataBackdrop, fw_theme));
+  setFrameStyle(QFrame::NoFrame);
+  for (const int axis : {QwtPlot::yLeft, QwtPlot::yRight, QwtPlot::xBottom, QwtPlot::xTop}) {
+    setAxisScaleDraw(axis, new PreviewScaleDraw);
+  }
+  if (auto* c = qobject_cast<QwtPlotCanvas*>(canvas())) {
+    c->setFrameStyle(QFrame::NoFrame);
+    c->setLineWidth(0);
+  }
 
   // Bottom legend with checkable entries: clicking one toggles its curve's
   // visibility (mirrors the old Qt Charts interactive legend).

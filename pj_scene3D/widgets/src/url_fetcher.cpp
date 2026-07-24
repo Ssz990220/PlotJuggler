@@ -13,6 +13,7 @@
 #include <memory>
 #include <optional>
 #include <utility>
+using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
 namespace {
@@ -45,7 +46,7 @@ std::optional<QString> localFilePath(const QUrl& url) {
   if (scheme.size() == 1 && scheme.at(0).isLetter()) {
     // A one-letter "scheme" is a Windows drive letter, not a URL scheme:
     // rebuild "<drive>:<path>" so QFile can open it.
-    return scheme + QStringLiteral(":") + url.path();
+    return scheme + u":"_s + url.path();
   }
   return std::nullopt;
 }
@@ -65,7 +66,7 @@ UrlFetcher::UrlFetcher(QObject* parent) : QObject(parent) {
   // let tests redirect it to a throwaway dir without touching the real home.
   QString cache_dir = qEnvironmentVariable("PJ_MODEL_CACHE_DIR");
   if (cache_dir.isEmpty()) {
-    cache_dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/models");
+    cache_dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + u"/models"_s;
   }
   auto* cache = new QNetworkDiskCache(this);
   cache->setCacheDirectory(cache_dir);
@@ -85,7 +86,7 @@ void UrlFetcher::fetch(const QUrl& url, std::function<void(FetchResult)> on_done
     deliverLater(std::move(on_done), readLocalFile(*local));
     return;
   }
-  if (url.scheme() != QStringLiteral("http") && url.scheme() != QStringLiteral("https")) {
+  if (url.scheme() != "http"_L1 && url.scheme() != "https"_L1) {
     FetchResult result;
     result.error = tr("unsupported URL scheme '%1'").arg(url.scheme());
     deliverLater(std::move(on_done), std::move(result));

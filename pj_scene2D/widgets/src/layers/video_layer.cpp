@@ -9,6 +9,7 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene2d_core/media_source.h"
 #include "pj_scene2d_core/streaming_video_source.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -18,7 +19,7 @@ Q_LOGGING_CATEGORY(lcScene2DVideoLayer, "pj.scene2d.layer.video")
 
 VideoLayer::VideoLayer(
     ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& display_name, QObject* parent)
-    : Scene2DLayer(topic_id, object_type, display_name, QStringLiteral("Video"), parent) {}
+    : Scene2DLayer(topic_id, object_type, display_name, u"Video"_s, parent) {}
 
 std::unique_ptr<MediaSource> VideoLayer::createMediaSource(const SceneLayerContext& ctx) {
   auto* session = ctx.session;

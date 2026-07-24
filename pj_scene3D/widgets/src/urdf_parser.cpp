@@ -9,6 +9,7 @@
 #include <QStringList>
 #include <array>
 #include <unordered_map>
+using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
 
@@ -52,16 +53,16 @@ double attrDouble(const QDomElement& el, const QString& name, double fallback) {
 // (LinkGeom or RobotJoint). Missing attributes leave the target's defaults.
 template <typename T>
 void parseOriginInto(const QDomElement& parent, T& out) {
-  const QDomElement origin = parent.firstChildElement(QStringLiteral("origin"));
+  const QDomElement origin = parent.firstChildElement(u"origin"_s);
   if (origin.isNull()) {
     return;
   }
   std::array<double, 3> xyz{0, 0, 0};
   std::array<double, 3> rpy{0, 0, 0};
-  if (parseDoubles(origin.attribute(QStringLiteral("xyz")), xyz)) {
+  if (parseDoubles(origin.attribute(u"xyz"_s), xyz)) {
     out.origin_xyz = {xyz[0], xyz[1], xyz[2]};
   }
-  if (parseDoubles(origin.attribute(QStringLiteral("rpy")), rpy)) {
+  if (parseDoubles(origin.attribute(u"rpy"_s), rpy)) {
     out.origin_rpy = {rpy[0], rpy[1], rpy[2]};
   }
 }
@@ -71,38 +72,38 @@ void parseOriginInto(const QDomElement& parent, T& out) {
 bool parseGeometry(
     const QDomElement& parent, UrdfPackageResolver* resolver, const std::string& urdf_dir, bool source_is_url,
     GeomShape& out) {
-  const QDomElement geo = parent.firstChildElement(QStringLiteral("geometry"));
+  const QDomElement geo = parent.firstChildElement(u"geometry"_s);
   if (geo.isNull()) {
     return false;
   }
 
-  if (const QDomElement box = geo.firstChildElement(QStringLiteral("box")); !box.isNull()) {
+  if (const QDomElement box = geo.firstChildElement(u"box"_s); !box.isNull()) {
     GeomBox b;
     std::array<double, 3> s{1, 1, 1};
-    if (parseDoubles(box.attribute(QStringLiteral("size")), s)) {
+    if (parseDoubles(box.attribute(u"size"_s), s)) {
       b.size = {s[0], s[1], s[2]};
     }
     out = b;
     return true;
   }
-  if (const QDomElement cyl = geo.firstChildElement(QStringLiteral("cylinder")); !cyl.isNull()) {
+  if (const QDomElement cyl = geo.firstChildElement(u"cylinder"_s); !cyl.isNull()) {
     GeomCylinder c;
-    c.radius = attrDouble(cyl, QStringLiteral("radius"), 1.0);
-    c.length = attrDouble(cyl, QStringLiteral("length"), 1.0);
+    c.radius = attrDouble(cyl, u"radius"_s, 1.0);
+    c.length = attrDouble(cyl, u"length"_s, 1.0);
     out = c;
     return true;
   }
-  if (const QDomElement sph = geo.firstChildElement(QStringLiteral("sphere")); !sph.isNull()) {
+  if (const QDomElement sph = geo.firstChildElement(u"sphere"_s); !sph.isNull()) {
     GeomSphere s;
-    s.radius = attrDouble(sph, QStringLiteral("radius"), 1.0);
+    s.radius = attrDouble(sph, u"radius"_s, 1.0);
     out = s;
     return true;
   }
-  if (const QDomElement mesh = geo.firstChildElement(QStringLiteral("mesh")); !mesh.isNull()) {
+  if (const QDomElement mesh = geo.firstChildElement(u"mesh"_s); !mesh.isNull()) {
     GeomMesh m;
-    m.filename = mesh.attribute(QStringLiteral("filename")).toStdString();
+    m.filename = mesh.attribute(u"filename"_s).toStdString();
     std::array<double, 3> sc{1, 1, 1};
-    if (parseDoubles(mesh.attribute(QStringLiteral("scale")), sc)) {
+    if (parseDoubles(mesh.attribute(u"scale"_s), sc)) {
       m.scale = {sc[0], sc[1], sc[2]};
     }
     if (resolver != nullptr && !m.filename.empty()) {
@@ -126,7 +127,7 @@ std::optional<glm::vec4> readColorRgba(const QDomElement& color_el) {
     return std::nullopt;
   }
   std::array<double, 4> rgba{0.7, 0.7, 0.7, 1.0};
-  if (!parseDoubles(color_el.attribute(QStringLiteral("rgba")), rgba)) {
+  if (!parseDoubles(color_el.attribute(u"rgba"_s), rgba)) {
     return std::nullopt;
   }
   return glm::vec4{
@@ -138,17 +139,17 @@ std::optional<glm::vec4> readColorRgba(const QDomElement& color_el) {
 // found; otherwise leaves the LinkGeom defaults.
 void parseMaterial(
     const QDomElement& parent, const std::unordered_map<std::string, glm::vec4>& materials, LinkGeom& geom) {
-  const QDomElement mat = parent.firstChildElement(QStringLiteral("material"));
+  const QDomElement mat = parent.firstChildElement(u"material"_s);
   if (mat.isNull()) {
     return;
   }
-  if (auto rgba = readColorRgba(mat.firstChildElement(QStringLiteral("color")))) {
+  if (auto rgba = readColorRgba(mat.firstChildElement(u"color"_s))) {
     geom.color = *rgba;
     geom.has_color = true;
     return;
   }
   // Named material reference: <material name="Foo"/> with no inline color.
-  const std::string name = mat.attribute(QStringLiteral("name")).toStdString();
+  const std::string name = mat.attribute(u"name"_s).toStdString();
   if (!name.empty()) {
     auto it = materials.find(name);
     if (it != materials.end()) {
@@ -173,22 +174,22 @@ bool parseGeomElement(
 
 // Map a URDF joint `type` attribute to JointType (unknown/empty ⇒ kOther).
 JointType jointTypeFromString(const QString& type) {
-  if (type == QStringLiteral("fixed")) {
+  if (type == "fixed"_L1) {
     return JointType::kFixed;
   }
-  if (type == QStringLiteral("revolute")) {
+  if (type == "revolute"_L1) {
     return JointType::kRevolute;
   }
-  if (type == QStringLiteral("continuous")) {
+  if (type == "continuous"_L1) {
     return JointType::kContinuous;
   }
-  if (type == QStringLiteral("prismatic")) {
+  if (type == "prismatic"_L1) {
     return JointType::kPrismatic;
   }
-  if (type == QStringLiteral("floating")) {
+  if (type == "floating"_L1) {
     return JointType::kFloating;
   }
-  if (type == QStringLiteral("planar")) {
+  if (type == "planar"_L1) {
     return JointType::kPlanar;
   }
   return JointType::kOther;
@@ -244,7 +245,7 @@ std::pair<std::optional<RobotModel>, std::string> parseUrdf(
   }
   // Format inference from the root element.
   const QString root_tag = root.tagName();
-  if (root_tag != QStringLiteral("robot")) {
+  if (root_tag != "robot"_L1) {
     return {std::nullopt, "Format '" + root_tag.toStdString() + "' is not supported — only URDF"};
   }
 
@@ -252,32 +253,31 @@ std::pair<std::optional<RobotModel>, std::string> parseUrdf(
 
   // Pass 1 — collect top-level named materials (<robot><material name color>).
   std::unordered_map<std::string, glm::vec4> materials;
-  for (QDomElement mat = root.firstChildElement(QStringLiteral("material")); !mat.isNull();
-       mat = mat.nextSiblingElement(QStringLiteral("material"))) {
-    const std::string name = mat.attribute(QStringLiteral("name")).toStdString();
+  for (QDomElement mat = root.firstChildElement(u"material"_s); !mat.isNull();
+       mat = mat.nextSiblingElement(u"material"_s)) {
+    const std::string name = mat.attribute(u"name"_s).toStdString();
     if (name.empty()) {
       continue;
     }
-    if (auto rgba = readColorRgba(mat.firstChildElement(QStringLiteral("color")))) {
+    if (auto rgba = readColorRgba(mat.firstChildElement(u"color"_s))) {
       materials[name] = *rgba;
     }
   }
 
   // Pass 2 — links. <joint> is intentionally skipped.
-  for (QDomElement link_el = root.firstChildElement(QStringLiteral("link")); !link_el.isNull();
-       link_el = link_el.nextSiblingElement(QStringLiteral("link"))) {
+  for (QDomElement link_el = root.firstChildElement(u"link"_s); !link_el.isNull();
+       link_el = link_el.nextSiblingElement(u"link"_s)) {
     RobotLink link;
-    link.name = link_el.attribute(QStringLiteral("name")).toStdString();
+    link.name = link_el.attribute(u"name"_s).toStdString();
 
-    for (QDomElement v = link_el.firstChildElement(QStringLiteral("visual")); !v.isNull();
-         v = v.nextSiblingElement(QStringLiteral("visual"))) {
+    for (QDomElement v = link_el.firstChildElement(u"visual"_s); !v.isNull(); v = v.nextSiblingElement(u"visual"_s)) {
       LinkGeom g;
       if (parseGeomElement(v, resolver, urdf_dir, source_is_url, materials, g)) {
         link.visuals.push_back(std::move(g));
       }
     }
-    for (QDomElement c = link_el.firstChildElement(QStringLiteral("collision")); !c.isNull();
-         c = c.nextSiblingElement(QStringLiteral("collision"))) {
+    for (QDomElement c = link_el.firstChildElement(u"collision"_s); !c.isNull();
+         c = c.nextSiblingElement(u"collision"_s)) {
       LinkGeom g;
       if (parseGeomElement(c, resolver, urdf_dir, source_is_url, materials, g)) {
         link.collisions.push_back(std::move(g));
@@ -294,13 +294,13 @@ std::pair<std::optional<RobotModel>, std::string> parseUrdf(
   // FIXED joint can later be injected as a static TF bridge for a frame the data
   // never publishes; link poses still come from the live TF tree. A joint missing
   // its parent or child link is skipped (it cannot define an edge).
-  for (QDomElement joint_el = root.firstChildElement(QStringLiteral("joint")); !joint_el.isNull();
-       joint_el = joint_el.nextSiblingElement(QStringLiteral("joint"))) {
+  for (QDomElement joint_el = root.firstChildElement(u"joint"_s); !joint_el.isNull();
+       joint_el = joint_el.nextSiblingElement(u"joint"_s)) {
     RobotJoint joint;
-    joint.name = joint_el.attribute(QStringLiteral("name")).toStdString();
-    joint.type = jointTypeFromString(joint_el.attribute(QStringLiteral("type")));
-    joint.parent = joint_el.firstChildElement(QStringLiteral("parent")).attribute(QStringLiteral("link")).toStdString();
-    joint.child = joint_el.firstChildElement(QStringLiteral("child")).attribute(QStringLiteral("link")).toStdString();
+    joint.name = joint_el.attribute(u"name"_s).toStdString();
+    joint.type = jointTypeFromString(joint_el.attribute(u"type"_s));
+    joint.parent = joint_el.firstChildElement(u"parent"_s).attribute(u"link"_s).toStdString();
+    joint.child = joint_el.firstChildElement(u"child"_s).attribute(u"link"_s).toStdString();
     if (joint.parent.empty() || joint.child.empty()) {
       continue;
     }

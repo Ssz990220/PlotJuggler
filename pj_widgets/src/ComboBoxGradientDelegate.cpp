@@ -6,9 +6,10 @@
 #include <QLinearGradient>
 #include <QModelIndex>
 #include <QPainter>
+#include <QPalette>
 #include <QStyleOptionViewItem>
 
-#include "pj_widgets/ThemeColors.h"
+#include "pj_widgets/FrameworkTokens.h"
 
 namespace PJ {
 
@@ -30,11 +31,14 @@ void ComboBoxGradientDelegate::paint(
   painter->setRenderHint(QPainter::Antialiasing, true);
 
   if (highlighted) {
+    const auto fw_theme = theme::appTheme();
+    // Special variant: per-state gradient from the Primary endpoint to the Error endpoint.
+    const auto special = theme::special(theme::State::Checked, fw_theme);
     QLinearGradient grad(opt.rect.topLeft(), opt.rect.topRight());
-    grad.setColorAt(0.0, theme::kLightPurple);
-    grad.setColorAt(1.0, theme::kLightBlue);
+    grad.setColorAt(0.0, special.first);
+    grad.setColorAt(1.0, special.second);
     painter->fillRect(opt.rect, grad);
-    painter->setPen(theme::kSelectionText);
+    painter->setPen(theme::onSpecial(theme::State::Checked, fw_theme));
   } else {
     painter->setPen(opt.palette.color(QPalette::Text));
   }

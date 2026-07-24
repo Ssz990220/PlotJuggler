@@ -18,7 +18,9 @@
 #include <utility>
 #include <vector>
 
+#include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/SessionManager.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -59,6 +61,10 @@ void SceneDockWidget::setSessionManager(SessionManager* session) {
   session_ = session;
 }
 
+void SceneDockWidget::setObjectDatasetResolver(ObjectDatasetResolver resolver) {
+  object_dataset_resolver_ = std::move(resolver);
+}
+
 bool SceneDockWidget::tryAcceptObjectTopic(
     ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title) {
   // No acceptsObjectType() pre-gate: addLayer() consults handleSceneConfigTopic()
@@ -80,8 +86,18 @@ SceneDockWidget::AddOutcome SceneDockWidget::addLayer(
   if (layers_.find(key) != layers_.end()) {
     return AddOutcome::kRejected;
   }
+  if (session_ != nullptr) {
+    const DatasetId bound_dataset = representativeDatasetId();
+    const DatasetId incoming_dataset = session_->objectStore().descriptor(topic_id).dataset_id;
+    if (bound_dataset != 0 && incoming_dataset != 0 && incoming_dataset != bound_dataset) {
+      // The dock currently has one display-time conversion. Arrival order must
+      // not silently decide which dataset's clock is applied to every layer.
+      return AddOutcome::kRejected;
+    }
+  }
   if (handleSceneConfigTopic(topic_id, object_type, title)) {
     ever_had_content_ = true;
+    notifyWorkspaceChanged();
     return AddOutcome::kConsumedAsConfig;
   }
 
@@ -98,6 +114,7 @@ SceneDockWidget::AddOutcome SceneDockWidget::addLayer(
   syncViewLayers();
   refreshView();
   emit layerAdded(topic_id);
+  notifyWorkspaceChanged();
   return AddOutcome::kLayerAdded;
 }
 
@@ -131,6 +148,7 @@ void SceneDockWidget::wireLayerSignals(ISceneLayer* layer, ObjectTopicId topic_i
     refreshView();
   });
   connect(layer, &ISceneLayer::repaintRequested, this, [this]() { refreshView(); });
+  connect(layer, &ISceneLayer::configurationChanged, this, [this]() { notifyWorkspaceChanged(); });
   connect(layer, &ISceneLayer::warningChanged, this, [this, topic_id](bool warn, QString reason) {
     emit layerWarningChanged(topic_id, warn, std::move(reason));
   });
@@ -168,24 +186,25 @@ bool SceneDockWidget::restoreLayerElement(const QDomElement& layer_el) {
   }
 
   bool dataset_ok = false;
-  const auto dataset_value = layer_el.attribute(QStringLiteral("dataset_id")).toULongLong(&dataset_ok);
+  const auto dataset_value = layer_el.attribute(u"dataset_id"_s).toULongLong(&dataset_ok);
   if (!dataset_ok || dataset_value > std::numeric_limits<uint32_t>::max()) {
+    markWorkspaceRestoreFailed();
     return true;
   }
   const auto saved_id = static_cast<DatasetId>(dataset_value);
-  const QString saved_source = layer_el.attribute(QStringLiteral("dataset_source"));
-  const QString topic_name = layer_el.attribute(QStringLiteral("topic_name"));
-  const QString object_type_str = layer_el.attribute(QStringLiteral("object_type"));
-  const QString display_name = layer_el.attribute(QStringLiteral("display_name"));
-  const bool visible = layer_el.attribute(QStringLiteral("visible"), QStringLiteral("true")) == QStringLiteral("true");
+  const QString saved_source = layer_el.attribute(u"dataset_source"_s);
+  const QString saved_path = layer_el.attribute(u"dataset_path"_s);
+  const QString topic_name = layer_el.attribute(u"topic_name"_s);
+  const QString object_type_str = layer_el.attribute(u"object_type"_s);
+  const QString display_name = layer_el.attribute(u"display_name"_s);
+  const bool visible = layer_el.attribute(u"visible"_s, u"true"_s) == "true"_L1;
 
   const auto object_type_opt = sdk::parseBuiltinObjectType(object_type_str.toStdString());
   if (!object_type_opt.has_value()) {
+    markWorkspaceRestoreFailed();
     return true;
   }
-  // Re-resolve the dataset by stable source name (load order is not stable
-  // across sessions), then look up the topic under the resolved id.
-  const auto dataset_id_opt = resolveDatasetId(session_, saved_id, saved_source);
+  const auto dataset_id_opt = resolveObjectDataset(saved_id, saved_source, saved_path, topic_name);
   if (!dataset_id_opt.has_value()) {
     return false;
   }
@@ -193,13 +212,34 @@ bool SceneDockWidget::restoreLayerElement(const QDomElement& layer_el) {
   if (!topic_id_opt.has_value()) {
     return false;
   }
+  const ObjectTopicDescriptor& descriptor = session_->objectStore().descriptor(*topic_id_opt);
+  const sdk::BuiltinObjectType live_type = objectTypeFromMetadata(descriptor.metadata_json);
+  if (live_type != sdk::BuiltinObjectType::kNone && live_type != *object_type_opt) {
+    markWorkspaceRestoreFailed();
+    return true;
+  }
   if (addLayer(*topic_id_opt, *object_type_opt, display_name) != AddOutcome::kLayerAdded) {
-    return true;  // rejected, or consumed as a scene-config topic: no layer to restore
+    markWorkspaceRestoreFailed();
+    return true;
+  }
+  bool order_ok = false;
+  const int saved_order = layer_el.attribute(u"order"_s).toInt(&order_ok);
+  if (order_ok && saved_order >= 0) {
+    const int64_t key = topicKey(*topic_id_opt);
+    const auto current = std::find(draw_order_.begin(), draw_order_.end(), key);
+    if (current != draw_order_.end()) {
+      draw_order_.erase(current);
+      const auto insertion =
+          draw_order_.begin() + std::min<std::size_t>(static_cast<std::size_t>(saved_order), draw_order_.size());
+      draw_order_.insert(insertion, key);
+    }
   }
   if (ISceneLayer* layer = layerFor(*topic_id_opt); layer != nullptr) {
     const QDomElement payload = layer_el.firstChildElement();
-    if (!payload.isNull()) {
-      layer->xmlLoadState(payload);
+    if (!payload.isNull() && !layer->xmlLoadState(payload)) {
+      removeTopic(*topic_id_opt);
+      markWorkspaceRestoreFailed();
+      return true;
     }
   }
   if (!visible) {
@@ -208,15 +248,76 @@ bool SceneDockWidget::restoreLayerElement(const QDomElement& layer_el) {
   return true;
 }
 
-void SceneDockWidget::rememberPendingRestore(const QDomElement& layer_el) {
+void SceneDockWidget::rememberPendingRestore(const QDomElement& layer_el, QString topic_name) {
   QDomDocument doc;
   const QDomNode clone = doc.importNode(layer_el, /*deep=*/true);
   doc.appendChild(clone);
-  pending_restore_elements_.push_back(
-      PendingRestoreElement{
-          .document = doc,
-          .topic_name = layer_el.attribute(QStringLiteral("topic_name")),
+  if (topic_name.isEmpty()) {
+    topic_name = layer_el.attribute(u"topic_name"_s);
+  }
+  const auto duplicate = std::find_if(
+      pending_restore_elements_.cbegin(), pending_restore_elements_.cend(),
+      [&layer_el](const PendingRestoreElement& p) {
+        const QDomElement existing = p.document.documentElement();
+        return existing.tagName() == layer_el.tagName() &&
+               existing.attribute(u"topic_name"_s) == layer_el.attribute(u"topic_name"_s) &&
+               existing.attribute(u"dataset_id"_s) == layer_el.attribute(u"dataset_id"_s) &&
+               existing.attribute(u"dataset_source"_s) == layer_el.attribute(u"dataset_source"_s) &&
+               existing.attribute(u"dataset_path"_s) == layer_el.attribute(u"dataset_path"_s);
       });
+  if (duplicate == pending_restore_elements_.cend()) {
+    pending_restore_elements_.push_back(PendingRestoreElement{.document = doc, .topic_name = std::move(topic_name)});
+    emit pendingRestoresChanged();
+  }
+}
+
+bool SceneDockWidget::deferTopicIntent(
+    DatasetId dataset_id, const QString& topic_name, sdk::BuiltinObjectType object_type, const QString& display_name) {
+  if (dataset_id == 0 || topic_name.isEmpty() || object_type == sdk::BuiltinObjectType::kNone ||
+      !acceptsDeferredObjectType(object_type)) {
+    return false;
+  }
+  const DatasetId bound_dataset = representativeDatasetId();
+  if (bound_dataset != 0 && bound_dataset != dataset_id) {
+    return false;
+  }
+  for (const PendingRestoreElement& pending : pending_restore_elements_) {
+    bool pending_id_ok = false;
+    const qulonglong pending_id =
+        pending.document.documentElement().attribute(u"dataset_id"_s).toULongLong(&pending_id_ok);
+    if (pending_id_ok && pending_id != 0 && pending_id != dataset_id) {
+      return false;
+    }
+  }
+
+  QDomDocument document;
+  const DeferredElementKind kind = deferredElementKind(object_type);
+  QDomElement element =
+      document.createElement(kind == DeferredElementKind::kConfigTopic ? u"config_topic"_s : u"layer"_s);
+  element.setAttribute(u"pending_intent"_s, u"true"_s);
+  element.setAttribute(u"dataset_id"_s, QString::number(dataset_id));
+  element.setAttribute(u"dataset_source"_s, datasetSourceName(session_, dataset_id));
+  if (session_ != nullptr) {
+    const QString path = session_->datasetSourcePath(dataset_id);
+    if (!path.isEmpty()) {
+      element.setAttribute(u"dataset_path"_s, path);
+    }
+  }
+  element.setAttribute(u"topic_name"_s, topic_name);
+  element.setAttribute(u"object_type"_s, objectTypeName(object_type));
+  if (kind == DeferredElementKind::kRenderLayer) {
+    element.setAttribute(u"display_name"_s, display_name.isEmpty() ? topic_name : display_name);
+    element.setAttribute(u"visible"_s, u"true"_s);
+    element.setAttribute(u"order"_s, static_cast<int>(draw_order_.size() + pending_restore_elements_.size()));
+  }
+  document.appendChild(element);
+  const std::size_t before = pending_restore_elements_.size();
+  rememberPendingRestore(element, topic_name);
+  if (pending_restore_elements_.size() == before) {
+    return false;
+  }
+  notifyWorkspaceChanged();
+  return true;
 }
 
 bool SceneDockWidget::restoreOnePending(const QDomElement& element) {
@@ -250,6 +351,7 @@ void SceneDockWidget::removeTopic(ObjectTopicId topic_id) {
     removed->detach();
   }
   emit layerRemoved(topic_id);
+  notifyWorkspaceChanged();
 }
 
 bool SceneDockWidget::revalidateObjects() {
@@ -257,7 +359,7 @@ bool SceneDockWidget::revalidateObjects() {
   // forget it: an intentionally-empty dock (click-created or restored empty,
   // never populated) survives, while a dock whose content was all evicted resets
   // to the placeholder. Subclasses only customize the family-specific prune.
-  return pruneEvictedObjects() || !ever_had_content_;
+  return pruneEvictedObjects() || !pending_restore_elements_.empty() || !ever_had_content_;
 }
 
 bool SceneDockWidget::pruneEvictedObjects() {
@@ -296,6 +398,9 @@ void SceneDockWidget::setLayerVisible(ObjectTopicId topic_id, bool visible) {
   const int64_t key = topicKey(topic_id);
   const auto old_it = layer_visibility_cache_.find(key);
   const bool old_visible = old_it != layer_visibility_cache_.end() ? old_it->second : layer->info().visible;
+  if (old_visible == visible) {
+    return;
+  }
   layer->setVisible(visible);
   invalidateTrackerRenderKey();  // visible set changed → next tick must repaint
   // Hidden layers receive no tracker ticks (onTrackerTime skips them), so on
@@ -311,6 +416,7 @@ void SceneDockWidget::setLayerVisible(ObjectTopicId topic_id, bool visible) {
   }
   syncViewLayers();
   refreshView();
+  notifyWorkspaceChanged();
 }
 
 void SceneDockWidget::reorderLayers(const std::vector<ObjectTopicId>& ordered_topic_ids) {
@@ -328,9 +434,13 @@ void SceneDockWidget::reorderLayers(const std::vector<ObjectTopicId>& ordered_to
       ordered.push_back(key);
     }
   }
+  if (ordered == draw_order_) {
+    return;
+  }
   draw_order_ = std::move(ordered);
   syncViewLayers();
   refreshView();
+  notifyWorkspaceChanged();
 }
 
 std::vector<SceneLayerInfo> SceneDockWidget::layers() const {
@@ -437,12 +547,14 @@ DatasetId SceneDockWidget::representativeDatasetId() const {
 
 QDomElement SceneDockWidget::xmlSaveState(QDomDocument& doc) const {
   QDomElement root = doc.createElement(xmlTag());
-  root.setAttribute(QStringLiteral("version"), QStringLiteral("1"));
+  root.setAttribute(u"version"_s, u"1"_s);
 
   if (session_ == nullptr) {
+    appendPendingRestoreElements(doc, root);
     return root;
   }
 
+  int saved_order = 0;
   for (const int64_t key : draw_order_) {
     const auto it = layers_.find(key);
     if (it == layers_.end() || it->second == nullptr) {
@@ -451,13 +563,18 @@ QDomElement SceneDockWidget::xmlSaveState(QDomDocument& doc) const {
     const auto info = it->second->info();
     const auto& desc = session_->objectStore().descriptor(info.topic_id);
 
-    QDomElement layer_el = doc.createElement(QStringLiteral("layer"));
-    layer_el.setAttribute(QStringLiteral("dataset_id"), QString::number(desc.dataset_id));
-    layer_el.setAttribute(QStringLiteral("dataset_source"), datasetSourceName(session_, desc.dataset_id));
-    layer_el.setAttribute(QStringLiteral("topic_name"), QString::fromStdString(desc.topic_name));
-    layer_el.setAttribute(QStringLiteral("object_type"), objectTypeName(info.object_type));
-    layer_el.setAttribute(QStringLiteral("display_name"), info.display_name);
-    layer_el.setAttribute(QStringLiteral("visible"), info.visible ? QStringLiteral("true") : QStringLiteral("false"));
+    QDomElement layer_el = doc.createElement(u"layer"_s);
+    layer_el.setAttribute(u"dataset_id"_s, QString::number(desc.dataset_id));
+    layer_el.setAttribute(u"dataset_source"_s, datasetSourceName(session_, desc.dataset_id));
+    const QString path = session_->datasetSourcePath(desc.dataset_id);
+    if (!path.isEmpty()) {
+      layer_el.setAttribute(u"dataset_path"_s, path);
+    }
+    layer_el.setAttribute(u"topic_name"_s, QString::fromStdString(desc.topic_name));
+    layer_el.setAttribute(u"object_type"_s, objectTypeName(info.object_type));
+    layer_el.setAttribute(u"display_name"_s, info.display_name);
+    layer_el.setAttribute(u"visible"_s, info.visible ? u"true"_s : u"false"_s);
+    layer_el.setAttribute(u"order"_s, saved_order++);
 
     QDomElement payload = it->second->xmlSaveState(doc);
     if (!payload.isNull()) {
@@ -465,6 +582,7 @@ QDomElement SceneDockWidget::xmlSaveState(QDomDocument& doc) const {
     }
     root.appendChild(layer_el);
   }
+  appendPendingRestoreElements(doc, root);
   return root;
 }
 
@@ -472,6 +590,26 @@ bool SceneDockWidget::xmlLoadState(const QDomElement& element) {
   if (element.isNull() || element.tagName() != xmlTag()) {
     return false;
   }
+  for (QDomElement child = element.firstChildElement(); !child.isNull(); child = child.nextSiblingElement()) {
+    if (!acceptsStateChildTag(child.tagName())) {
+      return false;
+    }
+    if (child.tagName() == "layer"_L1) {
+      const QString visible = child.attribute(u"visible"_s, u"true"_s);
+      if (visible != "true"_L1 && visible != "false"_L1) {
+        return false;
+      }
+      if (child.hasAttribute(u"order"_s)) {
+        bool order_ok = false;
+        const int order = child.attribute(u"order"_s).toInt(&order_ok);
+        if (!order_ok || order < 0) {
+          return false;
+        }
+      }
+    }
+  }
+  auto restoring_guard = beginWorkspaceRestore();
+  resetWorkspaceRestoreStatus();
   clearPendingRestores();
   clearLayers();
   if (session_ == nullptr) {
@@ -481,8 +619,13 @@ bool SceneDockWidget::xmlLoadState(const QDomElement& element) {
   }
 
   int unresolved_layers = 0;
-  for (QDomElement layer_el = element.firstChildElement(QStringLiteral("layer")); !layer_el.isNull();
-       layer_el = layer_el.nextSiblingElement(QStringLiteral("layer"))) {
+  int saved_order = 0;
+  for (QDomElement layer_el = element.firstChildElement(u"layer"_s); !layer_el.isNull();
+       layer_el = layer_el.nextSiblingElement(u"layer"_s)) {
+    if (!layer_el.hasAttribute(u"order"_s)) {
+      layer_el.setAttribute(u"order"_s, saved_order);
+    }
+    ++saved_order;
     if (!restoreLayerElement(layer_el)) {
       ++unresolved_layers;
       rememberPendingRestore(layer_el);
@@ -493,13 +636,18 @@ bool SceneDockWidget::xmlLoadState(const QDomElement& element) {
   }
   syncViewLayers();
   refreshView();
-  return true;
+  return restore_failure_count_ == 0;
+}
+
+bool SceneDockWidget::acceptsStateChildTag(const QString& tag) const {
+  return tag == "layer"_L1;
 }
 
 int SceneDockWidget::retryPendingRestores(const QSet<QString>& topic_names) {
   if (pending_restore_elements_.empty()) {
     return 0;
   }
+  auto restoring_guard = beginWorkspaceRestore();
 
   int restored = 0;
   std::vector<PendingRestoreElement> still_pending;
@@ -509,13 +657,24 @@ int SceneDockWidget::retryPendingRestores(const QSet<QString>& topic_names) {
       still_pending.push_back(std::move(pending));
       continue;
     }
+    const uint64_t failures_before = restore_failure_count_;
     if (restoreOnePending(pending.document.documentElement())) {
-      ++restored;
+      if (restore_failure_count_ == failures_before) {
+        ++restored;
+      }
     } else {
       still_pending.push_back(std::move(pending));
     }
   }
+  const std::size_t pending_before = pending_restore_elements_.size();
   pending_restore_elements_ = std::move(still_pending);
+  if (pending_restore_elements_.size() != pending_before) {
+    emit pendingRestoresChanged();
+  }
+  if (restored > 0) {
+    syncViewLayers();
+    refreshView();
+  }
   return restored;
 }
 
@@ -530,8 +689,134 @@ QStringList SceneDockWidget::unresolvedPendingRestores() const {
   return unresolved;
 }
 
+QStringList SceneDockWidget::unresolvedBlockingPendingRestores() const {
+  QStringList unresolved;
+  for (const PendingRestoreElement& pending : pending_restore_elements_) {
+    if (pending.document.documentElement().attribute(u"pending_intent"_s) == "true"_L1) {
+      continue;
+    }
+    if (!pending.topic_name.isEmpty()) {
+      unresolved.push_back(pending.topic_name);
+    }
+  }
+  return unresolved;
+}
+
+bool SceneDockWidget::hasPendingRestoreDemands() const {
+  return std::any_of(
+      pending_restore_elements_.cbegin(), pending_restore_elements_.cend(),
+      [](const PendingRestoreElement& pending) { return !pending.topic_name.isEmpty(); });
+}
+
+std::vector<SceneDockWidget::PendingRestoreDemand> SceneDockWidget::pendingRestoreDemands() const {
+  std::vector<PendingRestoreDemand> demands;
+  demands.reserve(pending_restore_elements_.size());
+  for (const PendingRestoreElement& pending : pending_restore_elements_) {
+    const QDomElement element = pending.document.documentElement();
+    if (pending.topic_name.isEmpty()) {
+      continue;
+    }
+    bool id_ok = false;
+    const qulonglong raw_id = element.attribute(u"dataset_id"_s).toULongLong(&id_ok);
+    std::optional<DatasetId> preferred;
+    if (id_ok && raw_id <= std::numeric_limits<DatasetId>::max()) {
+      preferred = static_cast<DatasetId>(raw_id);
+      // Same resolution ladder as restore itself (injected policy, else the
+      // session default): the demand preference must never regress to trusting
+      // a raw saved id that the restore path would refuse.
+      const auto resolved = resolveObjectDataset(
+          *preferred, element.attribute(u"dataset_source"_s), element.attribute(u"dataset_path"_s), pending.topic_name);
+      if (resolved.has_value()) {
+        preferred = resolved;
+      }
+    }
+    demands.push_back(PendingRestoreDemand{.topic_name = pending.topic_name, .preferred_dataset = preferred});
+  }
+  return demands;
+}
+
+void SceneDockWidget::clearBlockingPendingRestores() {
+  erasePendingRestoresIf([](const PendingRestoreElement& pending) {
+    return pending.document.documentElement().attribute(u"pending_intent"_s) != "true"_L1;
+  });
+}
+
+void SceneDockWidget::erasePendingRestoresIf(const std::function<bool(const PendingRestoreElement&)>& predicate) {
+  const std::size_t before = pending_restore_elements_.size();
+  std::erase_if(pending_restore_elements_, predicate);
+  if (pending_restore_elements_.size() != before) {
+    emit pendingRestoresChanged();
+  }
+}
+
+// True when any element of the pending payload references `dataset_id` through
+// a dataset-reference attribute. Convention (see the base header): payload
+// attributes named `dataset_id` / `source_dataset_id` are dataset references;
+// discard honors exactly these.
+static bool documentReferencesDataset(const QDomDocument& document, DatasetId dataset_id) {
+  const QDomNodeList elements = document.elementsByTagName(u"*"_s);
+  for (int index = -1; index < elements.size(); ++index) {
+    const QDomElement element = index < 0 ? document.documentElement() : elements.at(index).toElement();
+    for (const QString& attribute : {u"dataset_id"_s, u"source_dataset_id"_s}) {
+      bool ok = false;
+      const qulonglong raw_id = element.attribute(attribute).toULongLong(&ok);
+      if (ok && raw_id == dataset_id) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+void SceneDockWidget::discardPendingRestoresForDataset(DatasetId dataset_id) {
+  erasePendingRestoresIf([dataset_id](const PendingRestoreElement& pending) {
+    return documentReferencesDataset(pending.document, dataset_id);
+  });
+}
+
+void SceneDockWidget::discardPendingRestoresForTopic(DatasetId dataset_id, const QString& topic_name) {
+  erasePendingRestoresIf([dataset_id, &topic_name](const PendingRestoreElement& pending) {
+    return pending.topic_name == topic_name && documentReferencesDataset(pending.document, dataset_id);
+  });
+}
+
+void SceneDockWidget::appendPendingRestoreElements(QDomDocument& doc, QDomElement& root) const {
+  for (const PendingRestoreElement& pending : pending_restore_elements_) {
+    const QDomElement element = pending.document.documentElement();
+    if (!element.isNull()) {
+      root.appendChild(doc.importNode(element, /*deep=*/true));
+    }
+  }
+}
+
+SceneDockWidget::PendingRestoreSnapshot SceneDockWidget::capturePendingRestoreState() const {
+  PendingRestoreSnapshot snapshot;
+  snapshot.elements = pending_restore_elements_;  // QDomDocument handles are implicitly shared — cheap copies
+  snapshot.restore_failure_count = restore_failure_count_;
+  snapshot.ever_had_content = ever_had_content_;
+  return snapshot;
+}
+
+void SceneDockWidget::restorePendingRestoreState(const PendingRestoreSnapshot& snapshot) {
+  pending_restore_elements_ = snapshot.elements;
+  restore_failure_count_ = snapshot.restore_failure_count;
+  ever_had_content_ = snapshot.ever_had_content;
+}
+
+void SceneDockWidget::markWorkspaceRestoreFailed() {
+  ++restore_failure_count_;
+}
+
+void SceneDockWidget::resetWorkspaceRestoreStatus() {
+  restore_failure_count_ = 0;
+}
+
 void SceneDockWidget::clearPendingRestores() {
+  if (pending_restore_elements_.empty()) {
+    return;
+  }
   pending_restore_elements_.clear();
+  emit pendingRestoresChanged();
 }
 
 LayerFactory& SceneDockWidget::layerFactory() {
@@ -554,33 +839,24 @@ QString SceneDockWidget::datasetSourceName(const SessionManager* session, Datase
   return info != nullptr ? QString::fromStdString(info->source_name) : QString();
 }
 
-std::optional<DatasetId> SceneDockWidget::resolveDatasetId(
-    const SessionManager* session, DatasetId saved_id, const QString& saved_source) {
-  if (session == nullptr) {
+std::optional<DatasetId> SceneDockWidget::resolveObjectDataset(
+    DatasetId saved_id, const QString& saved_source, const QString& saved_path, const QString& topic_name) const {
+  if (object_dataset_resolver_) {
+    return object_dataset_resolver_(saved_id, saved_source, saved_path, topic_name);
+  }
+  // Default policy: the session's ambiguity-safe object identity ladder. An
+  // injected resolver overrides it (custom host policies, tests); without a
+  // session the restore stays pending.
+  if (session_ == nullptr) {
     return std::nullopt;
   }
-  DataEngine& engine = const_cast<SessionManager*>(session)->dataEngine();
-  // Prefer the stable source name: DatasetIds are a load-order counter, so the
-  // same file can carry a different id between sessions. An empty saved source
-  // (older layouts) skips straight to the id fallback.
-  if (!saved_source.isEmpty()) {
-    const std::string wanted = saved_source.toStdString();
-    for (const DatasetId candidate : engine.listDatasets()) {
-      const PJ::DatasetInfo* info = engine.getDataset(candidate);
-      if (info != nullptr && info->source_name == wanted) {
-        return candidate;
-      }
-    }
-  }
-  // Fallback: the raw id, but only if it still resolves to a loaded dataset.
-  if (engine.getDataset(saved_id) != nullptr) {
-    return saved_id;
-  }
-  return std::nullopt;
+  const DatasetIdentityResolution resolved =
+      session_->resolveObjectDatasetIdentity(saved_id, saved_source, saved_path, topic_name);
+  return resolved.id;
 }
 
 QString SceneDockWidget::xmlTag() const {
-  return QStringLiteral("scene");
+  return u"scene"_s;
 }
 
 bool SceneDockWidget::handleSceneConfigTopic(
@@ -690,8 +966,16 @@ void SceneDockWidget::clearLayers() {
   refreshView();
   for (auto& [key, layer] : retired) {
     if (layer != nullptr) {
+      const ObjectTopicId topic_id = layer->info().topic_id;
       layer->detach();
+      emit layerRemoved(topic_id);
     }
+  }
+}
+
+void SceneDockWidget::notifyWorkspaceChanged() {
+  if (!restoring_state_) {
+    emit workspaceChanged();
   }
 }
 

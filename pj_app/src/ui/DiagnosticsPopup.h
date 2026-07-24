@@ -6,6 +6,7 @@
 #include <QList>
 
 #include "pj_runtime/DiagnosticHistory.h"
+#include "pj_widgets/FrameworkTokens.h"
 
 class QEvent;
 class QMouseEvent;
@@ -55,8 +56,8 @@ class DiagnosticsPopup : public QFrame {
 
   static constexpr int kMaxVisibleCards = 5;
   static constexpr int kCardHeight = 28;
-  static constexpr int kCardSpacing = 2;
-  static constexpr int kFrameMargin = 4;
+  static constexpr auto kCardSpacing = theme::Space::Tight;
+  static constexpr auto kFrameMargin = theme::Space::Snug;
   static constexpr int kDragHandleHeight = 4;
 
  signals:

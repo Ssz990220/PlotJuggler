@@ -18,32 +18,30 @@
 #include <QRectF>
 #include <cmath>
 
+#include "pj_widgets/FrameworkTokens.h"
+
 namespace PJ {
 
 // Single source of truth for the hatch line spacing (logical px). Shared by every
 // widget so the pattern density can never drift between them.
 inline constexpr double kHatchSpacing = 14.0;
 
-// Theme ink for the hatch. A self-painting widget must read QGuiApplication::palette()
-// (the app syncs Window/WindowText per theme; QSS does NOT touch the palette), so this
-// adapts: dark-grey hatch on a light theme, light-grey on dark. `t` is the blend toward
-// the text ink (0.30 active / lighter when disabled), matching the Timeline's hatch.
+// Theme ink for the hatch. The app syncs QPalette::Window per theme; use its
+// lightness only to choose the framework data-backdrop/text tokens.
 inline QColor appHatchColor(bool enabled = true) {
   const QPalette pal = QGuiApplication::palette();
-  const QColor bg = pal.color(QPalette::Window);
-  const QColor text = pal.color(QPalette::WindowText);
-  const double t = enabled ? 0.30 : 0.18;
-  const auto mix = [t](double a, double b) { return a * (1.0 - t) + b * t; };
-  return QColor::fromRgbF(mix(bg.redF(), text.redF()), mix(bg.greenF(), text.greenF()), mix(bg.blueF(), text.blueF()));
+  const auto fw_theme = theme::themeFor(pal.color(QPalette::Window).lightness() >= 128);
+  return theme::onSurface(
+      theme::Surface::DataBackdrop, enabled ? theme::Emphasis::Muted : theme::Emphasis::Disabled, fw_theme);
 }
 
-// The shared BACKDROP the hatch is composited over — the second half of "one
-// continuous layer". The ink (appHatchColor) is only half the story: identical ink on
-// a brighter backdrop reads with MORE contrast (= busier). Every caller must paint this
-// behind the hatch so contrast matches too, not just spacing/phase. It is QPalette::Window
-// — the exact tone the Timeline fills under its empty span (TimelineColors::bg).
+// The shared data backdrop the hatch is composited over — the second half of
+// "one continuous layer". The ink (appHatchColor) is only half the story:
+// every caller must paint this behind the hatch so contrast matches too.
 inline QColor appHatchBackground() {
-  return QGuiApplication::palette().color(QPalette::Window);
+  const QPalette pal = QGuiApplication::palette();
+  const auto fw_theme = theme::themeFor(pal.color(QPalette::Window).lightness() >= 128);
+  return theme::surface(theme::Surface::DataBackdrop, fw_theme);
 }
 
 // Paint the shared hatch into `painter`, filling `rect` and intersecting any clip the

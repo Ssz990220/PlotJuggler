@@ -92,7 +92,13 @@ endif()
 # Some package managers (e.g. Conan) bundle it alongside the IPC library
 # but don't declare it as a transitive link dependency. Since the IPC target
 # already sets INTERFACE_LINK_DIRECTORIES, linking by name suffices.
-target_link_libraries(${PJ_NANOARROW_IPC_TARGET} INTERFACE flatccrt)
+# Upstream nanoarrow configs expose the preferred name as an ALIAS, which
+# target_link_libraries rejects — resolve to the underlying target first.
+get_target_property(_pj_nanoarrow_ipc_real ${PJ_NANOARROW_IPC_TARGET} ALIASED_TARGET)
+if(NOT _pj_nanoarrow_ipc_real)
+  set(_pj_nanoarrow_ipc_real ${PJ_NANOARROW_IPC_TARGET})
+endif()
+target_link_libraries(${_pj_nanoarrow_ipc_real} INTERFACE flatccrt)
 
 # ---------------------------------------------------------------------------
 # Library
@@ -116,6 +122,7 @@ add_library(pj_datastore STATIC
   src/colormap_registry.cpp
   src/colormap_registry_host.cpp
   src/sequential_uid.cpp
+  src/ordered_entries.cpp
   src/object_store.cpp
   # Data-processor execution substrate (the DataProcessor base + ProcessorSisoAdapter
   # that runs a processor as a DerivedEngine node — moved here from the retired pj_proc
@@ -169,6 +176,7 @@ if(PJ_BUILD_TESTS)
     tests/regression_test.cpp
     tests/sequential_uid_test.cpp
     tests/merge_test.cpp
+    tests/ordered_entries_test.cpp
     tests/object_store_test.cpp
     tests/object_merge_test.cpp
     tests/clear_dataset_test.cpp

@@ -7,21 +7,18 @@
   </property>
   <layout class="QVBoxLayout" name="main_layout">
    <property name="spacing"><number>8</number></property>
-   <property name="leftMargin"><number>10</number></property>
-   <property name="topMargin"><number>10</number></property>
-   <property name="rightMargin"><number>10</number></property>
-   <property name="bottomMargin"><number>10</number></property>
+   <property name="leftMargin"><number>8</number></property>
+   <property name="topMargin"><number>8</number></property>
+   <property name="rightMargin"><number>8</number></property>
+   <property name="bottomMargin"><number>8</number></property>
 
    <!-- Toolbar -->
    <item>
     <layout class="QHBoxLayout" name="toolbar_layout">
+     <property name="spacing"><number>8</number></property>
      <item>
-      <widget class="QLineEdit" name="search_edit_">
-       <property name="placeholderText"><string>Search extensions...</string></property>
-       <!-- Custom themed clear action wired in setupUi() — Qt's stock
-            clearButton is intentionally off so we don't get the
-            system-styled X next to ours. -->
-       <property name="clearButtonEnabled"><bool>false</bool></property>
+      <widget class="PJ::Search" name="search_edit_">
+       <property name="placeholder"><string>Search extensions...</string></property>
       </widget>
      </item>
      <item>
@@ -45,19 +42,25 @@
        <property name="maximumSize"><size><width>30</width><height>16777215</height></size></property>
       </widget>
      </item>
-     <item>
-      <widget class="QPushButton" name="settings_btn_">
-       <property name="text"><string/></property>
-       <property name="toolTip"><string>Registry settings</string></property>
-       <property name="iconSize"><size><width>18</width><height>18</height></size></property>
-       <property name="maximumSize"><size><width>30</width><height>16777215</height></size></property>
-      </widget>
-     </item>
     </layout>
    </item>
 
-   <!-- Cards scroll area -->
+   <!-- Plugin list (left) + detail panel (right). Only this middle band is split;
+        the toolbar and status bar stay full width. A QSplitter (not a plain
+        QHBoxLayout) so the user can drag the boundary between the two panes. -->
    <item>
+    <widget class="QSplitter" name="content_split_">
+     <!-- Unlike the QHBoxLayout it replaces, a bare QSplitter widget defaults
+          to a Preferred/Preferred size policy and does not inherit its
+          children's Expanding vertical policy, so it stops claiming leftover
+          vertical space from main_layout without this override. -->
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+       <horstretch>0</horstretch><verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+     <property name="orientation"><enum>Qt::Horizontal</enum></property>
+     <property name="childrenCollapsible"><bool>false</bool></property>
     <widget class="QScrollArea" name="scroll_area_">
      <property name="widgetResizable"><bool>true</bool></property>
      <property name="frameShape"><enum>QFrame::NoFrame</enum></property>
@@ -68,19 +71,25 @@
        <rect><x>0</x><y>0</y><width>618</width><height>440</height></rect>
       </property>
       <layout class="QVBoxLayout" name="cards_layout_">
-       <property name="spacing"><number>6</number></property>
+       <property name="spacing"><number>8</number></property>
        <property name="leftMargin"><number>0</number></property>
        <property name="topMargin"><number>0</number></property>
-       <property name="rightMargin"><number>6</number></property>
+       <property name="rightMargin"><number>8</number></property>
        <property name="bottomMargin"><number>0</number></property>
        <item>
         <spacer name="cards_stretch">
          <property name="orientation"><enum>Qt::Vertical</enum></property>
-         <property name="sizeHint" stdset="0"><size><width>20</width><height>40</height></size></property>
+         <property name="sizeHint" stdset="0"><size><width>20</width><height>16</height></size></property>
         </spacer>
        </item>
       </layout>
      </widget>
+    </widget>
+    <widget class="QScrollArea" name="detail_scroll_">
+     <property name="widgetResizable"><bool>true</bool></property>
+     <property name="frameShape"><enum>QFrame::NoFrame</enum></property>
+     <widget class="QWidget" name="detail_container_"/>
+    </widget>
     </widget>
    </item>
 
@@ -125,6 +134,11 @@
   </layout>
  </widget>
  <customwidgets>
+  <customwidget>
+   <class>PJ::Search</class>
+   <extends>QWidget</extends>
+   <header>pj_widgets/Search.h</header>
+  </customwidget>
   <customwidget>
    <class>PJ::ComboBox</class>
    <extends>QComboBox</extends>

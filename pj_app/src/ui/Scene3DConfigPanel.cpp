@@ -6,7 +6,6 @@
 #include <QButtonGroup>
 #include <QDialogButtonBox>
 #include <QEvent>
-#include <QFileDialog>
 #include <QFileInfo>
 #include <QGridLayout>
 #include <QHBoxLayout>
@@ -36,6 +35,8 @@
 #include "pj_widgets/ConfigPanelHost.h"
 #include "pj_widgets/Dialog.h"
 #include "pj_widgets/DoubleScrubber.h"
+#include "pj_widgets/FileDialog.h"
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/IntScrubber.h"
 #include "pj_widgets/LayerListView.h"
 #include "pj_widgets/MessageBox.h"
@@ -43,6 +44,7 @@
 #include "pj_widgets/SectionHeaderBand.h"
 #include "pj_widgets/Style.h"  // PJ::Style::kInputHeight (uniform row height)
 #include "pj_widgets/SvgUtil.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -65,7 +67,7 @@ constexpr int kTrailingSlotWidth = 20;
 constexpr int kTrailingIconPx = 20;
 // Horizontal gap between grid columns; the robot-row HBox reuses it so the robot
 // name's right edge lands on the same x as the field column above.
-constexpr int kGridHSpacing = 8;
+constexpr auto kGridHSpacing = theme::Space::Comfortable;
 
 // Uniform sizing for the inline eye/add/trash buttons so the trailing column is
 // pixel-aligned regardless of the platform style's default tool-button metrics.
@@ -82,7 +84,7 @@ void sizeTrailingButton(QToolButton* button) {
 // edge and the trailing eye/add button aligned across rows by construction.
 // `trailing` may be null (column 2 stays reserved via setColumnMinimumWidth).
 void addGridRow(QGridLayout* grid, int& row, const QString& label, QWidget* field, QWidget* trailing = nullptr) {
-  grid->addWidget(new QLabel(label + QStringLiteral(":")), row, 0);
+  grid->addWidget(new QLabel(label + u":"_s), row, 0);
   grid->addWidget(field, row, 1);
   if (trailing != nullptr) {
     grid->addWidget(trailing, row, 2);
@@ -136,7 +138,7 @@ std::optional<std::pair<ObjectTopicId, QString>> pickRobotDescriptionTopic(
 std::optional<QString> promptUrdfUrl(QWidget* parent) {
   Dialog dialog(parent);
   auto* edit = new QLineEdit(dialog.contentWidget());
-  edit->setPlaceholderText(QStringLiteral("https://example.com/robot.urdf"));
+  edit->setPlaceholderText(u"https://example.com/robot.urdf"_s);
   edit->setMinimumWidth(360);
   if (!execFieldDialog(dialog, QObject::tr("Load URDF from URL"), edit)) {
     return std::nullopt;
@@ -180,15 +182,19 @@ Scene3DConfigPanel::Scene3DConfigPanel(QWidget* parent) : QWidget(parent) {
   // panel's Curve Width / Curve Style bands; each content block under a band
   // re-adds its own 8-px horizontal inset.
   auto* outer = new QVBoxLayout(this);
-  outer->setContentsMargins(0, 0, 0, 0);
-  outer->setSpacing(0);
+  outer->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  outer->setSpacing(PJ::theme::space(theme::Space::None));
 
   buildSceneControls(outer);
 
   outer->addWidget(new SectionHeaderBand(tr("Topics"), this));
   auto* topics_host = new QWidget(this);
   auto* topics_layout = new QVBoxLayout(topics_host);
-  topics_layout->setContentsMargins(8, 4, 8, 4);
+  topics_layout->setContentsMargins(
+      PJ::theme::space(theme::Space::Comfortable), PJ::theme::space(theme::Space::Snug),
+      PJ::theme::space(theme::Space::Comfortable), PJ::theme::space(theme::Space::Snug));
   layer_list_ = new LayerListView(topics_host);
   topics_layout->addWidget(layer_list_);
   outer->addWidget(topics_host);
@@ -196,15 +202,19 @@ Scene3DConfigPanel::Scene3DConfigPanel(QWidget* parent) : QWidget(parent) {
   outer->addWidget(new SectionHeaderBand(tr("Settings"), this));
   auto* settings_host = new QWidget(this);
   auto* settings_layout = new QVBoxLayout(settings_host);
-  settings_layout->setContentsMargins(8, 4, 8, 4);
+  settings_layout->setContentsMargins(
+      PJ::theme::space(theme::Space::Comfortable), PJ::theme::space(theme::Space::Snug),
+      PJ::theme::space(theme::Space::Comfortable), PJ::theme::space(theme::Space::Snug));
 
   // Right-aligned copy / paste / apply-to-family row, just below the Settings
   // header. Glyphs are set theme-aware in applyIcons(); enabled state tracks the
   // selection + clipboard via updateParamsToolbarState().
   auto* params_toolbar = new QWidget(settings_host);
   auto* params_toolbar_layout = new QHBoxLayout(params_toolbar);
-  params_toolbar_layout->setContentsMargins(0, 0, 0, 0);
-  params_toolbar_layout->setSpacing(2);
+  params_toolbar_layout->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  params_toolbar_layout->setSpacing(PJ::theme::space(theme::Space::Tight));
   params_toolbar_layout->addStretch(1);
   const auto make_param_button = [params_toolbar](const QString& tip) {
     auto* button = new QToolButton(params_toolbar);
@@ -281,7 +291,7 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
   // flat in every state — no checked/hover wash, the glyph is the indicator.
   const auto make_eye = [this, &settings](const char* key, const QString& tip) {
     auto* eye = new QToolButton(this);
-    eye->setObjectName(QStringLiteral("curveVisibilityToggle"));
+    eye->setObjectName(u"curveVisibilityToggle"_s);
     eye->setCheckable(true);
     eye->setAutoRaise(true);
     eye->setFocusPolicy(Qt::NoFocus);
@@ -309,9 +319,11 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
   const auto add_grid = [this, root]() {
     auto* host = new QWidget(this);
     auto* grid = new QGridLayout(host);
-    grid->setContentsMargins(8, 4, 8, 4);
-    grid->setHorizontalSpacing(kGridHSpacing);
-    grid->setVerticalSpacing(4);
+    grid->setContentsMargins(
+        PJ::theme::space(theme::Space::Comfortable), PJ::theme::space(theme::Space::Snug),
+        PJ::theme::space(theme::Space::Comfortable), PJ::theme::space(theme::Space::Snug));
+    grid->setHorizontalSpacing(PJ::theme::space(kGridHSpacing));
+    grid->setVerticalSpacing(PJ::theme::space(theme::Space::Snug));
     grid->setColumnStretch(1, 1);
     grid->setColumnMinimumWidth(2, kTrailingSlotWidth);
     root->addWidget(host);
@@ -357,7 +369,9 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
   int grid_row = 0;
 
   auto* style_row = new QHBoxLayout;
-  style_row->setContentsMargins(0, 0, 0, 0);
+  style_row->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
   const auto make_style_button = [this](const QString& tip) {
     auto* button = new QToolButton(this);
     button->setCheckable(true);
@@ -374,10 +388,10 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
   style_group->setExclusive(true);
   style_group->addButton(grid_lines_button_, 0);
   style_group->addButton(grid_cells_button_, 1);
-  const int saved_style = settings.value(QStringLiteral("grid_style"), 0).toInt();
+  const int saved_style = settings.value(u"grid_style"_s, 0).toInt();
   (saved_style == 1 ? grid_cells_button_ : grid_lines_button_)->setChecked(true);
   connect(style_group, &QButtonGroup::idClicked, this, [this](int id) {
-    persistControl(QStringLiteral("grid_style"), id);
+    persistControl(u"grid_style"_s, id);
     applySceneControls();
   });
   grid_eye_ = make_eye("grid_visible", tr("Show/hide the grid"));
@@ -387,7 +401,7 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
   style_row->addStretch(1);
   // The style toggles are a strip, not a single field: keep the label in col 0
   // and let the strip span the field + trailing columns.
-  grid_grid->addWidget(new QLabel(tr("Style") + QStringLiteral(":")), grid_row, 0);
+  grid_grid->addWidget(new QLabel(tr("Style") + u":"_s), grid_row, 0);
   grid_grid->addLayout(style_row, grid_row, 1, 1, 2);
   ++grid_row;
 
@@ -426,10 +440,10 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
   tf_lines_button_->setFocusPolicy(Qt::NoFocus);
   tf_lines_button_->setToolTip(tr("Show/hide lines connecting each TF frame to its parent"));
   sizeTrailingButton(tf_lines_button_);
-  tf_lines_button_->setProperty("settings_key", QStringLiteral("tf_parent_lines"));
-  tf_lines_button_->setChecked(settings.value(QStringLiteral("tf_parent_lines"), true).toBool());
+  tf_lines_button_->setProperty("settings_key", u"tf_parent_lines"_s);
+  tf_lines_button_->setChecked(settings.value(u"tf_parent_lines"_s, true).toBool());
   connect(tf_lines_button_, &QToolButton::toggled, this, [this](bool checked) {
-    persistControl(QStringLiteral("tf_parent_lines"), checked);
+    persistControl(u"tf_parent_lines"_s, checked);
     applySceneControls();
   });
 
@@ -464,8 +478,10 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
   // reserve vertical spacing and leave a phantom gap under Model/URDF.
   robot_rows_host_ = new QWidget(this);
   robot_rows_layout_ = new QVBoxLayout(robot_rows_host_);
-  robot_rows_layout_->setContentsMargins(0, 0, 0, 0);
-  robot_rows_layout_->setSpacing(2);
+  robot_rows_layout_->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  robot_rows_layout_->setSpacing(PJ::theme::space(theme::Space::Tight));
   robot_rows_host_->hide();
   tm_grid->addWidget(robot_rows_host_, tm_row, 0, 1, 3);
   ++tm_row;
@@ -484,12 +500,6 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
       [this](const QVariant& v) { collision_opacity_->setValue(v.toDouble()); },
       qOverload<double>(&DoubleScrubber::valueChanged));
   addGridRow(tm_grid, tm_row, tr("Collision opacity"), collision_opacity_, collision_eye_);
-
-  // Mesh shadows: a per-dock on/off toggle. Visual meshes cast (collision hulls
-  // never do); meshes and the solid grid floor receive. make_eye persists under
-  // "shadows_enabled" and defaults ON so the feature is discoverable out of the box.
-  shadows_eye_ = make_eye("shadows_enabled", tr("Mesh shadows (visual meshes cast; meshes + solid floor receive)"));
-  addGridRow(tm_grid, tm_row, tr("Shadows"), shadows_eye_);
 
   // Pin both grids' label column to the widest label across BOTH sections, read
   // back from the labels just added (no separate string list to keep in sync).
@@ -552,7 +562,6 @@ void Scene3DConfigPanel::applySceneControlsTo(Scene3DDockWidget* dock) {
   shading.mesh_opacity = static_cast<float>(mesh_opacity_->value());
   shading.collisions_visible = collision_eye_->isChecked();
   shading.collision_opacity = static_cast<float>(collision_opacity_->value());
-  shading.shadows_enabled = shadows_eye_->isChecked();
   view->update();
 }
 
@@ -593,7 +602,6 @@ void Scene3DConfigPanel::loadControlsFromDock(Scene3DDockWidget* dock) {
     collision_opacity_->setValue(shading.collision_opacity);
     set_eye(mesh_eye_, shading.meshes_visible);
     set_eye(collision_eye_, shading.collisions_visible);
-    set_eye(shadows_eye_, shading.shadows_enabled);
   }
 
   // idClicked (the connected signal) fires only on user clicks, not programmatic
@@ -616,10 +624,10 @@ void Scene3DConfigPanel::setEyeIcon(QToolButton* eye, bool on) {
 
 void Scene3DConfigPanel::applyIcons() {
   if (grid_lines_button_ != nullptr) {
-    grid_lines_button_->setIcon(loadSvg(QStringLiteral(":/resources/svg/grid_4x4.svg"), theme_));
+    grid_lines_button_->setIcon(loadSvg(u":/resources/svg/grid_4x4.svg"_s, theme_));
   }
   if (grid_cells_button_ != nullptr) {
-    grid_cells_button_->setIcon(loadSvg(QStringLiteral(":/resources/svg/grid_view.svg"), theme_));
+    grid_cells_button_->setIcon(loadSvg(u":/resources/svg/grid_view.svg"_s, theme_));
   }
   for (QToolButton* eye : {grid_eye_, gizmo_eye_, mesh_eye_, collision_eye_}) {
     if (eye != nullptr) {
@@ -633,16 +641,16 @@ void Scene3DConfigPanel::applyIcons() {
     tf_lines_button_->setIcon(loadSvg(QLatin1String(kTfConnectionsIconPath), theme_));
   }
   if (recenter_button_ != nullptr) {
-    recenter_button_->setIcon(loadSvg(QStringLiteral(":/resources/svg/recenter.svg"), theme_));
+    recenter_button_->setIcon(loadSvg(u":/resources/svg/recenter.svg"_s, theme_));
   }
   if (params_copy_ != nullptr) {
-    params_copy_->setIcon(loadSvg(QStringLiteral(":/resources/svg/copy.svg"), theme_));
+    params_copy_->setIcon(loadSvg(u":/resources/svg/copy.svg"_s, theme_));
   }
   if (params_paste_ != nullptr) {
-    params_paste_->setIcon(loadSvg(QStringLiteral(":/resources/svg/paste.svg"), theme_));
+    params_paste_->setIcon(loadSvg(u":/resources/svg/paste.svg"_s, theme_));
   }
   if (params_apply_all_ != nullptr) {
-    params_apply_all_->setIcon(loadSvg(QStringLiteral(":/resources/svg/format_paint.svg"), theme_));
+    params_apply_all_->setIcon(loadSvg(u":/resources/svg/format_paint.svg"_s, theme_));
   }
   for (const auto& [id, row] : robot_rows_) {
     if (auto* trash = row->findChild<QToolButton*>()) {
@@ -659,7 +667,7 @@ void Scene3DConfigPanel::onAddModelClicked() {
     case 0: {  // File
       QSettings settings;
       const QString start_dir = settings.value(QString::fromLatin1(kUrdfBrowseDirKey)).toString();
-      const QString path = QFileDialog::getOpenFileName(
+      const QString path = PJ::FileDialog::getOpenFileName(
           this, tr("Load URDF"), start_dir, tr("URDF files (*.urdf *.xml);;All files (*)"));
       if (path.isEmpty()) {
         return;
@@ -725,8 +733,11 @@ void Scene3DConfigPanel::addRobotRow(uint32_t topic_id_value, const QString& lab
 
   auto* row = new QWidget(this);
   auto* layout = new QHBoxLayout(row);
-  layout->setContentsMargins(0, 0, 0, 0);
-  layout->setSpacing(kGridHSpacing);  // match the grid's column gap so the name's right edge lines up
+  layout->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  // Match the grid's column gap so the name's right edge lines up.
+  layout->setSpacing(PJ::theme::space(kGridHSpacing));
   auto* name = new QLineEdit(label, row);
   name->setReadOnly(true);
   name->setFocusPolicy(Qt::NoFocus);
@@ -741,7 +752,7 @@ void Scene3DConfigPanel::addRobotRow(uint32_t topic_id_value, const QString& lab
   layout->addWidget(name, 1);
   auto* trash = new QToolButton(row);
   // Same flat styling as the topic-row trash buttons (QSS keys on this name).
-  trash->setObjectName(QStringLiteral("curveTrashToggle"));
+  trash->setObjectName(u"curveTrashToggle"_s);
   trash->setAutoRaise(true);
   trash->setFocusPolicy(Qt::NoFocus);
   trash->setToolTip(tr("Remove this robot model"));

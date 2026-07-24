@@ -16,11 +16,13 @@ add_library(pj_widgets STATIC
     src/Dialog.ui
     src/DoubleScrubber.cpp
     src/FileDialog.cpp
+    src/FrameworkTokens.cpp
     src/FlowLayout.cpp
     src/IngestProgressWidget.cpp
     src/IntScrubber.cpp
     src/LayerListView.cpp
     src/MessageBox.cpp
+    src/Search.cpp
     src/ProgressBar.cpp
     src/ProgressDialog.cpp
     src/RangeSlider.cpp
@@ -53,10 +55,12 @@ add_library(pj_widgets STATIC
     include/pj_widgets/ElidingLabel.h
     include/pj_widgets/FileDialog.h
     include/pj_widgets/FlowLayout.h
+    include/pj_widgets/FrameworkTokens.h
     include/pj_widgets/IngestProgressWidget.h
     include/pj_widgets/IntScrubber.h
     include/pj_widgets/LayerListView.h
     include/pj_widgets/MessageBox.h
+    include/pj_widgets/Search.h
     include/pj_widgets/ProgressBar.h
     include/pj_widgets/ProgressDialog.h
     include/pj_widgets/RealSlider.h
@@ -69,7 +73,6 @@ add_library(pj_widgets STATIC
     include/pj_widgets/Style.h
     include/pj_widgets/SvgButton.h
     include/pj_widgets/SvgUtil.h
-    include/pj_widgets/ThemeColors.h
     include/pj_widgets/Scrollbar.h
     include/pj_widgets/Timeline.h
     include/pj_widgets/ToastManager.h
@@ -101,7 +104,9 @@ if(PJ_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
-add_subdirectory(demos)
+if(PJ_BUILD_DEMOS)
+    add_subdirectory(demos)
+endif()
 
 option(PJ_BUILD_WIDGET_DEMOS "Build pj_widgets demo apps" ${PJ_BUILD_TESTS})
 if(PJ_BUILD_WIDGET_DEMOS)

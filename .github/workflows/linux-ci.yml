@@ -10,7 +10,9 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Do not interrupt trusted runs while they are publishing newly built Conan
+  # packages. Superseded pull-request runs remain safe to cancel.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   pre-commit:
@@ -21,28 +23,15 @@ jobs:
 
   build:
     if: github.event.pull_request.draft == false
-    needs: pre-commit
-    runs-on: ubuntu-22.04
+    runs-on: depot-ubuntu-22.04-4
     # Backstop against hangs (a deadlocked test otherwise holds the runner for
     # GitHub's 6-hour default). Worst observed legitimate run — cold Conan +
     # cold ccache — is ~28 min.
     timeout-minutes: 60
     permissions:
       contents: read
-      packages: write   # push/pull the Conan cache OCI artifact on ghcr.io
 
     steps:
-      - name: Free up runner disk space
-        # ubuntu runners ship ~14 GB free; the RelWithDebInfo link of pj_app
-        # (FFmpeg/assimp/Qt + debug info) over the Conan closure can exceed it
-        # ("ld: No space left on device" during the final link). Reclaim the
-        # preinstalled toolchains this build never uses (~20-30 GB).
-        run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
-            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/lib/node_modules
-          sudo docker image prune --all --force >/dev/null 2>&1 || true
-          df -h /
-
       - name: Use HTTPS for github.com submodules
         run: git config --global url."https://github.com/".insteadOf "git@github.com:"
 
@@ -50,51 +39,27 @@ jobs:
         with:
           submodules: recursive
 
-      - uses: conan-io/setup-conan@v1
-        with:
-          # Backed by ghcr.io via oras (see steps below) instead of
-          # actions/cache (10 GB soft cap, 7-day eviction, branch-scoped).
-          # ghcr.io public repos: unlimited storage, tags survive forever,
-          # cross-branch.
-          cache_packages: false
-
-      - name: Setup oras (OCI Registry As Storage)
-        # Primary install path. continue-on-error so a 5xx on the github.com
-        # release CDN doesn't kill CI — we have a fallback below, and worst
-        # case we degrade to "no Conan cache this run" (build still completes).
-        id: setup_oras
-        uses: oras-project/setup-oras@v1
-        continue-on-error: true
-
-      - name: Setup oras (manual download fallback)
-        id: setup_oras_fallback
-        if: steps.setup_oras.outcome == 'failure'
-        continue-on-error: true
+      - name: Read versions
+        id: versions
         shell: bash
         run: |
           set -euo pipefail
-          version="1.3.0"
-          url="https://github.com/oras-project/oras/releases/download/v${version}/oras_${version}_linux_amd64.tar.gz"
-          tarball="${RUNNER_TEMP}/oras.tar.gz"
-          install_dir="${RUNNER_TEMP}/oras-bin"
-          mkdir -p "${install_dir}"
+          source ./versions.env
+          echo "PJ_APP_VERSION=${PJ_APP_VERSION}" >> "${GITHUB_ENV}"
+          echo "PJ_QT_VERSION=${PJ_QT_VERSION}" >> "${GITHUB_ENV}"
+          echo "PJ_APPIMAGE_ARCH=${PJ_APPIMAGE_ARCH}" >> "${GITHUB_ENV}"
+          echo "app_version=${PJ_APP_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "qt_version=${PJ_QT_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "appimage_arch=${PJ_APPIMAGE_ARCH}" >> "${GITHUB_OUTPUT}"
 
-          attempts=0
-          until curl -fsSL "${url}" -o "${tarball}"; do
-            attempts=$((attempts + 1))
-            if [ "${attempts}" -ge 5 ]; then
-              echo "Download failed after ${attempts} attempts" >&2
-              exit 1
-            fi
-            delay=$((5 * (2 ** attempts)))
-            echo "Download attempt ${attempts} failed; retrying in ${delay}s..."
-            sleep "${delay}"
-          done
-          tar -xzf "${tarball}" -C "${install_dir}"
-          echo "${install_dir}" >> "${GITHUB_PATH}"
-          "${install_dir}/oras" version
+      - uses: conan-io/setup-conan@v1
+        with:
+          # Binaries come from the Depot-backed Actions cache below, with
+          # ConanCenter source builds as the fallback. Do not also archive
+          # ~/.conan2 through setup-conan itself.
+          cache_packages: false
 
-      - name: Compute Conan cache tag
+      - name: Compute Conan cache hash
         id: conan_cache
         shell: bash
         run: |
@@ -102,79 +67,63 @@ jobs:
           # Hash every conanfile.txt under the tree (today the top-level
           # one; future submodules under PJ4 may add their own) so the
           # key invalidates when any of them changes.
-          hash=$(find . -name conanfile.txt -not -path './build/*' -not -path './.git/*' \
+          hash=$(find . \( -name conanfile.txt -o -name conan.lock \) -not -path './build/*' -not -path './.git/*' \
                   -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16)
-          owner="${GITHUB_REPOSITORY_OWNER,,}"
-          tag="ghcr.io/${owner}/pj4-conan-cache:linux-gcc-relwithdebinfo-${hash}"
           echo "hash=${hash}" >> "${GITHUB_OUTPUT}"
-          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
-          echo "Cache tag: ${tag}"
 
-      - name: Login to ghcr.io
-        if: github.repository_owner == 'PlotJuggler' && (steps.setup_oras.outcome == 'success' || steps.setup_oras_fallback.outcome == 'success')
-        shell: bash
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "${GHCR_TOKEN}" | oras login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
-
-      - name: Restore Conan cache from ghcr.io
-        if: github.repository_owner == 'PlotJuggler' && (steps.setup_oras.outcome == 'success' || steps.setup_oras_fallback.outcome == 'success')
-        shell: bash
-        run: |
-          set +e
-          tag="${{ steps.conan_cache.outputs.tag }}"
-          pull_dir="${RUNNER_TEMP}/conan-cache-pull"
-          mkdir -p "${pull_dir}"
-          (
-            cd "${pull_dir}"
-            oras pull "${tag}" 2>&1
-          )
-          pulled=$?
-          tarball="${pull_dir}/conan-cache.tar.zst"
-          if [ "${pulled}" -eq 0 ] && [ -f "${tarball}" ]; then
-            echo "Cache HIT: extracting ${tarball}"
-            mkdir -p "${HOME}/.conan2"
-            tar --zstd -xf "${tarball}" -C "${HOME}"
-            echo "CONAN_CACHE_HIT=1" >> "${GITHUB_ENV}"
-          else
-            echo "Cache MISS for ${tag} (cold start or first build of this conanfile)"
-          fi
-          # Always exit 0 — a missing tag is not a CI failure.
-          exit 0
-
-      - name: Restore Conan cache from GitHub Actions cache
-        # Fallback layer under the ghcr.io cache above. ghcr.io only restores on
-        # the canonical PlotJuggler repo (it needs the registry token) and only
-        # *saves* on push-to-main, so PRs that touch conanfile.txt — and every
-        # build on a fork — get a ghcr.io MISS and rebuild all third-party deps
-        # (~6.5 min: libiconv, lz4, zstd, ffmpeg, …) from source on every run.
-        # The native Actions cache fills that gap: it works on PRs and forks with
-        # no token, so a PR's 2nd+ run (and any PR rebased on a main that already
-        # primed this key) restores the built packages instead of recompiling.
-        # Skipped when ghcr.io already produced a HIT — ~/.conan2 is populated.
+      - name: Restore Conan cache
+        # On Depot runners actions/cache is backed by Depot Cache storage —
+        # the authoritative Conan binary store; ConanCenter source builds are
+        # the fallback.
         id: conan-gha-cache
-        if: env.CONAN_CACHE_HIT != '1'
         uses: actions/cache/restore@v5
         with:
           path: ~/.conan2
-          key: conan-linux-gcc-relwithdebinfo-${{ steps.conan_cache.outputs.hash }}
+          # v2 prefix (July 2026): bumped to invalidate caches carrying the
+          # pre-#30610 assimp/5.4.3 recipe revision (which still pins draco/1.5.6
+          # and clashes with our new draco/1.5.7 pin). Fold this suffix out once
+          # everyone has moved past the transition.
+          key: conan-linux-gcc-relwithdebinfo-v2-${{ steps.conan_cache.outputs.hash }}
           # Partial reuse when conanfile.txt changes: an older closure for the
           # same OS/compiler still seeds most packages, so only the changed dep
           # (and its dependents) rebuild rather than the whole graph.
           restore-keys: |
-            conan-linux-gcc-relwithdebinfo-
+            conan-linux-gcc-relwithdebinfo-v2-
+
+      - name: Seed Conan source download cache
+        # minizip/1.2.13 has a single zlib.net source URL that rejects GitHub
+        # runners with HTTP 415. Use the same checksum-verified, repo-hosted
+        # Conan download-cache seed as the proven Windows workflows. This is
+        # deliberately configured after restoring ~/.conan2 so a restored
+        # global.conf cannot clobber it.
+        shell: bash
+        run: |
+          set -euo pipefail
+          cache_dir="${RUNNER_TEMP}/conan-source-cache"
+          mkdir -p "${cache_dir}/s"
+          find .github/conan/source-backup -maxdepth 1 -type f ! -name README.md \
+            -exec cp -f {} "${cache_dir}/s/" \;
+
+          conan_home="$(conan config home)"
+          conf="${conan_home}/global.conf"
+          mkdir -p "${conan_home}"
+          if [[ -f "$conf" ]]; then
+            grep -v '^core\.sources:download_cache=' "$conf" > "${conf}.tmp" || true
+            mv "${conf}.tmp" "$conf"
+          fi
+          echo "core.sources:download_cache=${cache_dir}" >> "$conf"
+          cat "$conf"
 
       - name: Cache Qt
         id: qt-cache
         uses: actions/cache@v5
         with:
           path: .qt
-          key: qt-6.11.1-linux-gcc_64
+          key: qt-${{ steps.versions.outputs.qt_version }}-linux-gcc_64
 
-      - name: Install Qt 6.11.1 via aqt
-        # Delegates to the repo-root install script (single source of truth for
-        # the Linux Qt version). It installs into ./.qt and no-ops if present.
+      - name: Install Qt via aqt
+        # Delegates to the repo-root install script, which reads versions.env.
+        # It installs into ./.qt and no-ops if present.
         if: steps.qt-cache.outputs.cache-hit != 'true'
         run: ./install_qt6.sh
 
@@ -195,74 +144,95 @@ jobs:
       - name: Configure ccache
         # Compiler-output cache for our own C++ — complementary to the Conan
         # cache (which holds prebuilt third-party packages, not our objects).
-        uses: actions/cache@v5
+        # Keep the regular-build namespace disjoint from TSan. The former
+        # `ccache-linux-` catch-all selected the newer ccache-linux-tsan-* entry
+        # and produced 0/810 hits because sanitizer objects are incompatible.
+        # On Depot runners actions/cache is backed by Depot Cache storage (not
+        # GitHub's shared 10 GB quota), so PR runs save as well as restore —
+        # repeat pushes to a PR recompile only their own edits.
+        id: ccache_restore
+        uses: actions/cache/restore@v5
         with:
           path: ~/.cache/ccache
-          key: ccache-linux-${{ github.ref_name }}-${{ github.sha }}
+          key: ccache-linux-build-${{ github.ref_name }}-${{ github.sha }}
+          # The final two are safe migration paths: both identify regular
+          # builds explicitly by ref and cannot match ccache-linux-tsan-*.
           restore-keys: |
+            ccache-linux-build-${{ github.ref_name }}-
+            ccache-linux-build-main-
             ccache-linux-${{ github.ref_name }}-
-            ccache-linux-
+            ccache-linux-main-
 
       - name: Set ccache limits
-        # 2G, not 500M: the full compiled object set (esp. after the Qt 6.11
+        # 2G, not 500M: the full compiled object set (esp. after the Qt
         # bump, whose larger headers grew per-TU output) exceeds 500M, so a
         # 500M cap thrashed — ccache evicted this build's own early objects
         # mid-run (observed: 25 cleanups, 39% hit rate), leaving every later
         # build permanently partially-cold. 2G holds the whole warm set.
+        # compiler_check=content / hash_dir=false / base_dir: hash objects
+        # independently of the compiler mtime and the workspace root so the
+        # linux-appimage-release container job (same gcc 11.4, different
+        # workspace path) can reuse this cache via its restore-keys.
         run: |
           ccache --set-config=max_size=2G
           ccache --set-config=compression=true
+          ccache --set-config=compiler_check=content
+          ccache --set-config=hash_dir=false
+          ccache --set-config=base_dir="${GITHUB_WORKSPACE}"
           ccache -z
 
-      - name: Build
-        run: ./build.sh
-
-      - name: Save Conan cache to ghcr.io
-        # Only push from the canonical repo on real pushes (forks lack write
-        # access to ghcr.io packages). Skip on cache HIT — the tag content is
-        # already up to date, no point re-uploading the same bytes.
-        if: github.event_name == 'push' && github.repository == 'PlotJuggler/PJ4' && env.CONAN_CACHE_HIT != '1' && (steps.setup_oras.outcome == 'success' || steps.setup_oras_fallback.outcome == 'success')
+      - name: Conan install
+        # Match the proven Windows sequencing: resolve/build the dependency
+        # graph, publish it immediately, then compile PlotJuggler. A later app
+        # compile failure must not discard an otherwise reusable Conan closure.
+        id: conan_install
         shell: bash
         run: |
           set -euo pipefail
-          tag="${{ steps.conan_cache.outputs.tag }}"
-          tarball="${RUNNER_TEMP}/conan-cache.tar.zst"
+          conan profile detect --force
+          conan_log="${RUNNER_TEMP}/pj4-conan-install.log"
+          conan install . --output-folder=build --build=missing -r=conancenter \
+            --lockfile=conan.lock --lockfile-partial \
+            -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
+            2>&1 | tee "$conan_log"
+          if grep -q "Building from source" "$conan_log"; then
+            echo "::notice::Conan built missing Linux binaries; the cache saves below persist them."
+          fi
 
-          # Trim build trees before packing so the uploaded artifact only
-          # contains the package binaries consumers actually need.
-          conan cache clean "*" --build --source --temp
-
-          echo "Packing ~/.conan2 -> ${tarball}"
-          tar --zstd -cf "${tarball}" -C "${HOME}" .conan2
-
-          size_mb=$(du -m "${tarball}" | cut -f1)
-          echo "Compressed cache size: ${size_mb} MB"
-
-          (
-            cd "${RUNNER_TEMP}"
-            oras push "${tag}" "conan-cache.tar.zst:application/vnd.oci.image.layer.v1.tar+zstd"
-          )
+      - name: Build
+        # Conan already generated build/conan_toolchain.cmake above; do not
+        # resolve the graph twice. Tests compile here too: with warm compiler
+        # caches they cost ~1 min, and this job is the only CI environment
+        # that can run the GUI/GL widget suites (xvfb + Mesa llvmpipe).
+        run: ./build.sh --skip-conan-install
 
       - name: Trim Conan cache before saving
         # Drop build/source/temp trees so only the package binaries consumers
-        # need are persisted (matches the ghcr.io save above). Runs only when
-        # we're about to save a fresh GHA cache entry.
-        if: always() && env.CONAN_CACHE_HIT != '1' && steps.conan-gha-cache.outputs.cache-hit != 'true'
+        # need are persisted. Runs only when we're about to save a fresh entry.
+        if: always() && steps.conan-gha-cache.outputs.cache-hit != 'true'
         shell: bash
         run: conan cache clean "*" --build --source --temp || true
 
-      - name: Save Conan cache to GitHub Actions cache
+      - name: Save Conan cache
         # Persist the built closure under the exact conanfile hash so the next
-        # run on this branch (or any branch keyed identically) restores it.
-        # `always()` so a failing project compile still saves the third-party
-        # deps that finished earlier — they're the expensive part. Skipped on a
-        # ghcr.io HIT or an exact GHA-key hit: ~/.conan2 is already current, and
-        # GHA cache keys are immutable so re-saving the same key is a no-op.
-        if: always() && env.CONAN_CACHE_HIT != '1' && steps.conan-gha-cache.outputs.cache-hit != 'true'
+        # run on any identically-keyed branch restores it. `always()` so a
+        # failing project compile still saves the third-party deps that
+        # finished earlier — they're the expensive part. Keys are immutable,
+        # so skip only on an exact-key hit.
+        if: always() && steps.conan-gha-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
         with:
           path: ~/.conan2
-          key: conan-linux-gcc-relwithdebinfo-${{ steps.conan_cache.outputs.hash }}
+          key: conan-linux-gcc-relwithdebinfo-v2-${{ steps.conan_cache.outputs.hash }}
+
+      - name: Save ccache
+        # always(): a failed build's objects are still valid. Saved on PR runs
+        # too — the entries live in Depot Cache storage, not the 10 GB quota.
+        if: always() && steps.ccache_restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.cache/ccache
+          key: ccache-linux-build-${{ github.ref_name }}-${{ github.sha }}
 
       - name: ccache stats
         if: success()
@@ -281,8 +251,7 @@ jobs:
     # in parallel with `build`, sharing its cached Qt + RelWithDebInfo Conan
     # closure (only our own sources get instrumented). See ./build.sh --tsan.
     if: github.event.pull_request.draft == false
-    needs: pre-commit
-    runs-on: ubuntu-22.04
+    runs-on: depot-ubuntu-22.04-4
     timeout-minutes: 45
     permissions:
       contents: read
@@ -295,6 +264,19 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Read versions
+        id: versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ./versions.env
+          echo "PJ_APP_VERSION=${PJ_APP_VERSION}" >> "${GITHUB_ENV}"
+          echo "PJ_QT_VERSION=${PJ_QT_VERSION}" >> "${GITHUB_ENV}"
+          echo "PJ_APPIMAGE_ARCH=${PJ_APPIMAGE_ARCH}" >> "${GITHUB_ENV}"
+          echo "app_version=${PJ_APP_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "qt_version=${PJ_QT_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "appimage_arch=${PJ_APPIMAGE_ARCH}" >> "${GITHUB_OUTPUT}"
+
       - uses: conan-io/setup-conan@v1
         with:
           cache_packages: false
@@ -305,7 +287,7 @@ jobs:
         run: |
           set -euo pipefail
           # Same hash as the `build` job so we restore its prebuilt closure.
-          hash=$(find . -name conanfile.txt -not -path './build/*' -not -path './.git/*' \
+          hash=$(find . \( -name conanfile.txt -o -name conan.lock \) -not -path './build/*' -not -path './.git/*' \
                   -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16)
           echo "hash=${hash}" >> "${GITHUB_OUTPUT}"
 
@@ -315,18 +297,37 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.conan2
-          key: conan-linux-gcc-relwithdebinfo-${{ steps.conan_cache.outputs.hash }}
+          key: conan-linux-gcc-relwithdebinfo-v2-${{ steps.conan_cache.outputs.hash }}
           restore-keys: |
-            conan-linux-gcc-relwithdebinfo-
+            conan-linux-gcc-relwithdebinfo-v2-
+
+      - name: Seed Conan source download cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          cache_dir="${RUNNER_TEMP}/conan-source-cache"
+          mkdir -p "${cache_dir}/s"
+          find .github/conan/source-backup -maxdepth 1 -type f ! -name README.md \
+            -exec cp -f {} "${cache_dir}/s/" \;
+
+          conan_home="$(conan config home)"
+          conf="${conan_home}/global.conf"
+          mkdir -p "${conan_home}"
+          if [[ -f "$conf" ]]; then
+            grep -v '^core\.sources:download_cache=' "$conf" > "${conf}.tmp" || true
+            mv "${conf}.tmp" "$conf"
+          fi
+          echo "core.sources:download_cache=${cache_dir}" >> "$conf"
+          cat "$conf"
 
       - name: Cache Qt
         id: qt-cache
         uses: actions/cache@v5
         with:
           path: .qt
-          key: qt-6.11.1-linux-gcc_64
+          key: qt-${{ steps.versions.outputs.qt_version }}-linux-gcc_64
 
-      - name: Install Qt 6.11.1 via aqt
+      - name: Install Qt via aqt
         if: steps.qt-cache.outputs.cache-hit != 'true'
         run: ./install_qt6.sh
 

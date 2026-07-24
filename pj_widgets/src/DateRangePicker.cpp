@@ -7,7 +7,10 @@
 // or the from/to hint colors) so they read big and match the rest of the chrome.
 // See DateRangePicker.h.
 
+#include <pj_widgets/ComboBox.h>
 #include <pj_widgets/DateRangePicker.h>
+#include <pj_widgets/IntScrubber.h>
+#include <pj_widgets/SvgButton.h>
 
 #include <QButtonGroup>
 #include <QColor>
@@ -16,6 +19,8 @@
 #include <QDateTime>
 #include <QEvent>
 #include <QFile>
+#include <QGraphicsDropShadowEffect>
+#include <QGridLayout>
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QHash>
@@ -23,6 +28,7 @@
 #include <QImage>
 #include <QLabel>
 #include <QLineEdit>
+#include <QLocale>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPixmap>
@@ -35,6 +41,7 @@
 #include <QSvgRenderer>
 #include <QVBoxLayout>
 #include <algorithm>
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -58,7 +65,7 @@ const QColor kToHintColor(0xe7, 0x4c, 0x3c);    // red
 // so palette() resolves to Fusion light-grey on both themes. Sourcing colors
 // from theme tokens chosen by this key is the fix.
 bool pickerThemeIsLight() {
-  return QSettings().value(QStringLiteral("StyleSheet::theme"), QStringLiteral("light")).toString().contains("light");
+  return QSettings().value(u"StyleSheet::theme"_s, u"light"_s).toString().contains("light");
 }
 
 // Theme-token color set for the calendar/overlay. Values mirror the app's QSS
@@ -165,14 +172,14 @@ QIcon renderChevronIcon(bool left, const QColor& color, int px) {
   static QHash<QString, QIcon> cache;
   // Key on HexRgb to match the recolor below (color.name() drops alpha), so the
   // key can never disagree with the rasterized output.
-  const QString key = QStringLiteral("%1:%2:%3").arg(left ? 1 : 0).arg(color.name()).arg(px);
+  const QString key = u"%1:%2:%3"_s.arg(left ? 1 : 0).arg(color.name()).arg(px);
   const auto cached = cache.constFind(key);
   if (cached != cache.constEnd()) {
     return cached.value();
   }
 
-  const QString path = left ? QStringLiteral(":/resources/svg/keyboard_arrow_left_light.svg")
-                            : QStringLiteral(":/resources/svg/keyboard_arrow_right_light.svg");
+  const QString path =
+      left ? u":/resources/svg/keyboard_arrow_left_light.svg"_s : u":/resources/svg/keyboard_arrow_right_light.svg"_s;
   QFile file(path);
   if (!file.open(QIODevice::ReadOnly)) {
     return QIcon();
@@ -194,7 +201,10 @@ QIcon renderChevronIcon(bool left, const QColor& color, int px) {
 CalendarWidget::CalendarWidget(QWidget* parent)
     : QWidget(parent), year_(QDate::currentDate().year()), month_(QDate::currentDate().month()) {
   setMouseTracking(true);
-  setMinimumSize(320, 260);
+  // Accept focus on click: otherwise a focused time spin box KEEPS focus (and
+  // its editing caret) when the user clicks a date — sticky-focus complaint.
+  setFocusPolicy(Qt::ClickFocus);
+  setMinimumSize(320, 230);  // weekday row + 6 date rows (no month title)
 }
 
 void CalendarWidget::setMonth(int year, int month) {
@@ -227,7 +237,9 @@ void CalendarWidget::clearRange() {
 }
 
 int CalendarWidget::headerHeight() const {
-  return fontMetrics().height() * 2 + kHeaderPad * 3;
+  // Weekday-name row only; month/year lives in RangeCalendarWidget's header
+  // controls, not the paint.
+  return fontMetrics().height() + kHeaderPad * 2;
 }
 
 int CalendarWidget::firstDayColumn() const {
@@ -277,19 +289,14 @@ void CalendarWidget::paintEvent(QPaintEvent* /*event*/) {
   int cell_w = width() / kCols;
   int fm_h = fontMetrics().height();
 
-  // Month/Year title
-  QFont title_font = font();
-  title_font.setBold(true);
-  title_font.setPointSize(font().pointSize() + 2);
-  p.setFont(title_font);
-  QString title = QDate(year_, month_, 1).toString("MMMM yyyy");
-  p.setPen(tok.text);
-  p.drawText(QRect(0, 0, width(), fm_h + kHeaderPad * 2), Qt::AlignCenter, title);
+  // Day name headers only; the month/year lives in RangeCalendarWidget's header
+  // controls, so this grid is intentionally title-less — do NOT paint an
+  // "MMMM yyyy" title here (it would overdraw the weekday row / calendar).
 
   // Day name headers
   p.setFont(font());
   static const char* day_names[] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
-  int day_header_y = fm_h + kHeaderPad * 2;
+  int day_header_y = kHeaderPad / 2;
   QColor weekend_color(0xef, 0x53, 0x50);
   QColor header_color = tok.muted;
   for (int c = 0; c < kCols; ++c) {
@@ -472,88 +479,75 @@ void CalendarWidget::leaveEvent(QEvent* event) {
 // ===========================================================================
 
 TimePickerWidget::TimePickerWidget(QWidget* parent) : QWidget(parent) {
-  auto* layout = new QHBoxLayout(this);
+  // TWO rows ("From time:" / "To time:") so the captions + fields fit the
+  // overlay width.
+  auto* grid = new QGridLayout(this);
+  grid->setContentsMargins(0, 0, 0, 0);
+  grid->setHorizontalSpacing(6);
+  grid->setVerticalSpacing(4);
 
-  auto make_time_group = [&](QLabel*& date_label, QSpinBox*& hour, QSpinBox*& minute, QComboBox*& ampm) {
+  auto make_time_row = [&](int row, const QString& caption, QLabel*& date_label, IntScrubber*& hour,
+                           IntScrubber*& minute) {
+    auto* cap = new QLabel(caption);
+    QFont cap_font = cap->font();
+    cap_font.setBold(true);
+    cap->setFont(cap_font);
     date_label = new QLabel("---");
-    hour = new QSpinBox;
-    hour->setRange(1, 12);
-    hour->setWrapping(true);
-    // The app QSS adds ~28px of horizontal padding to spin boxes and combos,
-    // which would squeeze the value behind the arrows at narrower sizes.
-    // These widths keep the controls tidy and aligned. The HEIGHT is driven from
-    // the app QSS (#PickerOverlay QSpinBox/QComboBox → 26px), which overrides the
-    // global 18px input cap so the time row matches the dialog's other dropdowns.
+    // App Blender-style scrubbers (drag / arrows / double-click edit) for the
+    // native input chrome. HEIGHT comes from the app QSS (#PickerOverlay
+    // PJ--ScrubberBase → 26px) so the rows match the dialog's other inputs.
+    hour = new IntScrubber;
+    hour->setRange(0, 23);  // 24-hour clock
     hour->setFixedWidth(56);
-    hour->setAlignment(Qt::AlignCenter);
     auto* colon = new QLabel(":");
-    minute = new QSpinBox;
+    minute = new IntScrubber;
     minute->setRange(0, 59);
-    minute->setWrapping(true);
+    minute->setPadWidth(2);  // minutes always show two digits ("05", not "5")
     minute->setFixedWidth(56);
-    minute->setAlignment(Qt::AlignCenter);
-    minute->setSpecialValueText("00");
-    ampm = new QComboBox;
-    ampm->addItems({"AM", "PM"});
-    // Wider than the 56px spin boxes: a combo adds the ~18px drop-down arrow on
-    // top of the app QSS's ~28px horizontal padding, so 64px clipped "AM"/"PM".
-    ampm->setFixedWidth(76);
-    layout->addWidget(date_label);
-    layout->addWidget(hour);
-    layout->addWidget(colon);
-    layout->addWidget(minute);
-    layout->addWidget(ampm);
+    grid->addWidget(cap, row, 0);
+    grid->addWidget(date_label, row, 1);
+    grid->addWidget(hour, row, 2);
+    grid->addWidget(colon, row, 3);
+    grid->addWidget(minute, row, 4);
   };
+  grid->setColumnStretch(5, 1);  // trailing stretch keeps both rows left-packed
 
-  make_time_group(from_date_label_, from_hour_, from_minute_, from_am_pm_);
-  from_hour_->setValue(12);
+  make_time_row(0, tr("From time:"), from_date_label_, from_hour_, from_minute_);
+  from_hour_->setValue(0);  // default full-day range: 00:00 ...
   from_minute_->setValue(0);
-  from_am_pm_->setCurrentIndex(0);
 
-  layout->addSpacing(16);
-
-  make_time_group(to_date_label_, to_hour_, to_minute_, to_am_pm_);
-  to_hour_->setValue(11);
+  make_time_row(1, tr("To time:"), to_date_label_, to_hour_, to_minute_);
+  to_hour_->setValue(23);  // ... to 23:59
   to_minute_->setValue(59);
-  to_am_pm_->setCurrentIndex(1);
 
-  layout->addStretch();
-
+  // editingFinished (not valueChanged): it fires when a gesture SETTLES —
+  // drag release, arrow/autorepeat burst end, committed edit — so the range
+  // filter is not re-emitted on every intermediate scrub step.
   auto emit_changed = [this]() { emit timeChanged(); };
-  connect(from_hour_, QOverload<int>::of(&QSpinBox::valueChanged), this, emit_changed);
-  connect(from_minute_, QOverload<int>::of(&QSpinBox::valueChanged), this, emit_changed);
-  connect(from_am_pm_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, emit_changed);
-  connect(to_hour_, QOverload<int>::of(&QSpinBox::valueChanged), this, emit_changed);
-  connect(to_minute_, QOverload<int>::of(&QSpinBox::valueChanged), this, emit_changed);
-  connect(to_am_pm_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, emit_changed);
+  connect(from_hour_, &ScrubberBase::editingFinished, this, emit_changed);
+  connect(from_minute_, &ScrubberBase::editingFinished, this, emit_changed);
+  connect(to_hour_, &ScrubberBase::editingFinished, this, emit_changed);
+  connect(to_minute_, &ScrubberBase::editingFinished, this, emit_changed);
 }
 
 void TimePickerWidget::setFromDate(const QDate& date) {
-  from_date_label_->setText(date.isValid() ? date.toString("ddd dd-MM-yy") : QStringLiteral("---"));
+  from_date_label_->setText(date.isValid() ? date.toString("dd-MM-yy") : u"---"_s);
 }
 
 void TimePickerWidget::setToDate(const QDate& date) {
-  to_date_label_->setText(date.isValid() ? date.toString("ddd dd-MM-yy") : QStringLiteral("---"));
-}
-
-QTime TimePickerWidget::timeFrom12Hour(int hour12, int minute, const QString& ampm) const {
-  int h = hour12 % 12;
-  if (ampm == "PM") {
-    h += 12;
-  }
-  return QTime(h, minute);
+  to_date_label_->setText(date.isValid() ? date.toString("dd-MM-yy") : u"---"_s);
 }
 
 QTime TimePickerWidget::fromTime() const {
-  return timeFrom12Hour(from_hour_->value(), from_minute_->value(), from_am_pm_->currentText());
+  return QTime(from_hour_->value(), from_minute_->value());
 }
 
 QTime TimePickerWidget::toTime() const {
-  return timeFrom12Hour(to_hour_->value(), to_minute_->value(), to_am_pm_->currentText());
+  return QTime(to_hour_->value(), to_minute_->value());
 }
 
 // ===========================================================================
-// DualCalendarWidget
+// RangeCalendarWidget
 // ===========================================================================
 
 namespace {
@@ -572,7 +566,7 @@ int monthCmp(const QDate& d, int year, int month) {
 }
 }  // namespace
 
-void DualCalendarWidget::advanceMonth(int& year, int& month, int delta) {
+void RangeCalendarWidget::advanceMonth(int& year, int& month, int delta) {
   month += delta;
   while (month > 12) {
     month -= 12;
@@ -584,24 +578,14 @@ void DualCalendarWidget::advanceMonth(int& year, int& month, int delta) {
   }
 }
 
-DualCalendarWidget::DualCalendarWidget(QWidget* parent)
-    : QWidget(parent),
-      left_prev_(new QPushButton),
-      left_next_(new QPushButton),
-      right_prev_(new QPushButton),
-      right_next_(new QPushButton),
-      left_year_(QDate::currentDate().year()),
-      left_month_(QDate::currentDate().month()),
-      left_max_year_(QDate::currentDate().year()),
-      left_max_month_(QDate::currentDate().month()) {
-  right_year_ = left_year_;
-  right_month_ = left_month_;
-  advanceMonth(right_year_, right_month_, 1);
-  right_min_year_ = right_year_;
-  right_min_month_ = right_month_;
+RangeCalendarWidget::RangeCalendarWidget(QWidget* parent)
+    : QWidget(parent), year_(QDate::currentDate().year()), month_(QDate::currentDate().month()) {
+  max_year_ = year_;
+  min_year_ = max_year_ - 6;  // widened by setYearSpan / on-demand by setMonth
 
-  // Flat icon buttons carrying the big themed chevrons (28x28 to match the rest of
-  // the chrome's icon buttons); updateNavButtons() re-inks them per hint state.
+  // Flat icon buttons carrying the big themed chevrons (28x28 to match the rest
+  // of the chrome's icon buttons); syncHeaderControls() re-inks them per the
+  // direction-hint state.
   const QSize btn_size(28, 28);
   const QColor ink = pickerTokens().text;
   auto setup_nav = [&](QPushButton* b, bool left) {
@@ -610,220 +594,175 @@ DualCalendarWidget::DualCalendarWidget(QWidget* parent)
     b->setFixedSize(btn_size);
     b->setFlat(true);
     b->setCursor(Qt::PointingHandCursor);
-    b->setStyleSheet(QStringLiteral("QPushButton { border: none; background: transparent; padding: 0; }"));
+    b->setStyleSheet(u"QPushButton { border: none; background: transparent; padding: 0; }"_s);
   };
-  setup_nav(left_prev_, /*left=*/true);
-  setup_nav(right_prev_, /*left=*/true);
-  setup_nav(left_next_, /*left=*/false);
-  setup_nav(right_next_, /*left=*/false);
+  prev_ = new QPushButton;
+  next_ = new QPushButton;
+  setup_nav(prev_, /*left=*/true);
+  setup_nav(next_, /*left=*/false);
 
-  auto* left_nav = new QHBoxLayout;
-  left_nav->addWidget(left_prev_);
-  left_nav->addStretch();
-  left_nav->addWidget(left_next_);
-  auto* left_col = new QVBoxLayout;
-  left_col->addLayout(left_nav);
-  auto* left_cal = new CalendarWidget;
-  left_cal->setMediated(true);
-  calendars_.append(left_cal);
-  left_col->addWidget(left_cal);
-  connect(left_prev_, &QPushButton::clicked, this, &DualCalendarWidget::leftPrev);
-  connect(left_next_, &QPushButton::clicked, this, &DualCalendarWidget::leftNext);
-
-  auto* right_nav = new QHBoxLayout;
-  right_nav->addWidget(right_prev_);
-  right_nav->addStretch();
-  right_nav->addWidget(right_next_);
-  auto* right_col = new QVBoxLayout;
-  right_col->addLayout(right_nav);
-  auto* right_cal = new CalendarWidget;
-  right_cal->setMediated(true);
-  calendars_.append(right_cal);
-  right_col->addWidget(right_cal);
-  connect(right_prev_, &QPushButton::clicked, this, &DualCalendarWidget::rightPrev);
-  connect(right_next_, &QPushButton::clicked, this, &DualCalendarWidget::rightNext);
-
-  for (auto* cal : calendars_) {
-    connect(cal, &CalendarWidget::dateClicked, this, &DualCalendarWidget::onDateClicked);
-    connect(cal, &CalendarWidget::dateHovered, this, &DualCalendarWidget::onDateHovered);
-    connect(cal, &CalendarWidget::hoverLeft, this, &DualCalendarWidget::onHoverLeft);
+  // Month/year jump combos: the data spans years, so direct jumps beat chevron
+  // marching.
+  month_combo_ = new ComboBox;
+  month_combo_->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+  for (int m = 1; m <= 12; ++m) {
+    month_combo_->addItem(QLocale().standaloneMonthName(m), m);
   }
+  year_combo_ = new ComboBox;
+  year_combo_->setSizeAdjustPolicy(QComboBox::AdjustToContents);
 
-  auto* main_layout = new QHBoxLayout(this);
+  auto* header = new QHBoxLayout;
+  header->setContentsMargins(0, 0, 0, 0);
+  header->setSpacing(4);
+  header->addWidget(prev_);
+  header->addStretch();
+  header->addWidget(month_combo_);
+  header->addWidget(year_combo_);
+  header->addStretch();
+  header->addWidget(next_);
+
+  calendar_ = new CalendarWidget;
+  calendar_->setMediated(true);
+
+  auto* main_layout = new QVBoxLayout(this);
   main_layout->setContentsMargins(8, 8, 8, 8);
-  main_layout->setSpacing(16);
-  main_layout->addLayout(left_col);
-  main_layout->addLayout(right_col);
+  main_layout->setSpacing(4);
+  main_layout->addLayout(header);
+  main_layout->addWidget(calendar_);
 
-  updateCalendars();
+  connect(prev_, &QPushButton::clicked, this, &RangeCalendarWidget::prevMonth);
+  connect(next_, &QPushButton::clicked, this, &RangeCalendarWidget::nextMonth);
+  connect(month_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
+    if (idx >= 0) {
+      setMonth(year_, idx + 1);
+    }
+  });
+  connect(year_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+    const int y = year_combo_->currentData().toInt();
+    if (y > 0) {
+      setMonth(y, month_);
+    }
+  });
+  connect(calendar_, &CalendarWidget::dateClicked, this, &RangeCalendarWidget::onDateClicked);
+  connect(calendar_, &CalendarWidget::dateHovered, this, &RangeCalendarWidget::onDateHovered);
+  connect(calendar_, &CalendarWidget::hoverLeft, this, &RangeCalendarWidget::onHoverLeft);
+
+  setMonth(year_, month_);
 }
 
-void DualCalendarWidget::setExternalRange(const QDate& from, const QDate& to) {
-  const QDate today = QDate::currentDate();
-  left_max_year_ = today.year();
-  left_max_month_ = today.month();
-  right_min_year_ = left_max_year_;
-  right_min_month_ = left_max_month_;
-  advanceMonth(right_min_year_, right_min_month_, 1);
-
-  int new_left_year = left_year_;
-  int new_left_month = left_month_;
-  int new_right_year = right_year_;
-  int new_right_month = right_month_;
-
-  if (from.isValid()) {
-    new_left_year = from.year();
-    new_left_month = from.month();
-    const bool to_strictly_later =
-        to.isValid() && (to.year() > new_left_year || (to.year() == new_left_year && to.month() > new_left_month));
-    if (to_strictly_later) {
-      new_right_year = to.year();
-      new_right_month = to.month();
-    }
-  } else if (to.isValid()) {
-    new_right_year = to.year();
-    new_right_month = to.month();
-    new_left_year = new_right_year;
-    new_left_month = new_right_month;
-    advanceMonth(new_left_year, new_left_month, -1);
-  }
-
-  auto month_before = [](int y1, int m1, int y2, int m2) { return y1 < y2 || (y1 == y2 && m1 < m2); };
-  if (month_before(left_max_year_, left_max_month_, new_left_year, new_left_month)) {
-    new_left_year = left_max_year_;
-    new_left_month = left_max_month_;
-  }
-  int left_plus_one_y = new_left_year;
-  int left_plus_one_m = new_left_month;
-  advanceMonth(left_plus_one_y, left_plus_one_m, 1);
-  if (month_before(new_right_year, new_right_month, left_plus_one_y, left_plus_one_m)) {
-    new_right_year = left_plus_one_y;
-    new_right_month = left_plus_one_m;
-  }
-
-  QDate new_from = from.isValid() ? from : QDate();
-  QDate new_to = to.isValid() ? to : QDate();
-
-  if (new_left_year == left_year_ && new_left_month == left_month_ && new_right_year == right_year_ &&
-      new_right_month == right_month_ && new_from == range_from_ && new_to == range_to_ && !selecting_) {
+void RangeCalendarWidget::setYearSpan(const QDate& earliest, const QDate& latest) {
+  const int cur = QDate::currentDate().year();
+  const int hi = latest.isValid() ? std::max(latest.year(), cur) : cur;
+  const int lo = earliest.isValid() ? std::min(earliest.year(), hi) : hi - 6;
+  if (lo == min_year_ && hi == max_year_) {
     return;
   }
+  min_year_ = lo;
+  max_year_ = hi;
+  syncHeaderControls();
+}
 
-  left_year_ = new_left_year;
-  left_month_ = new_left_month;
-  right_year_ = new_right_year;
-  right_month_ = new_right_month;
+void RangeCalendarWidget::setMonth(int year, int month) {
+  // Never refuse to show a real date: widen the year span on demand instead of
+  // clamping (a persisted from/to can predate the current data hints).
+  min_year_ = std::min(min_year_, year);
+  max_year_ = std::max(max_year_, year);
+  year_ = year;
+  month_ = std::clamp(month, 1, 12);
+  calendar_->setMonth(year_, month_);
+  syncHeaderControls();
+  broadcastState();
+}
+
+void RangeCalendarWidget::setExternalRange(const QDate& from, const QDate& to) {
+  const QDate new_from = from.isValid() ? from : QDate();
+  const QDate new_to = to.isValid() ? to : QDate();
+  // Jump the view to the range start (or the end when only that is known).
+  int ny = year_;
+  int nm = month_;
+  if (new_from.isValid()) {
+    ny = new_from.year();
+    nm = new_from.month();
+  } else if (new_to.isValid()) {
+    ny = new_to.year();
+    nm = new_to.month();
+  }
+  if (ny == year_ && nm == month_ && new_from == range_from_ && new_to == range_to_ && !selecting_) {
+    return;
+  }
   range_from_ = new_from;
   range_to_ = new_to;
   hover_date_ = QDate();
   selecting_ = false;
-  updateCalendars();
+  setMonth(ny, nm);  // syncs the header + broadcasts the range to the grid
 }
 
-void DualCalendarWidget::retheme() {
-  updateNavButtons();  // re-inks the chevrons via renderChevronIcon(pickerTokens().text)
-  for (auto* cal : calendars_) {
-    cal->update();
+void RangeCalendarWidget::retheme() {
+  // Reset the hint gate: the signature is unchanged on a theme toggle but the
+  // resting INK color is not — without this the skip keeps the old theme's ink.
+  last_hint_sig_ = -1;
+  syncHeaderControls();  // re-inks the chevrons via renderChevronIcon(pickerTokens().text)
+  calendar_->update();
+}
+
+void RangeCalendarWidget::prevMonth() {
+  int y = year_;
+  int m = month_;
+  advanceMonth(y, m, -1);
+  setMonth(y, m);
+}
+
+void RangeCalendarWidget::nextMonth() {
+  int y = year_;
+  int m = month_;
+  advanceMonth(y, m, +1);
+  setMonth(y, m);
+}
+
+void RangeCalendarWidget::syncHeaderControls() {
+  // (Re)fill the year combo when the span changed.
+  const int count = max_year_ - min_year_ + 1;
+  const bool refill =
+      year_combo_->count() != count || (year_combo_->count() > 0 && year_combo_->itemData(0).toInt() != min_year_);
+  if (refill) {
+    const QSignalBlocker block(year_combo_);
+    year_combo_->clear();
+    for (int y = min_year_; y <= max_year_; ++y) {
+      year_combo_->addItem(QString::number(y), y);
+    }
   }
-}
-
-void DualCalendarWidget::leftPrev() {
-  advanceMonth(left_year_, left_month_, -1);
-  updateCalendars();
-}
-
-void DualCalendarWidget::leftNext() {
-  int cand_year = left_year_, cand_month = left_month_;
-  advanceMonth(cand_year, cand_month, 1);
-  if (cand_year > left_max_year_ || (cand_year == left_max_year_ && cand_month > left_max_month_)) {
-    return;
+  {
+    const QSignalBlocker bm(month_combo_);
+    month_combo_->setCurrentIndex(month_ - 1);
+    const QSignalBlocker by(year_combo_);
+    const int idx = year_combo_->findData(year_);
+    if (idx >= 0) {
+      year_combo_->setCurrentIndex(idx);
+    }
   }
-  if (cand_year > right_year_ || (cand_year == right_year_ && cand_month >= right_month_)) {
-    return;
-  }
-  left_year_ = cand_year;
-  left_month_ = cand_month;
-  updateCalendars();
-}
 
-void DualCalendarWidget::rightPrev() {
-  int cand_year = right_year_, cand_month = right_month_;
-  advanceMonth(cand_year, cand_month, -1);
-  if (cand_year < left_year_ || (cand_year == left_year_ && cand_month <= left_month_)) {
-    return;
-  }
-  const bool currently_ge_min =
-      right_year_ > right_min_year_ || (right_year_ == right_min_year_ && right_month_ >= right_min_month_);
-  if (currently_ge_min &&
-      (cand_year < right_min_year_ || (cand_year == right_min_year_ && cand_month < right_min_month_))) {
-    return;
-  }
-  right_year_ = cand_year;
-  right_month_ = cand_month;
-  updateCalendars();
-}
-
-void DualCalendarWidget::rightNext() {
-  advanceMonth(right_year_, right_month_, 1);
-  updateCalendars();
-}
-
-void DualCalendarWidget::updateCalendars() {
-  calendars_[0]->setMonth(left_year_, left_month_);
-  calendars_[1]->setMonth(right_year_, right_month_);
-  updateNavButtons();
-  broadcastState();
-}
-
-void DualCalendarWidget::updateNavButtons() {
-  int ln_y = left_year_, ln_m = left_month_;
-  advanceMonth(ln_y, ln_m, 1);
-  bool at_max = ln_y > left_max_year_ || (ln_y == left_max_year_ && ln_m > left_max_month_);
-  bool at_right = ln_y > right_year_ || (ln_y == right_year_ && ln_m >= right_month_);
-  left_next_->setEnabled(!at_max && !at_right);
-
-  int rp_y = right_year_, rp_m = right_month_;
-  advanceMonth(rp_y, rp_m, -1);
-  const bool currently_ge_min =
-      right_year_ > right_min_year_ || (right_year_ == right_min_year_ && right_month_ >= right_min_month_);
-  bool at_minimum =
-      currently_ge_min && (rp_y < right_min_year_ || (rp_y == right_min_year_ && rp_m < right_min_month_));
-  bool at_left = rp_y < left_year_ || (rp_y == left_year_ && rp_m <= left_month_);
-  right_prev_->setEnabled(!at_minimum && !at_left);
-
-  left_prev_->setEnabled(true);
-  right_next_->setEnabled(true);
-
-  // Direction hint: color the arrow text green/red when clicking it would
-  // reveal the start/end date (currently outside both calendars' views).
-  const int from_l = monthCmp(range_from_, left_year_, left_month_);
-  const int from_r = monthCmp(range_from_, right_year_, right_month_);
-  const int to_l = monthCmp(range_to_, left_year_, left_month_);
-  const int to_r = monthCmp(range_to_, right_year_, right_month_);
-
-  const bool from_before_l = from_l < 0;
-  const bool from_in_gap = from_l > 0 && from_r < 0;
-  const bool from_after_r = from_r > 0;
-  const bool to_before_l = to_l < 0;
-  const bool to_in_gap = to_l > 0 && to_r < 0;
-  const bool to_after_r = to_r > 0;
-
-  // Direction hint: recolor the chevron green/red when clicking it would reveal the
-  // start/end date (currently outside both calendars' views); resting state is the
-  // theme ink. The flat-button stylesheet set in the ctor is left untouched.
+  // Direction hint: color a chevron green/red when clicking it would move
+  // toward the range start/end (currently outside the visible month); resting
+  // state is the theme ink. Skip the setIcon calls when nothing changed —
+  // broadcastState runs on every hover move, and an unconditional setIcon
+  // repaints both buttons per mouse move for no visual difference.
   const QColor ink = pickerTokens().text;
+  const int from_cmp = monthCmp(range_from_, year_, month_);
+  const int to_cmp = monthCmp(range_to_, year_, month_);
+  const int hint_sig = (from_cmp < 0) | ((to_cmp < 0) << 1) | ((from_cmp > 0) << 2) | ((to_cmp > 0) << 3);
+  if (hint_sig == last_hint_sig_) {
+    return;
+  }
+  last_hint_sig_ = hint_sig;
   auto apply_hint = [ink](QPushButton* btn, bool left, bool hint_from, bool hint_to) {
     const QColor c = hint_from ? kFromHintColor : (hint_to ? kToHintColor : ink);
     btn->setIcon(renderChevronIcon(left, c, kNavChevronPx));
   };
-
-  apply_hint(left_prev_, /*left=*/true, from_before_l, to_before_l);
-  apply_hint(left_next_, /*left=*/false, from_in_gap, to_in_gap);
-  apply_hint(right_prev_, /*left=*/true, from_in_gap, to_in_gap);
-  apply_hint(right_next_, /*left=*/false, from_after_r, to_after_r);
+  apply_hint(prev_, /*left=*/true, from_cmp < 0, to_cmp < 0);
+  apply_hint(next_, /*left=*/false, from_cmp > 0, to_cmp > 0);
 }
 
-void DualCalendarWidget::onDateClicked(const QDate& date) {
+void RangeCalendarWidget::onDateClicked(const QDate& date) {
   if (!selecting_) {
     range_from_ = date;
     range_to_ = QDate();
@@ -840,19 +779,19 @@ void DualCalendarWidget::onDateClicked(const QDate& date) {
   broadcastState();
 }
 
-void DualCalendarWidget::onDateHovered(const QDate& date) {
+void RangeCalendarWidget::onDateHovered(const QDate& date) {
   hover_date_ = date;
   broadcastState();
 }
 
-void DualCalendarWidget::onHoverLeft() {
+void RangeCalendarWidget::onHoverLeft() {
   if (hover_date_.isValid()) {
     hover_date_ = QDate();
     broadcastState();
   }
 }
 
-void DualCalendarWidget::broadcastState() {
+void RangeCalendarWidget::broadcastState() {
   QDate eff_from = range_from_;
   QDate eff_to = range_to_;
   if (selecting_ && hover_date_.isValid()) {
@@ -861,11 +800,9 @@ void DualCalendarWidget::broadcastState() {
   if (eff_from.isValid() && eff_to.isValid() && eff_from > eff_to) {
     std::swap(eff_from, eff_to);
   }
-  for (auto* cal : calendars_) {
-    cal->setRange(eff_from, eff_to);
-    cal->setHoverDate(hover_date_);
-  }
-  updateNavButtons();
+  calendar_->setRange(eff_from, eff_to);
+  calendar_->setHoverDate(hover_date_);
+  syncHeaderControls();
   if (selecting_ && eff_from.isValid() && eff_to.isValid()) {
     emit rangePreview(eff_from, eff_to);
   }
@@ -887,11 +824,20 @@ DateRangePicker::DateRangePicker(QWidget* parent) : QWidget(parent) {
   preset_group_ = new QButtonGroup(this);
   preset_group_->setExclusive(true);
 
-  auto add_preset = [&](int id, const QString& text) -> QPushButton* {
+  // Fixed-width, left-aligned preset buttons (they used to stretch across the
+  // panel); "Custom" is its own button leading the from/to row below, aligned
+  // under "All", instead of the old shape-shifting All/Custom label.
+  constexpr int kPresetButtonWidth = 100;
+  auto make_preset = [&](int id, const QString& text) -> QPushButton* {
     auto* btn = new QPushButton(text);
     btn->setCheckable(true);
     btn->setCursor(Qt::PointingHandCursor);
+    btn->setFixedWidth(kPresetButtonWidth);
     preset_group_->addButton(btn, id);
+    return btn;
+  };
+  auto add_preset = [&](int id, const QString& text) -> QPushButton* {
+    auto* btn = make_preset(id, text);
     preset_row->addWidget(btn);
     return btn;
   };
@@ -900,17 +846,21 @@ DateRangePicker::DateRangePicker(QWidget* parent) : QWidget(parent) {
   add_preset(kPresetPast24h, "Past 24h");
   add_preset(kPresetLast7Days, "Last 7 Days");
   add_preset(kPresetLastMonth, "Last Month");
+  preset_row->addStretch();
   all_button_->setChecked(true);
   connect(preset_group_, &QButtonGroup::idClicked, this, &DateRangePicker::onPresetClicked);
   main_layout->addLayout(preset_row);
 
   auto* date_row = new QHBoxLayout;
+  custom_button_ = make_preset(kPresetCustom, "Custom");
+  custom_button_->setToolTip(tr("Pick a custom date range"));
+  date_row->addWidget(custom_button_);
   from_edit_ = new QLineEdit;
   from_edit_->setPlaceholderText("DD/MM/YYYY");
   // Material "Arrow Right Alt" between from/to, themed to the active ink (re-inked
   // on a live theme switch in changeEvent). A QLabel pixmap, not a text glyph.
   arrow_label_ = new QLabel;
-  arrow_label_->setPixmap(renderThemedIcon(QStringLiteral(":/resources/svg/arrow_right_alt.svg"), 18).pixmap(18, 18));
+  arrow_label_->setPixmap(renderThemedIcon(u":/resources/svg/arrow_right_alt.svg"_s, 18).pixmap(18, 18));
   to_edit_ = new QLineEdit;
   to_edit_->setPlaceholderText(QDate::currentDate().toString("dd/MM/yyyy"));
   calendar_button_ = new QPushButton;
@@ -920,7 +870,7 @@ DateRangePicker::DateRangePicker(QWidget* parent) : QWidget(parent) {
   calendar_button_->setFixedSize(28, 28);
   // Themed "Calendar Month" icon (recolored to the active theme's ink); the
   // icon stays static — toggleCalendar() no longer swaps a glyph.
-  calendar_button_->setIcon(renderThemedIcon(QStringLiteral(":/resources/svg/calendar_month.svg"), 24));
+  calendar_button_->setIcon(renderThemedIcon(u":/resources/svg/calendar_month.svg"_s, 24));
   calendar_button_->setIconSize(QSize(24, 24));
   date_row->addWidget(from_edit_, 1);
   date_row->addWidget(arrow_label_);
@@ -937,11 +887,19 @@ DateRangePicker::~DateRangePicker() {
 }
 
 void DateRangePicker::setEarliestDate(const QDate& date) {
-  from_edit_->setPlaceholderText(date.isValid() ? date.toString("dd/MM/yyyy") : QStringLiteral("DD/MM/YYYY"));
+  from_edit_->setPlaceholderText(date.isValid() ? date.toString("dd/MM/yyyy") : u"DD/MM/YYYY"_s);
+  earliest_hint_ = date;
+  if (range_calendar_) {
+    range_calendar_->setYearSpan(earliest_hint_, latest_hint_);
+  }
 }
 
 void DateRangePicker::setLatestDate(const QDate& date) {
-  to_edit_->setPlaceholderText(date.isValid() ? date.toString("dd/MM/yyyy") : QStringLiteral("DD/MM/YYYY"));
+  to_edit_->setPlaceholderText(date.isValid() ? date.toString("dd/MM/yyyy") : u"DD/MM/YYYY"_s);
+  latest_hint_ = date;
+  if (range_calendar_) {
+    range_calendar_->setYearSpan(earliest_hint_, latest_hint_);
+  }
 }
 
 void DateRangePicker::showEvent(QShowEvent* event) {
@@ -954,15 +912,44 @@ void DateRangePicker::showEvent(QShowEvent* event) {
   if (!overlay_ && window()) {
     overlay_ = new QWidget(window());
     overlay_->setObjectName("PickerOverlay");
+    // Clicks on the overlay's dead space (captions, margins) must release the
+    // focus a time spin box is holding — see CalendarWidget's ClickFocus twin.
+    overlay_->setFocusPolicy(Qt::ClickFocus);
+    // Drop shadow so the popup visibly floats over the busy tables beneath it.
+    // It re-renders the overlay per repaint, which is cheap (hover repaints
+    // touch only the calendar grid).
+    auto* shadow = new QGraphicsDropShadowEffect(overlay_);
+    shadow->setBlurRadius(24);
+    shadow->setOffset(0, 4);
+    shadow->setColor(QColor(0, 0, 0, 90));
+    overlay_->setGraphicsEffect(shadow);
     updateOverlayStyle();
     auto* overlay_layout = new QVBoxLayout(overlay_);
-    dual_calendar_ = new DualCalendarWidget;
-    overlay_layout->addWidget(dual_calendar_);
+    range_calendar_ = new RangeCalendarWidget;
+    range_calendar_->setYearSpan(earliest_hint_, latest_hint_);
+    overlay_layout->addWidget(range_calendar_);
     time_picker_ = new TimePickerWidget;
     overlay_layout->addWidget(time_picker_);
+    // Explicit dismiss affordance: an app-consistent X in the overlay's
+    // top-right corner (close-button.svg — the same glyph the app's other
+    // dismissables use). Selections apply live, so it just hides the overlay.
+    // It floats above the layout (positioned in repositionOverlay); the
+    // layout's top margin reserves its strip so nothing collides with it.
+    overlay_layout->setContentsMargins(9, 26, 9, 9);
+    overlay_close_ = new SvgButton(u":/resources/svg/close-button.svg"_s, SvgButton::Size::kDefault, overlay_);
+    overlay_close_->setObjectName("PickerCloseX");
+    overlay_close_->setExtent(20, 16);
+    overlay_close_->setCursor(Qt::PointingHandCursor);
+    overlay_close_->setToolTip(tr("Close"));
+    connect(overlay_close_, &SvgButton::clicked, this, [this]() {
+      calendar_visible_ = false;
+      if (overlay_) {
+        overlay_->setVisible(false);
+      }
+    });
     overlay_->setVisible(false);
-    connect(dual_calendar_, &DualCalendarWidget::rangeCommitted, this, &DateRangePicker::onCalendarRangeCommitted);
-    connect(dual_calendar_, &DualCalendarWidget::rangePreview, this, &DateRangePicker::onCalendarRangePreview);
+    connect(range_calendar_, &RangeCalendarWidget::rangeCommitted, this, &DateRangePicker::onCalendarRangeCommitted);
+    connect(range_calendar_, &RangeCalendarWidget::rangePreview, this, &DateRangePicker::onCalendarRangePreview);
     connect(time_picker_, &TimePickerWidget::timeChanged, this, &DateRangePicker::onTimeChanged);
     window()->installEventFilter(this);
   }
@@ -979,14 +966,13 @@ void DateRangePicker::changeEvent(QEvent* event) {
   if (event->type() == QEvent::StyleChange || event->type() == QEvent::PaletteChange) {
     updateOverlayStyle();
     if (calendar_button_) {
-      calendar_button_->setIcon(renderThemedIcon(QStringLiteral(":/resources/svg/calendar_month.svg"), 24));
+      calendar_button_->setIcon(renderThemedIcon(u":/resources/svg/calendar_month.svg"_s, 24));
     }
     if (arrow_label_) {
-      arrow_label_->setPixmap(
-          renderThemedIcon(QStringLiteral(":/resources/svg/arrow_right_alt.svg"), 18).pixmap(18, 18));
+      arrow_label_->setPixmap(renderThemedIcon(u":/resources/svg/arrow_right_alt.svg"_s, 18).pixmap(18, 18));
     }
-    if (dual_calendar_) {
-      dual_calendar_->retheme();  // re-ink the nav chevrons to the new theme
+    if (range_calendar_) {
+      range_calendar_->retheme();  // re-ink the nav chevrons to the new theme
     }
     if (overlay_) {
       const auto children = overlay_->findChildren<QWidget*>();
@@ -1009,8 +995,8 @@ void DateRangePicker::updateOverlayStyle() {
   // can't be used here: the app pins QPalette at Fusion defaults regardless of
   // theme, so it would resolve to Fusion light-grey on both.
   const PickerTokens tok = pickerTokens();
-  overlay_->setStyleSheet(QStringLiteral("QWidget#PickerOverlay { background-color: %1; border: 1px solid %2; }")
-                              .arg(tok.surface.name(), tok.border.name()));
+  overlay_->setStyleSheet(u"QWidget#PickerOverlay { background-color: %1; border: 1px solid %2; }"_s.arg(
+      tok.surface.name(), tok.border.name()));
 }
 
 void DateRangePicker::resizeEvent(QResizeEvent* event) {
@@ -1033,37 +1019,50 @@ void DateRangePicker::repositionOverlay() {
   if (!overlay_ || !calendar_button_) {
     return;
   }
-  QPoint anchor = calendar_button_->mapTo(window(), QPoint(calendar_button_->width(), calendar_button_->height()));
-  int x = anchor.x() + 4;
-  int y = anchor.y() + 2;
-  int overlay_width = overlay_->sizeHint().width();
-  int max_x = window()->width() - overlay_width - 4;
-  if (x > max_x) {
-    x = max_x;
+  // Force a layout pass BEFORE reading sizeHint: on the very first open the
+  // overlay's layout hasn't activated yet, so the hint under-reports and the
+  // grid/time row came up clipped until the next reposition.
+  if (overlay_->layout()) {
+    overlay_->layout()->activate();
   }
-  if (x < 0) {
-    x = 0;
-  }
-  overlay_->move(x, y);
   overlay_->resize(overlay_->sizeHint());
+  // Anchor the overlay's top-RIGHT corner under the calendar button (a
+  // dropdown hangs off the control that opened it), clamped to the window.
+  QPoint anchor = calendar_button_->mapTo(window(), QPoint(calendar_button_->width(), calendar_button_->height()));
+  int x = anchor.x() - overlay_->width();
+  int y = anchor.y() + 2;
+  x = std::max(4, std::min(x, window()->width() - overlay_->width() - 4));
+  overlay_->move(x, y);
   overlay_->raise();
+  if (overlay_close_) {
+    // Corner X lives in the strip the overlay layout's top margin reserves.
+    overlay_close_->move(overlay_->width() - overlay_close_->width() - 6, 4);
+    overlay_close_->raise();
+  }
 }
 
 void DateRangePicker::onPresetClicked(int id) {
-  all_button_->setText("All");
+  if (id == kPresetCustom) {
+    // Custom is an invitation, not a window: keep the fields as they are and
+    // open the calendar so the user can define the range.
+    if (!calendar_visible_) {
+      toggleCalendar();
+    }
+    return;
+  }
   applyPreset(id);
   syncCalendarToFields();
   emitFilter();
 }
 
 void DateRangePicker::syncCalendarToFields() {
-  if (!dual_calendar_) {
+  if (!range_calendar_) {
     return;
   }
-  const QString fmt = QStringLiteral("dd/MM/yyyy");
+  const QString fmt = u"dd/MM/yyyy"_s;
   QDate from = QDate::fromString(from_edit_->text(), fmt);
   QDate to = QDate::fromString(to_edit_->text(), fmt);
-  dual_calendar_->setExternalRange(from, to);
+  range_calendar_->setExternalRange(from, to);
 }
 
 void DateRangePicker::applyPreset(int id) {
@@ -1086,12 +1085,14 @@ void DateRangePicker::applyPreset(int id) {
       from = QDate(to.year(), to.month(), 1);
       break;
     }
+    case kPresetCustom:
+      return;  // never a window of its own — fields stay as the user set them
   }
   updateFieldsFromPreset(from, to);
 }
 
 void DateRangePicker::updateFieldsFromPreset(const QDate& from, const QDate& to) {
-  const QString fmt = QStringLiteral("dd/MM/yyyy");
+  const QString fmt = u"dd/MM/yyyy"_s;
   QSignalBlocker fb(from_edit_);
   QSignalBlocker tb(to_edit_);
   from_edit_->setText(from.isValid() ? from.toString(fmt) : QString());
@@ -1099,7 +1100,7 @@ void DateRangePicker::updateFieldsFromPreset(const QDate& from, const QDate& to)
 }
 
 int DateRangePicker::matchingPreset() const {
-  const QString fmt = QStringLiteral("dd/MM/yyyy");
+  const QString fmt = u"dd/MM/yyyy"_s;
   QDate from = QDate::fromString(from_edit_->text(), fmt);
   QDate to = QDate::fromString(to_edit_->text(), fmt);
   QDate today = QDate::currentDate();
@@ -1128,11 +1129,9 @@ int DateRangePicker::matchingPreset() const {
 void DateRangePicker::checkCustomState() {
   int preset = matchingPreset();
   if (preset >= 0) {
-    all_button_->setText("All");
     preset_group_->button(preset)->setChecked(true);
   } else {
-    all_button_->setText("Custom");
-    all_button_->setChecked(true);
+    custom_button_->setChecked(true);
   }
   syncCalendarToFields();
   emitFilter();
@@ -1161,8 +1160,12 @@ void DateRangePicker::onCalendarRangeCommitted(const QDate& from, const QDate& t
 }
 
 void DateRangePicker::onCalendarRangePreview(const QDate& from, const QDate& to) {
+  // Preview updates the from/to FIELDS only. It must NOT emit the filter:
+  // filterChanged reaches the plugin as dateRangeChanged, which invalidates its
+  // sequence view — a full re-filter + table re-delivery of the whole catalog
+  // (24k rows) PER MOUSE MOVE, throttling the hover preview to ~1-2 Hz. The
+  // filter goes out once, on commit (onCalendarRangeCommitted).
   updateFieldsFromPreset(from, to);
-  emitFilter();
 }
 
 void DateRangePicker::onTimeChanged() {
@@ -1171,7 +1174,7 @@ void DateRangePicker::onTimeChanged() {
 
 RangeFilter DateRangePicker::buildFilter() const {
   RangeFilter f;
-  const QString fmt = QStringLiteral("dd/MM/yyyy");
+  const QString fmt = u"dd/MM/yyyy"_s;
   QDate from = QDate::fromString(from_edit_->text(), fmt);
   QDate to = QDate::fromString(to_edit_->text(), fmt);
   if (from.isValid()) {

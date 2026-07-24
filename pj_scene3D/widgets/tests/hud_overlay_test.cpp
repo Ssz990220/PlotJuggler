@@ -20,6 +20,7 @@
 #include <QFont>
 #include <QImage>
 #include <QStringList>
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -39,7 +40,7 @@ QFont hudFont() {
 
 // A single non-empty line yields a non-null image with room for text + padding.
 TEST(HudOverlay, SingleLineProducesSizedImage) {
-  const QImage img = renderHudPanel({QStringLiteral("base_link")}, hudFont(), 1.0, kPad, kAlpha, kTextColor);
+  const QImage img = renderHudPanel({u"base_link"_s}, hudFont(), 1.0, kPad, kAlpha, kTextColor);
   ASSERT_FALSE(img.isNull());
   EXPECT_GT(img.width(), 2 * kPad);
   EXPECT_GT(img.height(), 2 * kPad);
@@ -49,7 +50,7 @@ TEST(HudOverlay, SingleLineProducesSizedImage) {
 // device-pixel ratio: only the backing resolution scales. The violation of this
 // property is precisely what produced doubled/overlapping glyphs on the GL path.
 TEST(HudOverlay, LayoutIsDevicePixelRatioIndependent) {
-  const QStringList lines{QStringLiteral("soccer_left_leg9_link")};
+  const QStringList lines{u"soccer_left_leg9_link"_s};
   const QImage at1 = renderHudPanel(lines, hudFont(), 1.0, kPad, kAlpha, kTextColor);
   const QImage at2 = renderHudPanel(lines, hudFont(), 2.0, kPad, kAlpha, kTextColor);
 
@@ -66,7 +67,7 @@ TEST(HudOverlay, LayoutIsDevicePixelRatioIndependent) {
 // stroke) stands out against the near-black panel. Guards the "panel present but
 // text blank" failure mode.
 TEST(HudOverlay, RendersTextPixels) {
-  const QImage img = renderHudPanel({QStringLiteral("odom")}, hudFont(), 1.0, kPad, kAlpha, kTextColor);
+  const QImage img = renderHudPanel({u"odom"_s}, hudFont(), 1.0, kPad, kAlpha, kTextColor);
   ASSERT_FALSE(img.isNull());
 
   bool found_text = false;
@@ -86,10 +87,9 @@ TEST(HudOverlay, RendersTextPixels) {
 // More lines => a taller panel (height scales with the line count).
 TEST(HudOverlay, MultiLineHeightGrowsWithLineCount) {
   const QFont font = hudFont();
-  const QImage one = renderHudPanel({QStringLiteral("GPU  1.00 ms")}, font, 1.0, kPad, kAlpha, kTextColor);
-  const QImage three = renderHudPanel(
-      {QStringLiteral("GPU  1.00 ms"), QStringLiteral("CPU  2.00 ms"), QStringLiteral("MSAA 4x")}, font, 1.0, kPad,
-      kAlpha, kTextColor);
+  const QImage one = renderHudPanel({u"GPU  1.00 ms"_s}, font, 1.0, kPad, kAlpha, kTextColor);
+  const QImage three =
+      renderHudPanel({u"GPU  1.00 ms"_s, u"CPU  2.00 ms"_s, u"MSAA 4x"_s}, font, 1.0, kPad, kAlpha, kTextColor);
   ASSERT_FALSE(one.isNull());
   ASSERT_FALSE(three.isNull());
   EXPECT_GT(three.height(), one.height());

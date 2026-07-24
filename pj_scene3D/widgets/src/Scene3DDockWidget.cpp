@@ -12,6 +12,7 @@
 #include <QLoggingCategory>
 #include <QPoint>
 #include <QResizeEvent>
+#include <QScopedValueRollback>
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QSizePolicy>
@@ -25,6 +26,9 @@
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <nlohmann/json.hpp>
+#include <numbers>
+#include <optional>
 #include <unordered_set>
 #include <utility>
 
@@ -43,8 +47,10 @@
 #include "pj_scene3d_widgets/scene_view_widget.h"
 #include "pj_scene3d_widgets/transform_service.h"
 #include "pj_widgets/ComboBox.h"
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/SvgUtil.h"
 #include "urdf_package_resolver.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -84,7 +90,7 @@ QString cameraModelToString(int combo_index) {
       return QString::fromLatin1(entry.id);
     }
   }
-  return QStringLiteral("orbit");
+  return u"orbit"_s;
 }
 
 // Combo index for a persisted model name, or -1 when missing / unknown (→ keep
@@ -96,6 +102,205 @@ int cameraModelFromString(const QString& name) {
     }
   }
   return -1;
+}
+
+struct ValidatedCameraState {
+  std::optional<glm::vec3> focal;
+  std::optional<float> radius;
+  std::optional<float> azimuth;
+  std::optional<float> elevation;
+  std::optional<float> fov_y;
+  std::optional<float> ortho_scale;
+  std::optional<bool> perspective;
+};
+
+struct ValidatedSceneControls {
+  std::optional<bool> grid_visible;
+  std::optional<int> grid_style;
+  std::optional<float> grid_extent_m;
+  std::optional<int> grid_divisions;
+  std::optional<bool> axes_visible;
+  std::optional<float> gizmo_size_m;
+  std::optional<float> gizmo_opacity;
+  std::optional<bool> tf_parent_lines;
+  std::optional<bool> meshes_visible;
+  std::optional<float> mesh_opacity;
+  std::optional<bool> collisions_visible;
+  std::optional<float> collision_opacity;
+};
+
+struct ValidatedSceneState {
+  bool explicit_fixed_frame = false;
+  int camera_model_index = -1;
+  std::optional<ValidatedCameraState> camera_state;
+  std::optional<ValidatedSceneControls> controls;
+};
+
+bool readJsonFloat(
+    const nlohmann::json& object, const char* key, float minimum, float maximum, std::optional<float>& output) {
+  const auto iterator = object.find(key);
+  if (iterator == object.end()) {
+    return true;
+  }
+  if (!iterator->is_number()) {
+    return false;
+  }
+  try {
+    const double value = iterator->get<double>();
+    if (!std::isfinite(value) || value < minimum || value > maximum) {
+      return false;
+    }
+    output = static_cast<float>(value);
+    return std::isfinite(*output);
+  } catch (const nlohmann::json::exception&) {
+    return false;
+  }
+}
+
+std::optional<ValidatedCameraState> validateCameraState(const QString& encoded) {
+  const nlohmann::json object = nlohmann::json::parse(encoded.toStdString(), nullptr, false);
+  if (object.is_discarded() || !object.is_object()) {
+    return std::nullopt;
+  }
+  constexpr float kFloatMax = std::numeric_limits<float>::max();
+  constexpr float kMinimumScale = 1e-3f;
+  constexpr float kPolarLimit = std::numbers::pi_v<float> * 0.5f - 0.05f;
+  ValidatedCameraState state;
+  const auto focal = object.find("focal");
+  if (focal != object.end()) {
+    if (!focal->is_array() || focal->size() != 3) {
+      return std::nullopt;
+    }
+    glm::vec3 value{0.0f};
+    for (int index = 0; index < 3; ++index) {
+      const nlohmann::json& component = (*focal)[static_cast<std::size_t>(index)];
+      if (!component.is_number()) {
+        return std::nullopt;
+      }
+      try {
+        const double number = component.get<double>();
+        if (!std::isfinite(number) || number < -kFloatMax || number > kFloatMax) {
+          return std::nullopt;
+        }
+        value[index] = static_cast<float>(number);
+      } catch (const nlohmann::json::exception&) {
+        return std::nullopt;
+      }
+    }
+    state.focal = value;
+  }
+  if (!readJsonFloat(object, "radius", kMinimumScale, kFloatMax, state.radius) ||
+      !readJsonFloat(object, "azimuth", -kFloatMax, kFloatMax, state.azimuth) ||
+      !readJsonFloat(object, "elevation", -kPolarLimit, kPolarLimit, state.elevation) ||
+      !readJsonFloat(object, "fov_y", glm::radians(1.0f), glm::radians(179.0f), state.fov_y) ||
+      !readJsonFloat(object, "ortho_scale", kMinimumScale, kFloatMax, state.ortho_scale)) {
+    return std::nullopt;
+  }
+  const auto perspective = object.find("perspective");
+  if (perspective != object.end()) {
+    if (!perspective->is_boolean()) {
+      return std::nullopt;
+    }
+    state.perspective = perspective->get<bool>();
+  }
+  return state;
+}
+
+bool readXmlBool(const QDomElement& element, const QString& key, std::optional<bool>& output) {
+  if (!element.hasAttribute(key)) {
+    return true;
+  }
+  const QString value = element.attribute(key);
+  if (value != "true"_L1 && value != "false"_L1) {
+    return false;
+  }
+  output = value == "true"_L1;
+  return true;
+}
+
+bool readXmlInt(const QDomElement& element, const QString& key, int minimum, int maximum, std::optional<int>& output) {
+  if (!element.hasAttribute(key)) {
+    return true;
+  }
+  bool ok = false;
+  const int value = element.attribute(key).toInt(&ok);
+  if (!ok || value < minimum || value > maximum) {
+    return false;
+  }
+  output = value;
+  return true;
+}
+
+bool readXmlFloat(
+    const QDomElement& element, const QString& key, float minimum, float maximum, std::optional<float>& output) {
+  if (!element.hasAttribute(key)) {
+    return true;
+  }
+  bool ok = false;
+  const double value = element.attribute(key).toDouble(&ok);
+  if (!ok || !std::isfinite(value) || value < minimum || value > maximum) {
+    return false;
+  }
+  output = static_cast<float>(value);
+  return true;
+}
+
+std::optional<ValidatedSceneState> validateSceneState(const QDomElement& element) {
+  ValidatedSceneState state;
+  const QString mode = element.attribute(u"fixed_frame_mode"_s, u"auto_root"_s);
+  if (mode != "auto_root"_L1 && mode != "explicit"_L1) {
+    return std::nullopt;
+  }
+  state.explicit_fixed_frame = mode == "explicit"_L1;
+  if (element.hasAttribute(u"camera_model"_s)) {
+    state.camera_model_index = cameraModelFromString(element.attribute(u"camera_model"_s));
+    if (state.camera_model_index < 0) {
+      return std::nullopt;
+    }
+  }
+  if (element.hasAttribute(u"camera_state"_s)) {
+    state.camera_state = validateCameraState(element.attribute(u"camera_state"_s));
+    if (!state.camera_state.has_value()) {
+      return std::nullopt;
+    }
+  }
+  QDomElement scene_controls;
+  for (QDomNode child = element.firstChild(); !child.isNull(); child = child.nextSibling()) {
+    if (!child.isElement()) {
+      continue;
+    }
+    const QString tag = child.toElement().tagName();
+    if (tag == "layer"_L1 || tag == "config_topic"_L1) {
+      continue;
+    }
+    if (tag == "scene_controls"_L1 && scene_controls.isNull()) {
+      scene_controls = child.toElement();
+      continue;
+    }
+    return std::nullopt;
+  }
+  if (!scene_controls.isNull()) {
+    if (!scene_controls.firstChildElement().isNull()) {
+      return std::nullopt;
+    }
+    ValidatedSceneControls controls;
+    if (!readXmlBool(scene_controls, u"grid_visible"_s, controls.grid_visible) ||
+        !readXmlInt(scene_controls, u"grid_style"_s, 0, 1, controls.grid_style) ||
+        !readXmlFloat(scene_controls, u"grid_extent_m"_s, 1.0f, 1000.0f, controls.grid_extent_m) ||
+        !readXmlInt(scene_controls, u"grid_divisions"_s, 1, 200, controls.grid_divisions) ||
+        !readXmlBool(scene_controls, u"axes_visible"_s, controls.axes_visible) ||
+        !readXmlFloat(scene_controls, u"gizmo_size_m"_s, 0.01f, 5.0f, controls.gizmo_size_m) ||
+        !readXmlFloat(scene_controls, u"gizmo_opacity"_s, 0.0f, 1.0f, controls.gizmo_opacity) ||
+        !readXmlBool(scene_controls, u"tf_parent_lines"_s, controls.tf_parent_lines) ||
+        !readXmlBool(scene_controls, u"meshes_visible"_s, controls.meshes_visible) ||
+        !readXmlFloat(scene_controls, u"mesh_opacity"_s, 0.0f, 1.0f, controls.mesh_opacity) ||
+        !readXmlBool(scene_controls, u"collisions_visible"_s, controls.collisions_visible) ||
+        !readXmlFloat(scene_controls, u"collision_opacity"_s, 0.0f, 1.0f, controls.collision_opacity)) {
+      return std::nullopt;
+    }
+    state.controls = controls;
+  }
+  return state;
 }
 
 [[nodiscard]] bool framesContain(const QList<FrameRow>& frames, const QString& name) {
@@ -232,7 +437,7 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
   // before connect() avoids a spurious callback into a not-yet-constructed view
   // during the ctor.
   camera_model_combo_ = new ComboBox(this);
-  camera_model_combo_->setObjectName(QStringLiteral("cameraModelCombo"));
+  camera_model_combo_->setObjectName(u"cameraModelCombo"_s);
   camera_model_combo_->setFocusPolicy(Qt::ClickFocus);
   camera_model_combo_->addItems({tr("Orbit"), tr("XYOrbit"), tr("Fly"), tr("Top-down ortho")});
   camera_model_combo_->raise();
@@ -244,21 +449,23 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
   });
 
   home_button_ = new QToolButton(this);
-  home_button_->setObjectName(QStringLiteral("cameraHomeButton"));
+  home_button_->setObjectName(u"cameraHomeButton"_s);
   home_button_->setFocusPolicy(Qt::ClickFocus);
   home_button_->setToolTip(tr("Reset view to default"));
   // Bundled "recenter" glyph (resources.qrc). Pinned to the light-theme
   // ink so it stays dark on this always-light overlay button, even when the
   // app is in dark mode (theme-following ink would render near-invisible here).
-  home_button_->setIcon(PJ::loadSvg(QStringLiteral(":/resources/svg/recenter.svg")));
-  home_button_->setStyleSheet(QStringLiteral(
-      "QToolButton { background-color: rgba(255, 255, 255, 200); border: 1px solid rgba(60, 60, 60, 180); "
-      "padding: 0px; border-radius: 3px; }"));  // no padding: let the glyph fill the button (icon sized below)
+  home_button_->setIcon(PJ::loadSvg(u":/resources/svg/recenter.svg"_s));
+  // No padding: let the glyph fill the button (icon sized below).
+  home_button_->setStyleSheet(
+      QStringLiteral(
+          "QToolButton { background-color: rgba(255, 255, 255, 200); border: 1px solid rgba(60, 60, 60, 180); "
+          "padding: %1px; border-radius: 3px; }")
+          .arg(PJ::theme::space(PJ::theme::Space::None)));
   home_button_->raise();
   connect(home_button_, &QToolButton::clicked, this, [this]() {
     if (view_ != nullptr) {
-      view_->camera().reset();
-      view_->update();
+      view_->resetCamera();
     }
   });
 
@@ -266,6 +473,7 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
   // off the base SceneDockWidget layer* signals directly, so no relay is needed.
   connect(this, &SceneDockWidget::layerRemoved, this, [this](ObjectTopicId topic_id) {
     orphan_states_.erase(topicKey(topic_id));
+    restored_layer_orders_.erase(topicKey(topic_id));
     local_robot_layer_ids_.erase(topic_id.id);
     scene_topic_datasets_.erase(topic_id.id);
     // A local robot layer carries no store dataset, so its removal never affects
@@ -496,6 +704,15 @@ bool Scene3DDockWidget::addTopicImpl(
   if (layerFor(topic_id) != nullptr) {
     return true;
   }
+  if (object_type == sdk::BuiltinObjectType::kFrameTransforms && config_topics_.contains(topic_id.id)) {
+    return true;
+  }
+  if (!isLocalRobotLayerId(topic_id) && dataset_id_ != 0) {
+    const DatasetId incoming_dataset = sessionManager()->objectStore().descriptor(topic_id).dataset_id;
+    if (incoming_dataset != 0 && incoming_dataset != dataset_id_) {
+      return false;
+    }
+  }
   if (!handlesObjectType(object_type)) {
     qCWarning(lcScene3DDock) << "addTopic: unsupported object_type" << static_cast<int>(object_type);
     return false;
@@ -648,8 +865,13 @@ QWidget* Scene3DDockWidget::createSceneView() {
                                    << " win=" << static_cast<const void*>(window()) << ")";
   auto* view = new pj::scene3d::SceneViewWidget();
   view_ = view;
-  view_->setContentsMargins(0, 0, 0, 0);
+  view_->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
   view_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+  if (camera_model_combo_ != nullptr && camera_model_combo_->currentIndex() >= 0) {
+    view_->setCameraModel(static_cast<SceneViewWidget::CameraModel>(camera_model_combo_->currentIndex()));
+  }
   connect(view_, &pj::scene3d::SceneViewWidget::framesChanged, this, &Scene3DDockWidget::onAvailableFrames);
   if (tf_buffer_ != nullptr) {
     view_->setTransformBuffer(tf_buffer_);
@@ -660,6 +882,7 @@ QWidget* Scene3DDockWidget::createSceneView() {
   // view_ is non-null from here: let the host apply view-only state (scene
   // controls) that could not be pushed while the lazy view did not yet exist.
   emit sceneViewReady();
+  connect(view_, &SceneViewWidget::presentationChanged, this, &Scene3DDockWidget::notifyWorkspaceChanged);
   return view_;
 }
 
@@ -674,6 +897,15 @@ bool Scene3DDockWidget::acceptsObjectType(sdk::BuiltinObjectType object_type) co
   // The factory registrations in the constructor are the single source of truth
   // for which render-layer types this dock can host.
   return layerFactory().supports(object_type);
+}
+
+bool Scene3DDockWidget::acceptsDeferredObjectType(sdk::BuiltinObjectType object_type) const {
+  return handlesObjectType(object_type);
+}
+
+SceneDockWidget::DeferredElementKind Scene3DDockWidget::deferredElementKind(sdk::BuiltinObjectType object_type) const {
+  return object_type == sdk::BuiltinObjectType::kFrameTransforms ? DeferredElementKind::kConfigTopic
+                                                                 : DeferredElementKind::kRenderLayer;
 }
 
 bool Scene3DDockWidget::handleSceneConfigTopic(
@@ -769,7 +1001,7 @@ uint64_t Scene3DDockWidget::viewRenderKey(PJ::Timepoint time) const {
 }
 
 QString Scene3DDockWidget::xmlTag() const {
-  return QStringLiteral("scene3d");
+  return u"scene3d"_s;
 }
 
 void Scene3DDockWidget::prepareTransformBufferForTopic(ObjectTopicId topic_id) {
@@ -937,6 +1169,7 @@ void Scene3DDockWidget::setFollowFrame(const QString& frame) {
   }
   view_->setFollowFrame(frame.toStdString());
   emit followFrameChanged(frame);
+  notifyWorkspaceChanged();
 }
 
 void Scene3DDockWidget::recenterOnFollowFrame() {
@@ -955,6 +1188,7 @@ void Scene3DDockWidget::setFixedFrame(const QString& frame) {
     return;
   }
   const bool mode_flipped = (fixed_frame_mode_ == FixedFrameMode::kAutoRoot);
+  const bool frame_changed = currentFixedFrame() != frame;
   fixed_frame_mode_ = FixedFrameMode::kExplicit;
   if (mode_flipped) {
     emit fixedFrameModeChanged(false);
@@ -967,6 +1201,9 @@ void Scene3DDockWidget::setFixedFrame(const QString& frame) {
   if (transform_service_ != nullptr && dataset_id_ != 0) {
     transform_service_->rememberFixedFrame(dataset_id_, frame);
   }
+  if (mode_flipped || frame_changed) {
+    notifyWorkspaceChanged();
+  }
 }
 
 void Scene3DDockWidget::setFixedFrameAutoRoot() {
@@ -974,12 +1211,17 @@ void Scene3DDockWidget::setFixedFrameAutoRoot() {
     return;
   }
   const bool mode_flipped = (fixed_frame_mode_ == FixedFrameMode::kExplicit);
+  const QString resolved = resolveAutoFixedFrame(available_frames_);
+  const bool frame_changed = currentFixedFrame() != resolved;
   fixed_frame_mode_ = FixedFrameMode::kAutoRoot;
   if (mode_flipped) {
     emit fixedFrameModeChanged(true);
     refreshFrameOverlayCombo();
   }
-  applyResolvedFixedFrame(resolveAutoFixedFrame(available_frames_));
+  applyResolvedFixedFrame(resolved);
+  if (mode_flipped || frame_changed) {
+    notifyWorkspaceChanged();
+  }
 }
 
 void Scene3DDockWidget::applyResolvedFixedFrame(const QString& frame) {
@@ -998,6 +1240,41 @@ void Scene3DDockWidget::applyResolvedFixedFrame(const QString& frame) {
   reconcileViewLayers();
   view_->update();
   emit currentFixedFrameChanged(frame);
+  refreshFrameOverlayCombo();
+}
+
+void Scene3DDockWidget::applyRestoredFixedFrame(FixedFrameMode mode, const QString& frame) {
+  const bool mode_changed = fixed_frame_mode_ != mode;
+  fixed_frame_mode_ = mode;
+  if (!frame.isEmpty()) {
+    applyResolvedFixedFrame(frame);
+  } else if (mode == FixedFrameMode::kAutoRoot) {
+    applyResolvedFixedFrame(resolveAutoFixedFrame(available_frames_));
+  }
+  if (mode_changed) {
+    emit fixedFrameModeChanged(mode == FixedFrameMode::kAutoRoot);
+  }
+  refreshFrameOverlayCombo();
+}
+
+void Scene3DDockWidget::resetDatasetBindingForRestore() {
+  const bool had_frames = !available_frames_.isEmpty();
+  tf_buffer_.reset();
+  dataset_id_ = 0;
+  scene_topic_datasets_.clear();
+  config_topics_.clear();
+  available_frames_.clear();
+  fallback_frames_.clear();
+  orphan_states_.clear();
+  last_orphan_revision_ = 0;
+  last_orphan_fixed_frame_.clear();
+  if (view_ != nullptr) {
+    view_->setTransformBuffer(nullptr);
+    view_->setFixedFrame({});
+  }
+  if (had_frames) {
+    emit availableFramesChanged({});
+  }
   refreshFrameOverlayCombo();
 }
 
@@ -1192,140 +1469,254 @@ ObjectTopicId Scene3DDockWidget::allocateLocalRobotLayerId() {
   return {};
 }
 
-bool Scene3DDockWidget::restoreLayerElement(const QDomElement& layer_el) {
+Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::restoreLayerElement(
+    const QDomElement& layer_el, QString* deferred_topic_name) {
+  if (deferred_topic_name != nullptr) {
+    deferred_topic_name->clear();
+  }
+  if (layer_el.isNull() || layer_el.tagName() != "layer"_L1) {
+    return ElementRestoreResult::kInvalid;
+  }
   if (sessionManager() == nullptr) {
-    return false;
+    return ElementRestoreResult::kDeferred;
   }
-
-  const QString object_type_str = layer_el.attribute(QStringLiteral("object_type"));
+  const QString object_type_str = layer_el.attribute(u"object_type"_s);
   const auto object_type_opt = sdk::parseBuiltinObjectType(object_type_str.toStdString());
-  if (!object_type_opt.has_value()) {
-    return true;
+  if (!object_type_opt.has_value() || !acceptsObjectType(*object_type_opt)) {
+    return ElementRestoreResult::kInvalid;
   }
-  const QString display_name = layer_el.attribute(QStringLiteral("display_name"));
-  const bool visible = layer_el.attribute(QStringLiteral("visible"), QStringLiteral("true")) == QStringLiteral("true");
+  const QString display_name = layer_el.attribute(u"display_name"_s);
+  const QString visible_text = layer_el.attribute(u"visible"_s, u"true"_s);
+  if (visible_text != "true"_L1 && visible_text != "false"_L1) {
+    return ElementRestoreResult::kInvalid;
+  }
+  const bool visible = visible_text == "true"_L1;
+  bool order_ok = false;
+  const int saved_order = layer_el.attribute(u"order"_s).toInt(&order_ok);
+  if (!order_ok || saved_order < 0) {
+    return ElementRestoreResult::kInvalid;
+  }
 
   ObjectTopicId topic_id;
-  const bool local_layer = layer_el.attribute(QStringLiteral("local")) == QStringLiteral("true");
+  const bool local_layer = layer_el.attribute(u"local"_s) == "true"_L1;
   if (local_layer) {
     if (*object_type_opt != sdk::BuiltinObjectType::kRobotDescription) {
-      return true;
+      return ElementRestoreResult::kInvalid;
     }
     topic_id = allocateLocalRobotLayerId();
     if (topic_id.id == 0) {
-      return true;
+      return ElementRestoreResult::kInvalid;
     }
   } else {
-    bool dataset_ok = false;
-    const auto dataset_value = layer_el.attribute(QStringLiteral("dataset_id")).toULongLong(&dataset_ok);
-    if (!dataset_ok || dataset_value > std::numeric_limits<uint32_t>::max()) {
-      return true;
+    const QString topic_name = layer_el.attribute(u"topic_name"_s);
+    if (topic_name.isEmpty()) {
+      return ElementRestoreResult::kInvalid;
     }
-    const auto saved_id = static_cast<DatasetId>(dataset_value);
-    const QString saved_source = layer_el.attribute(QStringLiteral("dataset_source"));
-    const QString topic_name = layer_el.attribute(QStringLiteral("topic_name"));
-    // Re-resolve by stable source name first; the raw id is load-order (M.55).
-    const auto dataset_id_opt = resolveDatasetId(sessionManager(), saved_id, saved_source);
-    if (!dataset_id_opt.has_value()) {
-      return false;
+    std::optional<ObjectTopicId> topic_id_opt;
+    const bool qualified = layer_el.hasAttribute(u"dataset_id"_s) || layer_el.hasAttribute(u"dataset_source"_s) ||
+                           layer_el.hasAttribute(u"dataset_path"_s);
+    if (!qualified) {
+      const auto generic = pj::scene3d::resolveUniqueObjectTopic(
+          sessionManager()->objectStore(), topic_name.toStdString(), *object_type_opt);
+      if (generic.ambiguous) {
+        return ElementRestoreResult::kInvalid;
+      }
+      topic_id_opt = generic.topic_id;
+    } else {
+      bool dataset_ok = false;
+      const qulonglong dataset_value = layer_el.attribute(u"dataset_id"_s).toULongLong(&dataset_ok);
+      if (layer_el.hasAttribute(u"dataset_id"_s) &&
+          (!dataset_ok || dataset_value == 0 || dataset_value > std::numeric_limits<uint32_t>::max())) {
+        return ElementRestoreResult::kInvalid;
+      }
+      const DatasetId saved_id = layer_el.hasAttribute(u"dataset_id"_s) ? static_cast<DatasetId>(dataset_value) : 0;
+      const auto dataset_id_opt = resolveObjectDataset(
+          saved_id, layer_el.attribute(u"dataset_source"_s), layer_el.attribute(u"dataset_path"_s), topic_name);
+      if (dataset_id_opt.has_value()) {
+        topic_id_opt = sessionManager()->objectStore().findTopic(*dataset_id_opt, topic_name.toStdString());
+      }
     }
-    const auto topic_id_opt = sessionManager()->objectStore().findTopic(*dataset_id_opt, topic_name.toStdString());
     if (!topic_id_opt.has_value()) {
-      return false;
+      if (deferred_topic_name != nullptr) {
+        *deferred_topic_name = topic_name;
+      }
+      return ElementRestoreResult::kDeferred;
     }
     topic_id = *topic_id_opt;
+    const ObjectTopicDescriptor& descriptor = sessionManager()->objectStore().descriptor(topic_id);
+    const sdk::BuiltinObjectType live_type = pj::scene3d::builtinObjectTypeFor(descriptor);
+    if (live_type != sdk::BuiltinObjectType::kNone && live_type != *object_type_opt) {
+      return ElementRestoreResult::kInvalid;
+    }
   }
-
-  // Restore trusts the saved layer type: a persisted kImage layer was a
-  // DepthCloud when saved, and its first sample may not be loaded yet here, so
-  // the interactive depth-encoding gate must not run (it would silently drop the
-  // layer — C1). enforce_image_gate=false.
+  if (layerFor(topic_id) != nullptr) {
+    return ElementRestoreResult::kInvalid;
+  }
+  const QString previous_title = windowTitle();
   if (!addTopicImpl(topic_id, *object_type_opt, display_name, /*enforce_image_gate=*/false)) {
     if (local_layer) {
       local_robot_layer_ids_.erase(topic_id.id);
     }
-    return true;
+    return ElementRestoreResult::kInvalid;
   }
-  if (ISceneLayer* layer = layerFor(topic_id); layer != nullptr) {
-    const QDomElement payload = layer_el.firstChildElement();
-    if (!payload.isNull()) {
-      layer->xmlLoadState(payload);
+  ISceneLayer* layer = layerFor(topic_id);
+  if (layer == nullptr) {
+    return ElementRestoreResult::kInvalid;
+  }
+  const QDomElement payload = layer_el.firstChildElement();
+  bool payload_invalid = !payload.isNull() && !payload.nextSiblingElement().isNull();
+  if (!payload_invalid && !payload.isNull()) {
+    if (auto* robot = dynamic_cast<RobotModelLayer*>(layer); robot != nullptr) {
+      const RobotModelLayer::XmlLoadResult result = robot->xmlLoadStateResult(payload);
+      if (result == RobotModelLayer::XmlLoadResult::kDeferred) {
+        if (deferred_topic_name != nullptr) {
+          *deferred_topic_name = payload.attribute(u"source_topic_name"_s);
+        }
+        removeTopic(topic_id);
+        setWindowTitle(previous_title);
+        return ElementRestoreResult::kDeferred;
+      }
+      payload_invalid = result == RobotModelLayer::XmlLoadResult::kInvalid;
+    } else {
+      payload_invalid = !layer->xmlLoadState(payload);
     }
+  }
+  if (payload_invalid) {
+    removeTopic(topic_id);
+    setWindowTitle(previous_title);
+    return ElementRestoreResult::kInvalid;
   }
   if (!visible) {
     setLayerVisible(topic_id, false);
   }
-  return true;
+  restored_layer_orders_[topicKey(topic_id)] = saved_order;
+  applyRestoredLayerOrder();
+  return ElementRestoreResult::kRestored;
 }
 
-bool Scene3DDockWidget::restoreConfigTopicElement(const QDomElement& config_el) {
+Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::restoreConfigTopicElement(const QDomElement& config_el) {
+  if (config_el.isNull() || config_el.tagName() != "config_topic"_L1 || !config_el.firstChildElement().isNull()) {
+    return ElementRestoreResult::kInvalid;
+  }
   if (sessionManager() == nullptr) {
-    return false;
+    return ElementRestoreResult::kDeferred;
   }
-
-  bool dataset_ok = false;
-  const auto dataset_value = config_el.attribute(QStringLiteral("dataset_id")).toULongLong(&dataset_ok);
-  if (!dataset_ok || dataset_value > std::numeric_limits<uint32_t>::max()) {
-    return true;
+  const QString topic_name = config_el.attribute(u"topic_name"_s);
+  if (topic_name.isEmpty()) {
+    return ElementRestoreResult::kInvalid;
   }
-  const auto saved_id = static_cast<DatasetId>(dataset_value);
-  const QString saved_source = config_el.attribute(QStringLiteral("dataset_source"));
-  const QString topic_name = config_el.attribute(QStringLiteral("topic_name"));
-  const QString object_type_str = config_el.attribute(QStringLiteral("object_type"));
+  const QString object_type_str = config_el.attribute(u"object_type"_s);
   const auto object_type_opt = sdk::parseBuiltinObjectType(object_type_str.toStdString());
-  if (!object_type_opt.has_value()) {
-    return true;
+  if (!object_type_opt.has_value() || *object_type_opt != sdk::BuiltinObjectType::kFrameTransforms) {
+    return ElementRestoreResult::kInvalid;
   }
-  const auto dataset_id_opt = resolveDatasetId(sessionManager(), saved_id, saved_source);
-  if (!dataset_id_opt.has_value()) {
-    return false;
+  std::optional<ObjectTopicId> topic_id_opt;
+  const bool qualified = config_el.hasAttribute(u"dataset_id"_s) || config_el.hasAttribute(u"dataset_source"_s) ||
+                         config_el.hasAttribute(u"dataset_path"_s);
+  if (!qualified) {
+    const auto generic = pj::scene3d::resolveUniqueObjectTopic(
+        sessionManager()->objectStore(), topic_name.toStdString(), *object_type_opt);
+    if (generic.ambiguous) {
+      return ElementRestoreResult::kInvalid;
+    }
+    topic_id_opt = generic.topic_id;
+  } else {
+    bool dataset_ok = false;
+    const qulonglong dataset_value = config_el.attribute(u"dataset_id"_s).toULongLong(&dataset_ok);
+    if (config_el.hasAttribute(u"dataset_id"_s) &&
+        (!dataset_ok || dataset_value == 0 || dataset_value > std::numeric_limits<uint32_t>::max())) {
+      return ElementRestoreResult::kInvalid;
+    }
+    const DatasetId saved_id = config_el.hasAttribute(u"dataset_id"_s) ? static_cast<DatasetId>(dataset_value) : 0;
+    const auto dataset_id_opt = resolveObjectDataset(
+        saved_id, config_el.attribute(u"dataset_source"_s), config_el.attribute(u"dataset_path"_s), topic_name);
+    if (dataset_id_opt.has_value()) {
+      topic_id_opt = sessionManager()->objectStore().findTopic(*dataset_id_opt, topic_name.toStdString());
+    }
   }
-  const auto topic_id_opt = sessionManager()->objectStore().findTopic(*dataset_id_opt, topic_name.toStdString());
   if (!topic_id_opt.has_value()) {
-    return false;
+    return ElementRestoreResult::kDeferred;
   }
-  addTopic(*topic_id_opt, *object_type_opt, topic_name);
-  return true;
+  const sdk::BuiltinObjectType live_type =
+      pj::scene3d::builtinObjectTypeFor(sessionManager()->objectStore().descriptor(*topic_id_opt));
+  if (live_type != sdk::BuiltinObjectType::kNone && live_type != *object_type_opt) {
+    return ElementRestoreResult::kInvalid;
+  }
+  if (!addTopic(*topic_id_opt, *object_type_opt, topic_name) || !config_topics_.contains(topic_id_opt->id)) {
+    return ElementRestoreResult::kInvalid;
+  }
+  return ElementRestoreResult::kRestored;
+}
+
+void Scene3DDockWidget::applyRestoredLayerOrder() {
+  std::vector<SceneLayerInfo> infos = layers();
+  std::stable_sort(infos.begin(), infos.end(), [this](const SceneLayerInfo& left, const SceneLayerInfo& right) {
+    const auto left_rank = restored_layer_orders_.find(topicKey(left.topic_id));
+    const auto right_rank = restored_layer_orders_.find(topicKey(right.topic_id));
+    const bool left_ranked = left_rank != restored_layer_orders_.end();
+    const bool right_ranked = right_rank != restored_layer_orders_.end();
+    if (left_ranked != right_ranked) {
+      return left_ranked;
+    }
+    return left_ranked && left_rank->second < right_rank->second;
+  });
+  std::vector<ObjectTopicId> ordered;
+  ordered.reserve(infos.size());
+  for (const SceneLayerInfo& info : infos) {
+    ordered.push_back(info.topic_id);
+  }
+  reorderLayers(ordered);
 }
 
 bool Scene3DDockWidget::restoreOnePending(const QDomElement& element) {
   // 3D defers two element kinds into the base's shared pending queue: scene-config
   // topics (e.g. TF) and render layers. Dispatch on the tag; the base SceneDockWidget
   // owns the queue + the retry/unresolved/clear bookkeeping.
-  return element.tagName() == QStringLiteral("config_topic") ? restoreConfigTopicElement(element)
-                                                             : restoreLayerElement(element);
+  const ElementRestoreResult result =
+      element.tagName() == "config_topic"_L1 ? restoreConfigTopicElement(element) : restoreLayerElement(element);
+  if (result == ElementRestoreResult::kInvalid) {
+    markWorkspaceRestoreFailed();
+    return true;
+  }
+  return result == ElementRestoreResult::kRestored || result == ElementRestoreResult::kConsumed;
 }
 
 QDomElement Scene3DDockWidget::xmlSaveState(QDomDocument& doc) const {
   QDomElement root = doc.createElement(xmlTag());
-  root.setAttribute(QStringLiteral("version"), QStringLiteral("1"));
+  root.setAttribute(u"version"_s, u"1"_s);
 
   ObjectStore* store = sessionManager() != nullptr ? &sessionManager()->objectStore() : nullptr;
+  int saved_order = 0;
   for (const SceneLayerInfo& info : layers()) {
     const bool local_layer = isLocalRobotLayerId(info.topic_id);
     if (!local_layer && store == nullptr) {
       continue;
     }
 
-    QDomElement layer_el = doc.createElement(QStringLiteral("layer"));
+    QDomElement layer_el = doc.createElement(u"layer"_s);
     if (local_layer) {
-      layer_el.setAttribute(QStringLiteral("local"), QStringLiteral("true"));
-      layer_el.setAttribute(QStringLiteral("dataset_id"), QStringLiteral("0"));
-      layer_el.setAttribute(QStringLiteral("topic_name"), QString());
+      layer_el.setAttribute(u"local"_s, u"true"_s);
+      layer_el.setAttribute(u"dataset_id"_s, u"0"_s);
+      layer_el.setAttribute(u"topic_name"_s, QString());
     } else {
       const auto& desc = store->descriptor(info.topic_id);
-      layer_el.setAttribute(QStringLiteral("dataset_id"), QString::number(desc.dataset_id));
+      layer_el.setAttribute(u"dataset_id"_s, QString::number(desc.dataset_id));
       // Source name is stable across sessions; the raw id is a load-order counter
-      // (see resolveDatasetId). Persist both so restore can re-resolve (M.55).
-      layer_el.setAttribute(QStringLiteral("dataset_source"), datasetSourceName(sessionManager(), desc.dataset_id));
-      layer_el.setAttribute(QStringLiteral("topic_name"), QString::fromStdString(desc.topic_name));
+      // (see the injected resolver). Persist both so restore can re-resolve (M.55).
+      layer_el.setAttribute(u"dataset_source"_s, datasetSourceName(sessionManager(), desc.dataset_id));
+      const QString path = sessionManager()->datasetSourcePath(desc.dataset_id);
+      if (!path.isEmpty()) {
+        layer_el.setAttribute(u"dataset_path"_s, path);
+      }
+      layer_el.setAttribute(u"topic_name"_s, QString::fromStdString(desc.topic_name));
     }
     const auto object_type_name = sdk::name(info.object_type);
     layer_el.setAttribute(
-        QStringLiteral("object_type"),
+        u"object_type"_s,
         QString::fromLatin1(object_type_name.data(), static_cast<qsizetype>(object_type_name.size())));
-    layer_el.setAttribute(QStringLiteral("display_name"), info.display_name);
-    layer_el.setAttribute(QStringLiteral("visible"), info.visible ? QStringLiteral("true") : QStringLiteral("false"));
+    layer_el.setAttribute(u"display_name"_s, info.display_name);
+    layer_el.setAttribute(u"visible"_s, info.visible ? u"true"_s : u"false"_s);
+    layer_el.setAttribute(u"order"_s, saved_order++);
 
     if (ISceneLayer* layer = layerFor(info.topic_id); layer != nullptr) {
       QDomElement payload = layer->xmlSaveState(doc);
@@ -1347,157 +1738,238 @@ QDomElement Scene3DDockWidget::xmlSaveState(QDomDocument& doc) const {
       if (desc.topic_name.empty()) {
         continue;  // evicted; nothing to restore
       }
-      QDomElement config_el = doc.createElement(QStringLiteral("config_topic"));
-      config_el.setAttribute(QStringLiteral("dataset_id"), QString::number(desc.dataset_id));
-      config_el.setAttribute(QStringLiteral("dataset_source"), datasetSourceName(sessionManager(), desc.dataset_id));
-      config_el.setAttribute(QStringLiteral("topic_name"), QString::fromStdString(desc.topic_name));
+      QDomElement config_el = doc.createElement(u"config_topic"_s);
+      config_el.setAttribute(u"dataset_id"_s, QString::number(desc.dataset_id));
+      config_el.setAttribute(u"dataset_source"_s, datasetSourceName(sessionManager(), desc.dataset_id));
+      const QString path = sessionManager()->datasetSourcePath(desc.dataset_id);
+      if (!path.isEmpty()) {
+        config_el.setAttribute(u"dataset_path"_s, path);
+      }
+      config_el.setAttribute(u"topic_name"_s, QString::fromStdString(desc.topic_name));
       const auto frame_transforms_name = sdk::name(sdk::BuiltinObjectType::kFrameTransforms);
       config_el.setAttribute(
-          QStringLiteral("object_type"),
+          u"object_type"_s,
           QString::fromLatin1(frame_transforms_name.data(), static_cast<qsizetype>(frame_transforms_name.size())));
       root.appendChild(config_el);
     }
   }
 
   root.setAttribute(
-      QStringLiteral("fixed_frame_mode"),
-      fixed_frame_mode_ == FixedFrameMode::kAutoRoot ? QStringLiteral("auto_root") : QStringLiteral("explicit"));
-  root.setAttribute(QStringLiteral("fixed_frame"), currentFixedFrame());
-  root.setAttribute(QStringLiteral("follow_frame"), currentFollowFrame());
+      u"fixed_frame_mode"_s, fixed_frame_mode_ == FixedFrameMode::kAutoRoot ? u"auto_root"_s : u"explicit"_s);
+  root.setAttribute(u"fixed_frame"_s, currentFixedFrame());
+  root.setAttribute(u"follow_frame"_s, currentFollowFrame());
   if (view_ != nullptr && camera_model_combo_ != nullptr) {
-    root.setAttribute(QStringLiteral("camera_model"), cameraModelToString(camera_model_combo_->currentIndex()));
+    root.setAttribute(u"camera_model"_s, cameraModelToString(static_cast<int>(view_->cameraModel())));
     root.setAttribute(
-        QStringLiteral("camera_state"),
-        QString::fromStdString(pj::scene3d::cameraStateToJson(view_->camera().state())));
+        u"camera_state"_s, QString::fromStdString(pj::scene3d::cameraStateToJson(view_->camera().state())));
   }
   if (view_ != nullptr) {
     // Per-dock scene-look controls travel WITH the layout (export/import), so a
     // restored layout gives each view its own grid/frame/mesh look instead of a
     // shared global one. The QSettings group is only the seed for brand-new docks.
     // Field set mirrors Scene3DConfigPanel::applySceneControlsTo (keep in sync; 4 sites).
-    const auto bool_attr = [](bool value) { return value ? QStringLiteral("true") : QStringLiteral("false"); };
-    QDomElement sc = doc.createElement(QStringLiteral("scene_controls"));
-    sc.setAttribute(QStringLiteral("grid_visible"), bool_attr(view_->gridVisible()));
-    sc.setAttribute(
-        QStringLiteral("grid_style"), view_->gridStyle() == pj::scene3d::GridRenderPass::Style::kFilledCells ? 1 : 0);
-    sc.setAttribute(QStringLiteral("grid_extent_m"), view_->gridExtentMetres());
-    sc.setAttribute(QStringLiteral("grid_divisions"), view_->gridDivisions());
-    sc.setAttribute(QStringLiteral("axes_visible"), bool_attr(view_->axesVisible()));
-    sc.setAttribute(QStringLiteral("gizmo_size_m"), view_->gizmoSize());
-    sc.setAttribute(QStringLiteral("gizmo_opacity"), view_->gizmoOpacity());
-    sc.setAttribute(QStringLiteral("tf_parent_lines"), bool_attr(view_->tfConnectionsVisible()));
+    const auto bool_attr = [](bool value) { return value ? u"true"_s : u"false"_s; };
+    QDomElement sc = doc.createElement(u"scene_controls"_s);
+    sc.setAttribute(u"grid_visible"_s, bool_attr(view_->gridVisible()));
+    sc.setAttribute(u"grid_style"_s, view_->gridStyle() == pj::scene3d::GridRenderPass::Style::kFilledCells ? 1 : 0);
+    sc.setAttribute(u"grid_extent_m"_s, view_->gridExtentMetres());
+    sc.setAttribute(u"grid_divisions"_s, view_->gridDivisions());
+    sc.setAttribute(u"axes_visible"_s, bool_attr(view_->axesVisible()));
+    sc.setAttribute(u"gizmo_size_m"_s, view_->gizmoSize());
+    sc.setAttribute(u"gizmo_opacity"_s, view_->gizmoOpacity());
+    sc.setAttribute(u"tf_parent_lines"_s, bool_attr(view_->tfConnectionsVisible()));
     const auto& shading = view_->meshShadingParams();
-    sc.setAttribute(QStringLiteral("meshes_visible"), bool_attr(shading.meshes_visible));
-    sc.setAttribute(QStringLiteral("mesh_opacity"), shading.mesh_opacity);
-    sc.setAttribute(QStringLiteral("collisions_visible"), bool_attr(shading.collisions_visible));
-    sc.setAttribute(QStringLiteral("collision_opacity"), shading.collision_opacity);
-    sc.setAttribute(QStringLiteral("shadows_enabled"), bool_attr(shading.shadows_enabled));
+    sc.setAttribute(u"meshes_visible"_s, bool_attr(shading.meshes_visible));
+    sc.setAttribute(u"mesh_opacity"_s, shading.mesh_opacity);
+    sc.setAttribute(u"collisions_visible"_s, bool_attr(shading.collisions_visible));
+    sc.setAttribute(u"collision_opacity"_s, shading.collision_opacity);
+    // shadows_enabled is intentionally NOT persisted: shadows are always on (see MeshShadingParams).
     root.appendChild(sc);
   }
+  appendPendingRestoreElements(doc, root);
   return root;
 }
 
 bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
-  if (element.isNull() || element.tagName() != QStringLiteral("scene3d")) {
+  if (element.isNull() || element.tagName() != "scene3d"_L1) {
     return false;
   }
+  const std::optional<ValidatedSceneState> validated = validateSceneState(element);
+  if (!validated.has_value()) {
+    markWorkspaceRestoreFailed();
+    return false;
+  }
+  auto restoring_guard = beginWorkspaceRestore();
 
   // Force the lazily-created view now. PlotDocker calls xmlLoadState
   // synchronously during layout restore, before the deferred singleShot fires;
   // without this view_ is null and the explicit fixed frame, fixed-frame mode,
   // and camera state below are silently dropped when zero layers restore (M.19).
   ensureSceneViewCreated();
-
-  orphan_states_.clear();
-  fallback_frames_.clear();
-  local_robot_layer_ids_.clear();
-  config_topics_.clear();
-  scene_topic_datasets_.clear();
+  QDomDocument previous_doc;
+  QDomElement previous_state;
+  const PendingRestoreSnapshot previous_pending = capturePendingRestoreState();
+  if (!xml_rollback_in_progress_) {
+    previous_state = xmlSaveState(previous_doc);
+    previous_doc.appendChild(previous_state);
+  }
+  resetWorkspaceRestoreStatus();
   clearPendingRestores();
-
-  const QString saved_mode = element.attribute(QStringLiteral("fixed_frame_mode"), QStringLiteral("auto_root"));
-  const QString saved_frame = element.attribute(QStringLiteral("fixed_frame"));
-
+  const QString saved_frame = element.attribute(u"fixed_frame"_s);
   clearLayers();
+  local_robot_layer_ids_.clear();
+  restored_layer_orders_.clear();
+  resetDatasetBindingForRestore();
   int unresolved_topics = 0;
+  bool invalid_state = false;
   if (sessionManager() != nullptr) {
-    for (QDomElement layer_el = element.firstChildElement(QStringLiteral("layer")); !layer_el.isNull();
-         layer_el = layer_el.nextSiblingElement(QStringLiteral("layer"))) {
-      if (!restoreLayerElement(layer_el)) {
+    int default_order = 0;
+    for (QDomElement layer_el = element.firstChildElement(u"layer"_s); !layer_el.isNull();
+         layer_el = layer_el.nextSiblingElement(u"layer"_s)) {
+      if (!layer_el.hasAttribute(u"order"_s)) {
+        layer_el.setAttribute(u"order"_s, default_order);
+      }
+      ++default_order;
+      QString deferred_topic;
+      const ElementRestoreResult result = restoreLayerElement(layer_el, &deferred_topic);
+      if (result == ElementRestoreResult::kDeferred) {
         ++unresolved_topics;
-        rememberPendingRestore(layer_el);
+        rememberPendingRestore(layer_el, std::move(deferred_topic));
+      } else if (result == ElementRestoreResult::kInvalid) {
+        invalid_state = true;
+        break;
       }
     }
 
     // Re-add persisted FrameTransforms config topics so handleSceneConfigTopic
     // re-binds tf_buffer_/dataset_id_ (M.18). These create no layer; a TF-only
     // dock has nothing in the layer loop above and depends entirely on this.
-    for (QDomElement config_el = element.firstChildElement(QStringLiteral("config_topic")); !config_el.isNull();
-         config_el = config_el.nextSiblingElement(QStringLiteral("config_topic"))) {
-      if (!restoreConfigTopicElement(config_el)) {
-        ++unresolved_topics;
-        rememberPendingRestore(config_el);
+    if (!invalid_state) {
+      for (QDomElement config_el = element.firstChildElement(u"config_topic"_s); !config_el.isNull();
+           config_el = config_el.nextSiblingElement(u"config_topic"_s)) {
+        const ElementRestoreResult result = restoreConfigTopicElement(config_el);
+        if (result == ElementRestoreResult::kDeferred) {
+          ++unresolved_topics;
+          rememberPendingRestore(config_el);
+        } else if (result == ElementRestoreResult::kInvalid) {
+          invalid_state = true;
+          break;
+        }
       }
     }
+  }
+  if (invalid_state) {
+    markWorkspaceRestoreFailed();
+    clearPendingRestores();
+    clearLayers();
+    local_robot_layer_ids_.clear();
+    restored_layer_orders_.clear();
+    resetDatasetBindingForRestore();
+    setWindowTitle(tr("3D View"));
+    if (!previous_state.isNull()) {
+      QScopedValueRollback rollback_guard(xml_rollback_in_progress_, true);
+      if (!xmlLoadState(previous_state)) {
+        qCCritical(lcScene3DDock) << "Failed to roll back rejected Scene3D XML state";
+      } else {
+        // The snapshot's status epoch comes back with the pending state: after
+        // a successful rollback the dock is NOT in a failed-restore state — the
+        // caller learns of the rejection from the false return.
+        restorePendingRestoreState(previous_pending);
+      }
+    }
+    return false;
   }
   if (unresolved_topics > 0) {
     qCWarning(lcScene3DDock) << unresolved_topics << "saved layer(s) could not be restored (dataset not loaded)";
   }
 
-  if (saved_mode == QStringLiteral("explicit") && !saved_frame.isEmpty()) {
-    setFixedFrame(saved_frame);
-  } else {
-    setFixedFrameAutoRoot();
-  }
+  applyRestoredFixedFrame(
+      validated->explicit_fixed_frame ? FixedFrameMode::kExplicit : FixedFrameMode::kAutoRoot, saved_frame);
 
   // Restore the camera model + pose (tolerant of older layouts without them).
   // Setting the combo index switches the active controller via its signal; the
   // adoptState then applies the saved pose on top.
   if (view_ != nullptr) {
-    if (camera_model_combo_ != nullptr) {
-      if (const int idx = cameraModelFromString(element.attribute(QStringLiteral("camera_model"))); idx >= 0) {
-        camera_model_combo_->setCurrentIndex(idx);
-      }
+    if (camera_model_combo_ != nullptr && validated->camera_model_index >= 0) {
+      camera_model_combo_->setCurrentIndex(validated->camera_model_index);
     }
-    const QString camera_state = element.attribute(QStringLiteral("camera_state"));
-    if (!camera_state.isEmpty()) {
-      view_->camera().adoptState(pj::scene3d::cameraStateFromJson(camera_state.toStdString(), view_->camera().state()));
+    if (validated->camera_state.has_value()) {
+      const ValidatedCameraState& saved = *validated->camera_state;
+      pj::scene3d::CameraState camera = view_->camera().state();
+      if (saved.focal.has_value()) {
+        camera.focal = *saved.focal;
+      }
+      if (saved.radius.has_value()) {
+        camera.radius = *saved.radius;
+      }
+      if (saved.azimuth.has_value()) {
+        camera.azimuth = *saved.azimuth;
+      }
+      if (saved.elevation.has_value()) {
+        camera.elevation = *saved.elevation;
+      }
+      if (saved.fov_y.has_value()) {
+        camera.fov_y = *saved.fov_y;
+      }
+      if (saved.ortho_scale.has_value()) {
+        camera.ortho_scale = *saved.ortho_scale;
+      }
+      if (saved.perspective.has_value()) {
+        camera.perspective = *saved.perspective;
+      }
+      view_->camera().adoptState(camera);
     }
     // Restore the camera follow target (empty = off). Tolerant of older layouts
     // (missing attribute → empty → follow off). A target absent from the current
     // TF tree stays inert until it appears (applyFollow holds on lookup failure).
-    setFollowFrame(element.attribute(QStringLiteral("follow_frame")));
+    setFollowFrame(element.attribute(u"follow_frame"_s));
     // Per-dock scene controls: override the global seed applied at view creation
     // (sceneViewReady -> applySceneControlsTo) with this dock's saved look. Older
     // layouts have no <scene_controls> child -> keep the seed. Each attribute
     // falls back to the current value so a partial element never zeroes a control.
     // Field set mirrors Scene3DConfigPanel::applySceneControlsTo (keep in sync; 4 sites).
-    if (const QDomElement sc = element.firstChildElement(QStringLiteral("scene_controls")); !sc.isNull()) {
-      const auto bool_attr = [&sc](const QString& key, bool fallback) {
-        return sc.attribute(key, fallback ? QStringLiteral("true") : QStringLiteral("false")) == QStringLiteral("true");
-      };
-      view_->setGridVisible(bool_attr(QStringLiteral("grid_visible"), view_->gridVisible()));
-      view_->setGridStyle(
-          sc.attribute(QStringLiteral("grid_style"), QStringLiteral("0")).toInt() == 1
-              ? pj::scene3d::GridRenderPass::Style::kFilledCells
-              : pj::scene3d::GridRenderPass::Style::kLines);
-      view_->setGridExtentMetres(
-          sc.attribute(QStringLiteral("grid_extent_m"), QString::number(view_->gridExtentMetres())).toFloat());
-      view_->setGridDivisions(
-          sc.attribute(QStringLiteral("grid_divisions"), QString::number(view_->gridDivisions())).toInt());
-      view_->setAxesVisible(bool_attr(QStringLiteral("axes_visible"), view_->axesVisible()));
-      view_->setGizmoSize(sc.attribute(QStringLiteral("gizmo_size_m"), QString::number(view_->gizmoSize())).toFloat());
-      view_->setGizmoOpacity(
-          sc.attribute(QStringLiteral("gizmo_opacity"), QString::number(view_->gizmoOpacity())).toFloat());
-      view_->setTfConnectionsVisible(bool_attr(QStringLiteral("tf_parent_lines"), view_->tfConnectionsVisible()));
-      auto& shading = view_->meshShadingParams();
-      shading.meshes_visible = bool_attr(QStringLiteral("meshes_visible"), shading.meshes_visible);
-      shading.mesh_opacity =
-          sc.attribute(QStringLiteral("mesh_opacity"), QString::number(shading.mesh_opacity)).toFloat();
-      shading.collisions_visible = bool_attr(QStringLiteral("collisions_visible"), shading.collisions_visible);
-      shading.collision_opacity =
-          sc.attribute(QStringLiteral("collision_opacity"), QString::number(shading.collision_opacity)).toFloat();
-      shading.shadows_enabled = bool_attr(QStringLiteral("shadows_enabled"), shading.shadows_enabled);
+    if (validated->controls.has_value()) {
+      const ValidatedSceneControls& controls = *validated->controls;
+      if (controls.grid_visible.has_value()) {
+        view_->setGridVisible(*controls.grid_visible);
+      }
+      if (controls.grid_style.has_value()) {
+        view_->setGridStyle(
+            *controls.grid_style == 1 ? pj::scene3d::GridRenderPass::Style::kFilledCells
+                                      : pj::scene3d::GridRenderPass::Style::kLines);
+      }
+      if (controls.grid_extent_m.has_value()) {
+        view_->setGridExtentMetres(*controls.grid_extent_m);
+      }
+      if (controls.grid_divisions.has_value()) {
+        view_->setGridDivisions(*controls.grid_divisions);
+      }
+      if (controls.axes_visible.has_value()) {
+        view_->setAxesVisible(*controls.axes_visible);
+      }
+      if (controls.gizmo_size_m.has_value()) {
+        view_->setGizmoSize(*controls.gizmo_size_m);
+      }
+      if (controls.gizmo_opacity.has_value()) {
+        view_->setGizmoOpacity(*controls.gizmo_opacity);
+      }
+      if (controls.tf_parent_lines.has_value()) {
+        view_->setTfConnectionsVisible(*controls.tf_parent_lines);
+      }
+      auto shading = view_->meshShadingParams();
+      if (controls.meshes_visible.has_value()) {
+        shading.meshes_visible = *controls.meshes_visible;
+      }
+      if (controls.mesh_opacity.has_value()) {
+        shading.mesh_opacity = *controls.mesh_opacity;
+      }
+      if (controls.collisions_visible.has_value()) {
+        shading.collisions_visible = *controls.collisions_visible;
+      }
+      if (controls.collision_opacity.has_value()) {
+        shading.collision_opacity = *controls.collision_opacity;
+      }
+      view_->setMeshShadingParams(shading);
     }
     view_->update();
   }

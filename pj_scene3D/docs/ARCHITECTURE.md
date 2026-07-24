@@ -84,13 +84,13 @@ layers + passes → SceneHdrFbo (multisample RGBA16F + DEPTH32F + R8 is-mesh mas
   ambient 0.5, key/"sun" 1.6, fill 0.5, env-reflection 1.0, key-light dir
   azimuth 40° / elevation 55° ≈ high +X+Y — a stopgap for a future per-scene
   lighting object). Shader provenance/licenses: [`../THIRDPARTY.md`](../THIRDPARTY.md).
-- **No shadows (yet).** Mesh shading has no shadow term: the fixed key light, the
-  camera-locked fill, and the IBL ambient are all unoccluded. Adding mesh shadows
-  would be a geometry **depth pre-pass** rendered from the light *before*
-  `renderScene` — structurally unlike the screen-space SSAO/EDL **post-passes** —
-  with the shadow factor multiplied into the key-light term only (the first summand
-  of `direct` in `mesh_render_pass.cpp`). Don't mistake the SSAO/EDL passes as the
-  template for shadows.
+- **Shadows (always on).** The key-light term is occluded by a real-time shadow
+  map — a geometry **depth pre-pass** rendered from the light *before* `renderScene`
+  (structurally unlike the screen-space SSAO/EDL **post-passes**), with the shadow
+  factor multiplied into the key-light term only (the first summand of `direct` in
+  `mesh_render_pass.cpp`); the camera-locked fill and IBL ambient stay unoccluded.
+  The app renders shadows unconditionally (no user toggle). See
+  [Mesh shadows](#mesh-shadows) for the full pipeline.
 
 **GL context lifecycle (don't regress).** `QOpenGLWidget` recreates its context
 on every ADS reparent. Every pass, layer, the HDR chain, and the present
@@ -126,8 +126,9 @@ light (`MeshShadingParams::key_light_dir`). **Casters: meshes only** — URDF/ro
 meshes (`RobotModelLayer` visual links) and scene-entity `ModelPrimitive` meshes
 (`SceneEntitiesLayer`); point clouds, voxel/occupancy grids, axes, TF triads,
 markers, and collision hulls never cast. **Receivers: meshes and the solid grid
-floor** (`GridRenderPass` filled-cell mode). Off by default, per-dock
-(`MeshShadingParams::shadows_enabled`).
+floor** (`GridRenderPass` filled-cell mode). Always on in the app:
+`MeshShadingParams::shadows_enabled` defaults true and the app renders shadows
+unconditionally (no user toggle; the `mesh_viewer` demo overrides it via `--shadows`).
 
 Unlike the screen-space SSAO/EDL post-passes, a shadow map is a **geometry depth
 pre-pass** that runs in `paintGL` *before* `renderScene` (between the `FrameContext`
@@ -612,6 +613,17 @@ on the live path:
   oldest-UID eviction) holds decoded batches so a rebuild re-folds without re-parsing.
   Each cache entry records `store_ns` (the ingest timestamp) alongside the batch, so a
   cache-hit re-fold restores the *same* lifetime anchor a fresh parse would have produced.
+- **Timestamp-ordered, out-of-order-safe fold.** The batches to fold are the topic's
+  entries with `ts <= tracker`, taken via `ObjectStore::rangeByTime` (a decode-free,
+  ascending, eviction-safe window) — never an arrival-order UID walk, whose order
+  diverges from timestamp order after an out-of-order push and would both leak a
+  future batch in and drop a late in-window one. Forward playback folds only the
+  `(state_built_at_, tracker]` delta; a retroactive push landing at
+  `ts <= state_built_at_` is detected when `maxUidAtOrBefore(state_built_at_)` grows
+  past the folded high-water (`applied_uid_high_`) and forces a full rebuild. This is
+  the same cursor discipline `OccupancyGridLayer` uses, so all three ObjectStore
+  UID-cursor consumers (`TransformService`, occupancy, scene entities) share one
+  out-of-order contract.
 
 ## Asset resolution (`package://` for a non-ROS app)
 

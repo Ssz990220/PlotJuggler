@@ -87,7 +87,7 @@ target_compile_options(pj_scene3d_widgets PRIVATE
   ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS}
 )
 target_link_libraries(pj_scene3d_widgets
-  PUBLIC pj_scene3d_core pj_scene_common pj_runtime pj_plugin_runtime_catalog pj_widgets Qt6::Widgets Qt6::OpenGLWidgets Qt6::Xml OpenGL::GL
+  PUBLIC pj_scene3d_core pj_scene_common pj_runtime pj_widgets Qt6::Widgets Qt6::OpenGLWidgets Qt6::Xml OpenGL::GL
   PRIVATE pj_internal_fmt Qt6::Concurrent Qt6::Network assimp::assimp
 )
 
@@ -252,6 +252,25 @@ if(PJ_BUILD_TESTS)
   target_compile_options(voxel_grid_layer_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
   add_test(NAME voxel_grid_layer_test COMMAND voxel_grid_layer_test)
 
+  # Settings-panel row pitch: every layer's createConfigWidget() must use the
+  # same vertical spacing (Space::Snug) as the built-in Grid / Transforms grids
+  # in Scene3DConfigPanel, so the panel doesn't visibly loosen when a different
+  # topic type is selected. Builds real config widgets, so it needs a QApplication;
+  # links resources.qrc (AUTORCC) so PJ::theme::space() resolves real QSS values
+  # instead of the -1/style-default fallback that would mask the Snug/Comfortable gap.
+  add_executable(layer_config_widget_row_spacing_test
+    tests/layer_config_widget_row_spacing_test.cpp
+    ${CMAKE_SOURCE_DIR}/resources/resources.qrc
+  )
+  set_target_properties(layer_config_widget_row_spacing_test PROPERTIES AUTORCC ON)
+  target_link_libraries(layer_config_widget_row_spacing_test PRIVATE
+    pj_scene3d_widgets
+    pj_widgets
+    GTest::gtest
+  )
+  target_compile_options(layer_config_widget_row_spacing_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME layer_config_widget_row_spacing_test COMMAND layer_config_widget_row_spacing_test)
+
   # Real-GL evidence for the instanced-cube path: a drawn voxel rasterizes
   # fragments on an offscreen FBO; a predicate-culled voxel rasterizes nothing.
   # Skips below GL 4.5 (like hud_overlay_gl_test); CI runs it under xvfb + llvmpipe.
@@ -277,6 +296,18 @@ if(PJ_BUILD_TESTS)
   )
   target_compile_options(pointcloud_sphere_size_gl_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
   add_test(NAME pointcloud_sphere_size_gl_test COMMAND pointcloud_sphere_size_gl_test)
+
+  # Real-GL evidence that the "Outside range" opacity fades out-of-range points,
+  # culls them at opacity 0 / eye-off, and leaves in-range points intact. GL 4.5+.
+  add_executable(pointcloud_outside_range_opacity_gl_test
+    tests/pointcloud_outside_range_opacity_gl_test.cpp
+  )
+  target_link_libraries(pointcloud_outside_range_opacity_gl_test PRIVATE
+    pj_scene3d_widgets
+    GTest::gtest
+  )
+  target_compile_options(pointcloud_outside_range_opacity_gl_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME pointcloud_outside_range_opacity_gl_test COMMAND pointcloud_outside_range_opacity_gl_test)
 
   # Real-GL regression: the shadow depth pre-pass must not corrupt a prior caster's
   # VAO element-buffer binding when the next caster uploads mid-loop (the streaming
@@ -420,6 +451,17 @@ if(PJ_BUILD_TESTS)
   target_compile_options(poses_in_frame_layer_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
   add_test(NAME poses_in_frame_layer_test COMMAND poses_in_frame_layer_test)
 
+  add_executable(scene3d_layer_xml_validation_test
+    tests/scene3d_layer_xml_validation_test.cpp
+  )
+  target_link_libraries(scene3d_layer_xml_validation_test PRIVATE
+    pj_scene3d_widgets
+    Qt6::Network
+    GTest::gtest
+  )
+  target_compile_options(scene3d_layer_xml_validation_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME scene3d_layer_xml_validation_test COMMAND scene3d_layer_xml_validation_test)
+
   # M.65: pin PointCloudLayer's per-use parser binding (raw renderAt path still
   # calls parseLocked on the UI thread per tick — a reintroduced cached pointer is
   # a same-file-reload use-after-free). Mirrors occupancy_grid_layer_rebind_test.
@@ -484,11 +526,15 @@ if(PJ_BUILD_TESTS)
   # under xvfb-run. Needs a QApplication (custom main) so it links GTest::gtest.
   add_executable(hud_overlay_gl_test
     tests/hud_overlay_gl_test.cpp
+    ${CMAKE_SOURCE_DIR}/resources/resources.qrc
   )
   target_link_libraries(hud_overlay_gl_test PRIVATE
     pj_scene3d_widgets
     GTest::gtest
   )
+  # The overlay text/border colours now resolve from the framework palette
+  # (pj_widgets FrameworkTokens), so the stylesheet resource must be compiled in.
+  set_target_properties(hud_overlay_gl_test PROPERTIES AUTORCC ON)
   target_compile_options(hud_overlay_gl_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
   add_test(NAME hud_overlay_gl_test COMMAND hud_overlay_gl_test)
 

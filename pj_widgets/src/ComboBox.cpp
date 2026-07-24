@@ -9,6 +9,7 @@
 #include <QWidget>
 
 #include "pj_widgets/ComboBoxGradientDelegate.h"
+#include "pj_widgets/FrameworkTokens.h"
 
 namespace PJ {
 
@@ -32,10 +33,14 @@ void applyComboBoxStyling(QComboBox* combo) {
     if (auto* frame = qobject_cast<QFrame*>(popup_window)) {
       frame->setFrameShape(QFrame::NoFrame);
     }
-    popup_window->setContentsMargins(0, 0, 0, 0);
+    popup_window->setContentsMargins(
+        theme::space(theme::Space::None), theme::space(theme::Space::None), theme::space(theme::Space::None),
+        theme::space(theme::Space::None));
     if (auto* lay = popup_window->layout()) {
-      lay->setContentsMargins(0, 0, 0, 0);
-      lay->setSpacing(0);
+      lay->setContentsMargins(
+          theme::space(theme::Space::None), theme::space(theme::Space::None), theme::space(theme::Space::None),
+          theme::space(theme::Space::None));
+      lay->setSpacing(theme::space(theme::Space::None));
     }
   }
 }

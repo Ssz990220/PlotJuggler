@@ -6,9 +6,12 @@
 #include <QString>
 #include <Qt>
 
+#include "pj_widgets/ChromeMetrics.h"
+
 class QEvent;
 class QLayout;
 class QMouseEvent;
+class QShowEvent;
 
 namespace Ui {
 class Dialog;
@@ -42,6 +45,12 @@ class Dialog : public QDialog {
   // only sanctioned exits are their own action buttons (e.g. ProgressDialog).
   void setCloseButtonVisible(bool visible);
 
+  // Size the title-bar chrome (height, close-button extent, icon size, padding)
+  // from the app's shared ChromeMetrics, so this dialog's chrome matches the main
+  // window exactly. Called with defaults in the constructor; hosts that know the
+  // live metrics (the dialog host, app) call it again with the current values.
+  void setChromeMetrics(const ChromeMetrics& metrics);
+
   // The body widget subclasses fill. Already in the chrome's vertical
   // layout under the title bar.
   [[nodiscard]] QWidget* contentWidget() const;
@@ -50,6 +59,12 @@ class Dialog : public QDialog {
  protected:
   void mousePressEvent(QMouseEvent* event) override;
   bool eventFilter(QObject* watched, QEvent* event) override;
+  // On first show, give the content's scroll areas the canonical overlay pill
+  // scrollbars (via attachPillScrollbars) so every app-styled dialog scrolls
+  // with app-styled bars — no per-dialog wiring. First show, not construction,
+  // because subclasses populate contentWidget() in their own constructor body
+  // after Dialog's runs.
+  void showEvent(QShowEvent* event) override;
 
  private:
   void applyIcons();
@@ -59,6 +74,9 @@ class Dialog : public QDialog {
   [[nodiscard]] Qt::Edges edgesAtPoint(const QPoint& pos) const;
 
   Ui::Dialog* ui_;
+  // One-shot guard so the first-show pill attach runs once (attach itself is
+  // idempotent, but this avoids re-walking the tree on every show).
+  bool scroll_pills_attached_ = false;
 };
 
 }  // namespace PJ

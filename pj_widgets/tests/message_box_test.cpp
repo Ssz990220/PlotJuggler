@@ -14,24 +14,25 @@
 #include <QLabel>
 
 #include "pj_widgets/MessageBox.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
 // The body label is reachable by its objectName (no test-only accessor needed).
 QLabel* bodyLabelOf(PJ::MessageBox& box) {
-  return box.findChild<QLabel*>(QStringLiteral("pjMessageBoxBody"));
+  return box.findChild<QLabel*>(u"pjMessageBoxBody"_s);
 }
 
 TEST(MessageBoxTest, MultiLineBodyIsNotClipped) {
   PJ::MessageBox dlg;
-  dlg.setTitle(QStringLiteral("Merge datasets"));
+  dlg.setTitle(u"Merge datasets"_s);
   dlg.setText(QStringLiteral(
       "Merging datasets is a destructive operation. Do you wish to proceed?\n\n"
       "Datasets run1, run2 overlap in time.\n"
       "Datasets run1, run2 have colliding data.\n"
       "Datasets run1, run2 contain object topics that will be dropped."));
-  dlg.addButton(QStringLiteral("Merge"), PJ::MessageBox::kDestructiveRole);
-  dlg.addButton(QStringLiteral("Cancel"), PJ::MessageBox::kCancelRole);
+  dlg.addButton(u"Merge"_s, PJ::MessageBox::kDestructiveRole);
+  dlg.addButton(u"Cancel"_s, PJ::MessageBox::kCancelRole);
 
   dlg.show();
   QApplication::processEvents();
@@ -51,9 +52,9 @@ TEST(MessageBoxTest, MultiLineBodyIsNotClipped) {
 
 TEST(MessageBoxTest, ShortBodyAlsoFits) {
   PJ::MessageBox dlg;
-  dlg.setTitle(QStringLiteral("Heads up"));
-  dlg.setText(QStringLiteral("All good."));
-  dlg.addButton(QStringLiteral("OK"), PJ::MessageBox::kPrimaryRole);
+  dlg.setTitle(u"Heads up"_s);
+  dlg.setText(u"All good."_s);
+  dlg.addButton(u"OK"_s, PJ::MessageBox::kPrimaryRole);
 
   dlg.show();
   QApplication::processEvents();

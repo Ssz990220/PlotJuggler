@@ -10,9 +10,13 @@
 #include <QWidget>
 #include <algorithm>
 #include <any>
+#include <limits>
 #include <memory>
 #include <optional>
+#include <utility>
+#include <vector>
 
+#include "layer_xml_validation.h"
 #include "pj_base/builtin/occupancy_grid.hpp"
 #include "pj_base/builtin/occupancy_grid_update.hpp"
 #include "pj_base/time.hpp"  // PJ::fromRaw, PJ::toRaw
@@ -22,6 +26,8 @@
 #include "pj_scene3d_widgets/parse_locked.h"
 #include "pj_widgets/ComboBox.h"
 #include "pj_widgets/DoubleScrubber.h"
+#include "pj_widgets/FrameworkTokens.h"
+using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
 
@@ -39,7 +45,7 @@ PJ::SceneLayerInfo OccupancyGridLayer::info() const {
       .topic_id = topic_id_,
       .object_type = PJ::sdk::BuiltinObjectType::kOccupancyGrid,
       .display_name = display_name_,
-      .family_name = QStringLiteral("OccupancyGrid"),
+      .family_name = u"OccupancyGrid"_s,
       .visible = visible_,
   };
 }
@@ -73,24 +79,32 @@ QString OccupancyGridLayer::sourceFrame() const {
 }
 
 QDomElement OccupancyGridLayer::xmlSaveState(QDomDocument& doc) const {
-  QDomElement el = doc.createElement(QStringLiteral("occupancy_grid"));
+  QDomElement el = doc.createElement(u"occupancy_grid"_s);
   el.setAttribute(
-      QStringLiteral("color_scheme"), color_scheme_ == OccupancyGridRenderPass::ColorScheme::kCostmap
-                                          ? QStringLiteral("costmap")
-                                          : QStringLiteral("map"));
-  el.setAttribute(QStringLiteral("opacity"), static_cast<double>(opacity_));
+      u"color_scheme"_s, color_scheme_ == OccupancyGridRenderPass::ColorScheme::kCostmap ? u"costmap"_s : u"map"_s);
+  el.setAttribute(u"opacity"_s, static_cast<double>(opacity_));
   return el;
 }
 
 bool OccupancyGridLayer::xmlLoadState(const QDomElement& element) {
-  color_scheme_ = element.attribute(QStringLiteral("color_scheme")) == QStringLiteral("costmap")
-                      ? OccupancyGridRenderPass::ColorScheme::kCostmap
-                      : OccupancyGridRenderPass::ColorScheme::kMap;
-  bool ok = false;
-  const float opacity = element.attribute(QStringLiteral("opacity"), QStringLiteral("0.7")).toFloat(&ok);
-  if (ok) {
-    opacity_ = std::clamp(opacity, 0.0f, 1.0f);
+  if (element.isNull() || element.tagName() != "occupancy_grid"_L1 || !detail::isLeafPayload(element)) {
+    return false;
   }
+  const QString scheme_text = element.attribute(u"color_scheme"_s, u"map"_s);
+  OccupancyGridRenderPass::ColorScheme restored_scheme;
+  if (scheme_text == "map"_L1) {
+    restored_scheme = OccupancyGridRenderPass::ColorScheme::kMap;
+  } else if (scheme_text == "costmap"_L1) {
+    restored_scheme = OccupancyGridRenderPass::ColorScheme::kCostmap;
+  } else {
+    return false;
+  }
+  float restored_opacity = 0.0f;
+  if (!detail::parseFiniteFloat(element, "opacity", 0.7f, 0.0f, 1.0f, restored_opacity)) {
+    return false;
+  }
+  setColorScheme(restored_scheme);
+  setOpacity(restored_opacity);
   grid_pass_.setColorScheme(color_scheme_);
   grid_pass_.setOpacity(opacity_);
   return true;
@@ -188,39 +202,43 @@ void OccupancyGridLayer::renderAt(int64_t time_ns) {
   // Retroactive-ingest check (must run BEFORE reconstructAt). The reconstructor's
   // forward path consumes only (last_t_, t] and assumes immutable history, but the
   // live drive follows the fastest topic's edge — an update can be ingested later
-  // with ts <= the already-consumed time and would be skipped forever. Per-topic
-  // entries are appended in non-decreasing ts order with process-globally
-  // increasing UIDs, so checking the FIRST entry past the cursor suffices: if its
-  // ts is at-or-before the high-water consumed time, the timeline changed
-  // retroactively → discard all reconstructor state (snapshots may embed the
-  // missed window too) and rebuild from base + full replay. Conservative: a
-  // spurious invalidate only costs one full rebuild, never correctness.
+  // with ts <= the already-consumed time and would be skipped forever. Detect it and
+  // rewind. Conservative: a spurious invalidate only costs one rebuild, never
+  // correctness.
   PJ::SequentialUID cursor_candidate = updates_cursor_;
   if (updates_topic_.has_value()) {
-    // Candidate for the post-reconstruct cursor: the highest UID with ts <= t as
-    // of NOW (UID order == ts order within a topic, so this is latestAt's entry).
-    // Captured pre-reconstruct: entries racing in mid-reconstruct keep UIDs above
-    // it and get re-examined (worst case re-applied via invalidate) next tick.
-    if (const auto consumed = store.latestAt(*updates_topic_, time_ns); consumed.has_value()) {
-      cursor_candidate = std::max(cursor_candidate, consumed->sequential_uid);
-    }
-    if (last_consumed_time_.has_value()) {
-      const PJ::SequentialUID first_new = store.nextUIDAfter(*updates_topic_, updates_cursor_);
-      if (first_new.valid()) {
-        const auto first_entry = store.at(*updates_topic_, first_new);
-        if (first_entry.has_value() && first_entry->timestamp <= *last_consumed_time_) {
-          // Snapshot-preserving rewind instead of a from-base full rebuild: under
-          // a latched base (one keyframe, then only updates) every late update on
-          // a costmap whose stamps trail a faster topic's live edge would trigger
-          // invalidate() + a full (base_ts, t] replay — cumulatively quadratic in
-          // session length. invalidateAfter() keeps the snapshots strictly before
-          // the late entry, rewinds last_t_ to the nearest one, and bounds the
-          // replay to the window since first_entry->timestamp.
-          reconstructor_.invalidateAfter(first_entry->timestamp);
-          // The detector's frame of reference moves to this render's t (the cursor
-          // below covers every entry with ts <= t). Keeping a stale high-water
-          // could re-flag a not-yet-consumed entry every tick (rebuild loop).
+    // Post-reconstruct cursor: the MAX arrival UID among entries with ts <= t — NOT
+    // latestAt(t)'s UID, whose value an out-of-order insert (old ts, newest UID) can
+    // leave below a retained entry's, parking the cursor under the late entry and
+    // re-detecting it every frame. maxUidAtOrBefore covers every entry reconstructAt
+    // consumes at t. Captured pre-reconstruct so entries racing in mid-reconstruct
+    // keep UIDs above it and are re-examined next tick.
+    const PJ::SequentialUID high_at_t = store.maxUidAtOrBefore(*updates_topic_, time_ns);
+    cursor_candidate = std::max(cursor_candidate, high_at_t);
+    // Retroactive iff some entry with ts <= the consumed high-water carries an arrival
+    // UID past the cursor — i.e. it was ingested after we already consumed that time.
+    // (maxUidAtOrBefore, not the first-arrival entry: a late update can hide behind a
+    // future-stamped arrival that the arrival cursor would reach first.) high_at_t is a
+    // cheap necessary precondition — any such entry has ts <= t, so it is counted there
+    // too — which short-circuits the second O(prefix) scan on a no-new-arrival frame.
+    if (last_consumed_time_.has_value() && high_at_t > updates_cursor_ &&
+        store.maxUidAtOrBefore(*updates_topic_, *last_consumed_time_) > updates_cursor_) {
+      // Rewind to the EARLIEST such entry so the replay re-applies it. rangeByTime is
+      // ascending by timestamp, so the first entry in (-inf, last_consumed] whose UID
+      // is past the cursor is that earliest late update. invalidateAfter keeps the
+      // snapshots strictly before it — a snapshot-preserving rewind, not a from-base
+      // rebuild (which is cumulatively quadratic under a latched base whose updates
+      // trail a faster topic's live edge).
+      const auto retro =
+          store.rangeByTime(*updates_topic_, std::numeric_limits<PJ::Timestamp>::min(), *last_consumed_time_);
+      for (const auto& ref : retro) {
+        if (ref.uid > updates_cursor_) {
+          reconstructor_.invalidateAfter(ref.timestamp);
+          ++retroactive_invalidate_count_;
+          // Move the detector's reference to this render's t (the cursor below covers
+          // every entry with ts <= t); a stale high-water could re-flag every tick.
           last_consumed_time_.reset();
+          break;
         }
       }
     }
@@ -250,12 +268,14 @@ void OccupancyGridLayer::renderAt(int64_t time_ns) {
     return base_cache_;
   };
 
-  // updates_in(lo, hi): updates with lo < ts <= hi, ascending. Traverses the
-  // topic by stable SequentialUID (the SceneEntitiesLayer::applyEntriesAfter
-  // pattern): raw indices shift when the streaming import thread evicts from the
-  // front mid-iteration, skipping or double-applying patches. UIDs are sparse
-  // per topic — step only via nextUIDAfter, never by incrementing. UID order ==
-  // ts order within a topic, so the walk can stop at the first entry past hi.
+  // updates_in(lo, hi): the OccupancyGridUpdate patches with lo < ts <= hi, in
+  // ASCENDING timestamp order (the reconstructor applies patches in time order).
+  // A time-window query MUST go through ObjectStore::rangeByTime, NOT the
+  // arrival-order UID cursor: an out-of-order update (older ts, newest UID — e.g.
+  // multi-publisher interleaving) can sit at any UID position, so a UID walk would
+  // skip it. rangeByTime returns a decode-free, ascending, eviction-safe snapshot
+  // of (uid, timestamp); we resolve + parse each afterwards (an entry evicted
+  // between the snapshot and the resolve simply comes back nullopt and is skipped).
   auto updates_in = [this, &store, &updates_binding](
                         PJ::Timestamp lo, PJ::Timestamp hi) -> std::vector<PJ::sdk::OccupancyGridUpdate> {
     std::vector<PJ::sdk::OccupancyGridUpdate> out;
@@ -263,21 +283,12 @@ void OccupancyGridLayer::renderAt(int64_t time_ns) {
       return out;
     }
     const PJ::ObjectTopicId id = *updates_topic_;
-    // Boundary: the newest entry with ts <= lo; everything past its UID is the
-    // (lo, ...] suffix. Nullopt (empty topic, or all entries past lo) starts the
-    // walk from the first retained entry.
-    const auto boundary = store.latestAt(id, lo);
-    const PJ::SequentialUID start_after = boundary.has_value() ? boundary->sequential_uid : PJ::SequentialUID{};
-    for (PJ::SequentialUID uid = store.nextUIDAfter(id, start_after); uid.valid(); uid = store.nextUIDAfter(id, uid)) {
-      auto entry = store.at(id, uid);
-      if (!entry.has_value()) {
-        continue;  // evicted between the UID step and the resolve
-      }
-      if (entry->timestamp > hi) {
-        break;  // ts is non-decreasing along the UID walk — past the window
-      }
-      if (entry->timestamp <= lo || entry->payload.bytes.empty()) {
-        continue;  // equal-ts run appended at the boundary after the resolve
+    const auto window = store.rangeByTime(id, lo, hi);
+    out.reserve(window.size());
+    for (const auto& ref : window) {
+      auto entry = store.at(id, ref.uid);
+      if (!entry.has_value() || entry->payload.bytes.empty()) {
+        continue;  // evicted between the snapshot and the resolve, or empty payload
       }
       auto obj = parseLocked(updates_binding, entry->timestamp, entry->payload);
       if (!obj.has_value()) {
@@ -389,25 +400,41 @@ std::optional<AABB> OccupancyGridLayer::worldBounds() const {
 }
 
 void OccupancyGridLayer::setColorScheme(OccupancyGridRenderPass::ColorScheme scheme) {
+  if (color_scheme_ == scheme) {
+    return;
+  }
   color_scheme_ = scheme;
   grid_pass_.setColorScheme(scheme);
+  emit configurationChanged();
   emit repaintRequested();
 }
 
 void OccupancyGridLayer::setOpacity(float opacity) {
-  opacity_ = std::clamp(opacity, 0.0f, 1.0f);
+  const float clamped = std::clamp(opacity, 0.0f, 1.0f);
+  if (opacity_ == clamped) {
+    return;
+  }
+  opacity_ = clamped;
   grid_pass_.setOpacity(opacity_);
+  emit configurationChanged();
   emit repaintRequested();
 }
 
 QWidget* OccupancyGridLayer::createConfigWidget(QWidget* parent) {
   auto* container = new QWidget(parent);
   auto* outer = new QVBoxLayout(container);
-  outer->setContentsMargins(0, 0, 0, 0);
-  outer->setSpacing(6);
+  outer->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
+  outer->setSpacing(PJ::theme::space(PJ::theme::Space::Snug));
   auto* form = new QFormLayout();
-  form->setContentsMargins(0, 0, 0, 0);
-  form->setSpacing(6);
+  form->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
+  // Match the Grid / Transforms section grids in Scene3DConfigPanel: comfortable
+  // label↔field gap, snug row pitch — so the panel keeps one consistent rhythm.
+  form->setHorizontalSpacing(PJ::theme::space(PJ::theme::Space::Comfortable));
+  form->setVerticalSpacing(PJ::theme::space(PJ::theme::Space::Snug));
   outer->addLayout(form);
 
   auto* scheme_combo = new PJ::ComboBox(container);
